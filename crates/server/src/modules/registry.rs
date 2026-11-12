@@ -481,17 +481,44 @@ enabled = ENABLED
             .await
             .err()
             .expect("the guide catalog does not start until its placeholder is replaced");
-        assert!(unedited.contains("not an id in 0x hex form"), "{unedited}");
+        assert!(
+            unedited.contains("neither an account id in 0x hex form nor a bech32 account address"),
+            "{unedited}"
+        );
         let edited = built_in.replace(
             "0xREPLACE_WITH_FAUCET_ID",
             "0x0a1b2c3d4e5f60718293a4b5c6d7e8",
         );
-        let instances = Registry::first_party()
+        let started = Registry::first_party()
             .instantiate(&catalog(&edited), &HashMap::new(), &HashSet::new())
             .await
-            .expect("the built-in guide catalog passes the startup checks")
-            .instances;
-        assert!(instances.iter().all(|instance| instance.config.enabled));
+            .expect("the built-in guide catalog passes the startup checks");
+        assert!(
+            started
+                .instances
+                .iter()
+                .all(|instance| instance.config.enabled)
+        );
+        assert!(
+            started.normalized.is_empty(),
+            "hex params are stored as written"
+        );
+
+        let by_address = built_in.replace(
+            "0xREPLACE_WITH_FAUCET_ID",
+            "mdev1aq0u96z73ckz2y2kr4xp57950qrn4xjc",
+        );
+        let started = Registry::first_party()
+            .instantiate(&catalog(&by_address), &HashMap::new(), &HashSet::new())
+            .await
+            .expect("a faucet named by its bech32 address passes the startup checks");
+        assert_eq!(
+            started.normalized.get("caps"),
+            Some(&serde_json::json!({
+                "max_per_transaction": { "0x1fc2e85e8e2c2511561d4c1a78b478": "5" }
+            })),
+            "the hex id is what gets stored"
+        );
     }
 
     struct StubFactory;

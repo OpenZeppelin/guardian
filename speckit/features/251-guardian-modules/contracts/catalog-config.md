@@ -78,7 +78,7 @@ Four in-process policies (`spending-limit`, `recipient-policy`, `signer-policy`,
 
 ## Built-in policy params
 
-Every id is written in `0x` hex form (case-insensitive) at its kind's length (30 hex digits for a faucet or recipient, 64 for a signer or code commitment); `validate_params` refuses any other form, such as a bech32 address or a placeholder. A kind refuses fields that belong to another, a modifier without the list it modifies, and a cap naming one faucet twice. A kind supports only the hooks listed, and startup refuses an instance subscribed to another.
+Every id is written in `0x` hex form (case-insensitive) at its kind's length (30 hex digits for a faucet or recipient, 64 for a signer or code commitment); a faucet or recipient may instead be its Miden bech32m account address (type byte 232, any network prefix, routing part after `_` checksum-checked as Miden checks it and otherwise ignored), which `validate_params` returns normalized to the hex id so the hex form is what is stored. `validate_params` refuses any other form, such as a placeholder or a bech32 string that is not an account address. A kind refuses fields that belong to another, a modifier without the list it modifies, and a cap naming one faucet twice. A kind supports only the hooks listed, and startup refuses an instance subscribed to another.
 
 | Kind | Param | Type | Effect |
 |---|---|---|---|

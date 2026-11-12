@@ -107,7 +107,7 @@ impl Module for CodePolicy {
     }
 
     async fn validate_params(&self, params: &[u8]) -> Result<ParamsVerdict, ModuleError> {
-        Ok(super::verdict(Rules::parse(params)))
+        Ok(super::verdict(params, Rules::parse(params), &[]))
     }
 
     async fn evaluate(&self, request: &HookRequest) -> Result<Decision, ModuleError> {

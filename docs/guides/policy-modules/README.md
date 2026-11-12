@@ -124,9 +124,9 @@ cp docs/guides/policy-modules/.env.example docs/guides/policy-modules/.env
 ```
 
 Edit `.guardian/built-in.toml` for your network: replace `0xREPLACE_WITH_FAUCET_ID`
-with the faucet id of an asset you hold, in `0x` hex form. The server does not
-start until you do: the built-in policies refuse an id that is not hex, since a
-placeholder or a bech32 address would never match a transaction. The other pages swap in
+with the faucet id of an asset you hold, in `0x` hex form or as its bech32
+address (stored as hex). The server does not start until you do: the built-in
+policies refuse a placeholder, since it would never match a transaction. The other pages swap in
 `remote.toml` or `custom.toml` by changing `GUARDIAN_MODULES_CONFIG` in the
 guide's `.env`.
 

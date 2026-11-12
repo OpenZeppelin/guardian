@@ -69,10 +69,11 @@ impl IdKind {
 }
 
 /// Ids in the hex form the Guardian reports them in (`0x` and the hex digits of an account id or
-/// a commitment), lowercased. Any other spelling would never match a request, so a list or a
-/// cap would silently not apply; it is refused instead: a bech32 address, a placeholder left in
-/// an example catalog, an id cut short when it was pasted, or an account id where a commitment
-/// belongs.
+/// a commitment), lowercased; an account may also be named by its bech32 address, which is read
+/// as its hex id. Any other spelling would never match a request, so a list or a cap would
+/// silently not apply; it is refused instead: a placeholder left in an example catalog, an id
+/// cut short when it was pasted, a bech32 address that is not an account's, or an account id
+/// where a commitment belongs.
 pub(crate) fn ids(
     field: &str,
     kind: IdKind,
@@ -86,18 +87,136 @@ pub(crate) fn id(field: &str, kind: IdKind, value: &str) -> Result<String, Strin
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))
         .filter(|rest| rest.bytes().all(|b| b.is_ascii_hexdigit()));
-    match digits {
-        Some(rest) if rest.len() == kind.hex_digits() => Ok(value.to_ascii_lowercase()),
-        Some(rest) if !rest.is_empty() => Err(format!(
+    match (digits, kind) {
+        (Some(rest), _) if rest.len() == kind.hex_digits() => Ok(value.to_ascii_lowercase()),
+        (Some(rest), _) if !rest.is_empty() => Err(format!(
             "{field}: {value:?} has {} hex digits, but {} has {}",
             rest.len(),
             kind.noun(),
             kind.hex_digits()
         )),
+        (None, IdKind::Account) => account_address(value).map_err(|refused| {
+            let why = match refused {
+                NotAnAccount::NotBech32 => {
+                    "is neither an account id in 0x hex form nor a bech32 account address".into()
+                }
+                NotAnAccount::Routing => {
+                    "has a routing part after `_` that is not valid bech32m".into()
+                }
+                NotAnAccount::Type(address_type) => {
+                    format!("is a bech32 address of type {address_type}, not of an account id")
+                }
+                NotAnAccount::Length(bytes) => format!(
+                    "is a bech32 account address of {bytes} bytes, but an account id has {}",
+                    IdKind::Account.hex_digits() / 2
+                ),
+            };
+            format!("{field}: {value:?} {why}")
+        }),
         _ => Err(format!(
-            "{field}: {value:?} is not an id in 0x hex form (a bech32 address is not accepted)"
+            "{field}: {value:?} is not {} in 0x hex form",
+            kind.noun()
         )),
     }
+}
+
+/// The address type byte of a Miden account address.
+const ACCOUNT_ADDRESS: u8 = 232;
+
+/// The prefix Miden checksums an address's routing part under (it is written without it).
+const ROUTING_PREFIX: &str = "mrp1";
+
+/// Why a string is not a Miden bech32m account address.
+enum NotAnAccount {
+    /// Not a bech32m string at all.
+    NotBech32,
+    /// The part after `_` is empty or fails its checksum, which Miden refuses too.
+    Routing,
+    /// An address of another type.
+    Type(u8),
+    /// An account address whose id has this many bytes.
+    Length(usize),
+}
+
+/// The hex id of the account a Miden bech32m address names, `<id>[_<routing params>]`. The
+/// routing part is checked as Miden checks it, then set aside: it says how to reach the
+/// account, not which account it is.
+fn account_address(value: &str) -> Result<String, NotAnAccount> {
+    fn checked(text: &str) -> Option<bech32::primitives::decode::CheckedHrpstring<'_>> {
+        bech32::primitives::decode::CheckedHrpstring::new::<bech32::Bech32m>(text).ok()
+    }
+    let (identifier, routing) = value
+        .split_once('_')
+        .map_or((value, None), |(identifier, routing)| {
+            (identifier, Some(routing))
+        });
+    let bytes: Vec<u8> = checked(identifier)
+        .ok_or(NotAnAccount::NotBech32)?
+        .byte_iter()
+        .collect();
+    if let Some(routing) = routing {
+        checked(&format!("{ROUTING_PREFIX}{routing}")).ok_or(NotAnAccount::Routing)?;
+    }
+    match bytes.split_first() {
+        Some((&ACCOUNT_ADDRESS, id)) if id.len() * 2 == IdKind::Account.hex_digits() => {
+            Ok(format!(
+                "0x{}",
+                id.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            ))
+        }
+        Some((&ACCOUNT_ADDRESS, id)) => Err(NotAnAccount::Length(id.len())),
+        Some((&address_type, _)) => Err(NotAnAccount::Type(address_type)),
+        None => Err(NotAnAccount::NotBech32),
+    }
+}
+
+/// Where a kind's params name accounts: entries of a list, or the keys of a map.
+pub(crate) enum Accounts {
+    List(&'static str),
+    Keys(&'static str),
+}
+
+/// `params` with every account named by its bech32 address rewritten to its hex id, so stored
+/// params, their history and their disclosure show the id requests carry; `None` when no entry
+/// needed it, so params already in hex are stored as sent.
+fn hex_accounts(params: &[u8], accounts: &[Accounts]) -> Option<serde_json::Value> {
+    let hex = |value: &str| account_address(value).ok();
+    let mut value: serde_json::Value = serde_json::from_slice(params).ok()?;
+    let mut changed = false;
+    for field in accounts {
+        match field {
+            Accounts::List(name) => {
+                let entries = value
+                    .get_mut(*name)
+                    .and_then(serde_json::Value::as_array_mut);
+                for entry in entries.into_iter().flatten() {
+                    if let Some(id) = entry.as_str().and_then(hex) {
+                        *entry = id.into();
+                        changed = true;
+                    }
+                }
+            }
+            Accounts::Keys(name) => {
+                let Some(map) = value
+                    .get_mut(*name)
+                    .and_then(serde_json::Value::as_object_mut)
+                else {
+                    continue;
+                };
+                let renamed: Vec<(String, String)> = map
+                    .keys()
+                    .filter_map(|key| hex(key).map(|id| (key.clone(), id)))
+                    .collect();
+                for (key, id) in renamed {
+                    if let Some(entry) = map.remove(&key) {
+                        map.insert(id, entry);
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    changed.then_some(value)
 }
 
 pub(crate) fn normalized(values: &[String]) -> BTreeSet<String> {
@@ -158,9 +277,17 @@ pub(crate) fn parse<P: DeserializeOwned + Default>(params: &[u8]) -> Result<P, S
     }
 }
 
-pub(crate) fn verdict<T>(parsed: Result<T, String>) -> ParamsVerdict {
+/// The verdict on `params` as a kind parsed them; valid params that name an account in
+/// `accounts` by its bech32 address come back normalized to the hex id.
+pub(crate) fn verdict<T>(
+    params: &[u8],
+    parsed: Result<T, String>,
+    accounts: &[Accounts],
+) -> ParamsVerdict {
     match parsed {
-        Ok(_) => ParamsVerdict::ok(),
+        Ok(_) => hex_accounts(params, accounts)
+            .map(|normalized| ParamsVerdict::normalized(&normalized))
+            .unwrap_or_else(ParamsVerdict::ok),
         Err(message) => ParamsVerdict::invalid(message),
     }
 }
@@ -210,6 +337,18 @@ pub(crate) mod testing {
     pub const ETH: &str = "0x00000000000000000000000000bb00";
     pub const RECIPIENT: &str = "0x0000000000000000000000000000a1";
     pub const SIGNER: &str = "0x0000000000000000000000000000000000000000000000000000000000000051";
+    /// An account id and its bech32 addresses, as `miden_protocol` encodes them: on devnet, and
+    /// on testnet with basic-wallet routing params.
+    pub const ADDRESSED: &str = "0x1fc2e85e8e2c2511561d4c1a78b478";
+    pub const DEVNET_ADDRESS: &str = "mdev1aq0u96z73ckz2y2kr4xp57950qrn4xjc";
+    pub const ROUTED_ADDRESS: &str = "mtst1aq0u96z73ckz2y2kr4xp57950qmexkt5_qr7qqq9wr6w";
+
+    /// A valid bech32m address of `address_type` (232 is an account) over `id_bytes` zero bytes.
+    pub fn address_of(address_type: u8, id_bytes: usize) -> String {
+        let mut payload = vec![address_type];
+        payload.extend(vec![0u8; id_bytes]);
+        bech32::encode::<bech32::Bech32m>(bech32::Hrp::parse("mdev").unwrap(), &payload).unwrap()
+    }
 
     pub fn fungible(faucet: &str, amount: u64) -> Asset {
         Asset {

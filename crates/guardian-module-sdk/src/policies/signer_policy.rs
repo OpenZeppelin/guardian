@@ -138,7 +138,7 @@ impl Module for SignerPolicy {
     }
 
     async fn validate_params(&self, params: &[u8]) -> Result<ParamsVerdict, ModuleError> {
-        Ok(super::verdict(Rules::parse(params)))
+        Ok(super::verdict(params, Rules::parse(params), &[]))
     }
 
     async fn evaluate(&self, request: &HookRequest) -> Result<Decision, ModuleError> {
@@ -221,6 +221,7 @@ mod tests {
             json!({ "check": "all" }),
             json!({ "check": "sometimes", "allowlist": [SIGNER] }),
             json!({ "signer_allowlist": [SIGNER] }),
+            json!({ "denylist": [DEVNET_ADDRESS] }),
         ] {
             let verdict = SignerPolicy
                 .validate_params(&serde_json::to_vec(&params).unwrap())

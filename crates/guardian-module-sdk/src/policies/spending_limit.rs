@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use super::{IdKind, Rule};
+use super::{Accounts, IdKind, Rule};
 use crate::proto::asset;
 use crate::{
     Decision, DescribeRequest, Hook, HookRequest, Module, ModuleError, ModuleInfo, ParamsVerdict,
@@ -118,7 +118,14 @@ impl Module for SpendingLimit {
     }
 
     async fn validate_params(&self, params: &[u8]) -> Result<ParamsVerdict, ModuleError> {
-        Ok(super::verdict(Rules::parse(params)))
+        Ok(super::verdict(
+            params,
+            Rules::parse(params),
+            &[
+                Accounts::Keys("max_per_transaction"),
+                Accounts::List("allowed_assets"),
+            ],
+        ))
     }
 
     async fn evaluate(&self, request: &HookRequest) -> Result<Decision, ModuleError> {
@@ -308,6 +315,8 @@ mod tests {
             json!({ "allowed_assets": ["0xa1b2c3"] }),
             json!({ "max_amount_per_tx": { USDC: "5" } }),
             json!({ "denylist": [RECIPIENT] }),
+            json!({ "max_per_transaction": { DEVNET_ADDRESS: "5", ADDRESSED: "9" } }),
+            json!({ "allowed_assets": [address_of(0, 15)] }),
         ] {
             let verdict = SpendingLimit
                 .validate_params(&serde_json::to_vec(&params).unwrap())
@@ -320,5 +329,32 @@ mod tests {
             .await
             .unwrap();
         assert!(verdict.ok);
+    }
+
+    #[tokio::test]
+    async fn a_faucet_named_by_its_address_is_stored_and_capped_as_its_hex_id() {
+        let named = json!({
+            "max_per_transaction": { DEVNET_ADDRESS: "5", USDC: "7" },
+            "allowed_assets": [ROUTED_ADDRESS, USDC],
+        });
+        let verdict = SpendingLimit
+            .validate_params(&serde_json::to_vec(&named).unwrap())
+            .await
+            .unwrap();
+        assert!(verdict.ok, "{}", verdict.message);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&verdict.normalized_params).unwrap(),
+            json!({
+                "max_per_transaction": { ADDRESSED: "5", USDC: "7" },
+                "allowed_assets": [ADDRESSED, USDC],
+            })
+        );
+
+        let over = paying(vec![p2id(RECIPIENT, vec![fungible(ADDRESSED, 6)])]);
+        assert_eq!(
+            decide(&tx_request(named, over)).await.reason_code,
+            "amount_cap_exceeded",
+            "params stored before normalization still cap"
+        );
     }
 }

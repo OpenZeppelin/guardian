@@ -20,15 +20,21 @@ instance is caught when the params are written.
 
 ## Ids
 
-Write every id (faucet, recipient, signer commitment, code commitment) in the
-`0x` hex form the Guardian reports, not as a bech32 address: params with
-another form are refused, since such an id would never match and its rule
-would not apply. So is anything else that is not hex digits after `0x`, such as
-a placeholder left in an example catalog, and an id of the wrong length: a
-faucet or a recipient is an account id of 30 hex digits, a signer or code
-commitment is 64, so an id cut short when it was pasted, or an account id
-where a commitment belongs, is caught when the params are validated. Case does
-not matter.
+Write a signer or code commitment in `0x` hex form. Write a faucet or a
+recipient either in `0x` hex form or as its bech32 account address (as a wallet
+shows it, such as `mtst1...`, with or without the routing part after `_`, which
+must be valid but is otherwise ignored). Params written through the operator
+API, and catalog params on their first start, are stored with the hex id the
+Guardian reports, so the stored params, their history and `get_policies` show
+hex; an instance whose params stay in the catalog file shows them as written
+there, and matches the same accounts. The address's network prefix is not
+checked, since an account id is the same on every network. Params with any
+other form are refused, since such an id would never match and its rule would
+not apply: a placeholder left in an example catalog, a bech32 string that is
+not an account address, and an id of the wrong length (a faucet or a recipient
+is an account id of 30 hex digits, a signer or code commitment is 64), so an id
+cut short when it was pasted, or an account id where a commitment belongs, is
+caught when the params are validated. Case does not matter.
 
 All params are optional; an instance with none allows everything, which is
 what an account layer or assignment of `{}` means. A param that only modifies

@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use super::{IdKind, Rule};
+use super::{Accounts, IdKind, Rule};
 use crate::{
     Decision, DescribeRequest, Hook, HookRequest, Module, ModuleError, ModuleInfo, ParamsVerdict,
 };
@@ -120,7 +120,11 @@ impl Module for RecipientPolicy {
     }
 
     async fn validate_params(&self, params: &[u8]) -> Result<ParamsVerdict, ModuleError> {
-        Ok(super::verdict(Rules::parse(params)))
+        Ok(super::verdict(
+            params,
+            Rules::parse(params),
+            &[Accounts::List("allowlist"), Accounts::List("denylist")],
+        ))
     }
 
     async fn evaluate(&self, request: &HookRequest) -> Result<Decision, ModuleError> {
@@ -259,9 +263,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_recipient_named_by_its_address_is_stored_and_matched_as_its_hex_id() {
+        let named = json!({ "denylist": [DEVNET_ADDRESS, ROUTED_ADDRESS] });
+        let verdict = RecipientPolicy
+            .validate_params(&serde_json::to_vec(&named).unwrap())
+            .await
+            .unwrap();
+        assert!(verdict.ok, "{}", verdict.message);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&verdict.normalized_params).unwrap(),
+            json!({ "denylist": [ADDRESSED, ADDRESSED] })
+        );
+
+        let paid = paying(vec![p2id(ADDRESSED, vec![fungible(USDC, 1)])]);
+        assert_eq!(
+            decide(&tx_request(named, paid)).await.reason_code,
+            "recipient_blocked",
+            "params stored before normalization still match"
+        );
+
+        let allowed = json!({ "allowlist": [DEVNET_ADDRESS.to_uppercase()] });
+        let verdict = RecipientPolicy
+            .validate_params(&serde_json::to_vec(&allowed).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&verdict.normalized_params).unwrap(),
+            json!({ "allowlist": [ADDRESSED] }),
+            "an address in upper case is the same address"
+        );
+
+        let hex = RecipientPolicy
+            .validate_params(&serde_json::to_vec(&json!({ "denylist": [BLOCKED] })).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            hex.ok && hex.normalized_params.is_empty(),
+            "hex params are stored as sent"
+        );
+    }
+
+    #[tokio::test]
     async fn params_are_validated() {
         for params in [
             json!({ "denylist": ["mtst1qrkd5x7qy0mw0yqzlvqlqd3w9cafjkw"] }),
+            json!({ "denylist": [address_of(0, 15)] }),
+            json!({ "denylist": [address_of(232, 10)] }),
+            json!({ "denylist": [format!("{DEVNET_ADDRESS}_")] }),
+            json!({ "denylist": [format!("{DEVNET_ADDRESS}_garbage")] }),
+            json!({ "allowlist": [format!("{ROUTED_ADDRESS}_qr7qqq9wr6w")] }),
+            json!({ "denylist": [DEVNET_ADDRESS.replacen('m', "M", 1)] }),
             json!({ "denylist": ["0xa1b2c3"] }),
             json!({ "allowlist": [RECIPIENT], "denylist": [BLOCKED] }),
             json!({ "deny_unknown": true }),
