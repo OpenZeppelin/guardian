@@ -457,7 +457,9 @@ plus:
 ## Upgrading within the Miden 0.17 line
 
 Releases after 0.18.0 on the Miden 0.17 line (0.18.x patches and 0.19.x) keep stored data, the `auth_tx` procedure
-root, and existing accounts; no reset runs. Each one still has operator-visible
+root, and existing accounts; no reset runs. From 0.19.0-rc.2 the server itself
+builds on Miden 0.18 and needs a node on 0.18; accounts keep the same contract
+code, which is why that release is listed here. Each one still has operator-visible
 changes. The SDK and Miden-side ones are in
 [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-and-019x-on-miden-017),
 and each release's notes on GitHub carry the full list, including server
@@ -508,6 +510,22 @@ behavior:
   `abandonCandidate` sends `proposal_id`, which a server up to 0.18.3 refuses
   as unauthenticated, so abandons fail until the server is upgraded. The
   release also brings:
+  - **A Miden 0.18 node, from 0.19.0-rc.2.** The server and the Rust SDK
+    build on Miden 0.18.0 and use the node 0.18 RPC, so move the Miden node the
+    server reads to 0.18 before deploying this image; the server does not work
+    against a 0.17 node. Node 0.18 still serves 0.17 clients, so SDKs from
+    earlier releases and the TypeScript SDK (web SDK 0.17.8) keep working
+    against it, and stored data and accounts carry over. Plan for three
+    things. Rust SDK clients must recreate their local store, and should keep
+    a copy of the old one, because unconsumed private notes live only there.
+    A Guardian-executable custom proposal that declares a public foreign
+    account and is still pending at the upgrade can no longer be executed by
+    GUARDIAN: have GUARDIAN execute it before upgrading, or execute it
+    afterwards from an SDK on the Miden line that created it. And, as a
+    second exception to SDKs-first, a server up to 0.19.0-rc.1 refuses the
+    Guardian-executable proposals Rust clients on this release create, until
+    it is upgraded (see
+    [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#rust-on-miden-018-typescript-on-miden-017-0190)).
   - **Guardian execution, enabled in two deploys.** An older replica still
     running during a rolling update can leave an executing account reserved
     with nothing able to release it. Roll out 0.19.0 with
@@ -537,8 +555,11 @@ behavior:
     and for AWS
     [`SERVER_AWS_DEPLOY.md`](./SERVER_AWS_DEPLOY.md#cutting-over-to-session-v2-0190)).
   - **Delta and proposal nonces checked at every queue depth (#518).** A
-    delta or proposal labelled with anything but the account's nonce gets
-    `400 invalid_delta`. Both SDKs label that way by default, the TypeScript
+    delta must be labelled with the account nonce it leaves the account at,
+    and a proposal with the account's next nonce. Any other label gets
+    `400 invalid_delta`, except one at or below the newest queued candidate's
+    nonce, which still gets `409 conflict_pending_delta`. Both SDKs label
+    that way by default, the TypeScript
     SDK since 0.18.1; cosigners on TypeScript 0.18.0 or earlier can no longer
     create proposals, and a pending proposal labelled with a timestamp has to
     be created again (see

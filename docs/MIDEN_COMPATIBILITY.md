@@ -817,8 +817,13 @@ the client, not the contracts:
   0.18.2 on 2026-11-11.
 - **Rust client stores are recreated.** A SQLite store written by `miden-client`
   0.17 does not load in 0.18, which cannot read the RPC limits the earlier client
-  stored. Delete the store and load the account from GUARDIAN again; keys live in
-  the keystore and are unaffected. Browser stores are untouched.
+  stored. Unconsumed private notes exist only in that store, and the note
+  transport returns only the notes it still retains, so one delivered outside the
+  transport or already pruned from it cannot be fetched again. Before upgrading,
+  consume the notes the account is waiting on, or keep a copy of the store file
+  to read with the earlier SDK. Then start from an empty store, load the account
+  from GUARDIAN again and run note recovery (`recover_notes`); keys live in the
+  keystore and are unaffected. Browser stores are untouched.
 - **Stored requests.** The Rust SDK seals a Guardian-executable request with
   protocol line `0.18` and the TypeScript SDK with `0.17`; the server executes
   both. A server up to 0.19.0-rc.1 refuses the `0.18` line
@@ -826,7 +831,10 @@ the client, not the contracts:
   clients create Guardian-executable proposals. The request layout is the same on
   both lines except for a public foreign account declaration, which only a custom
   proposal can carry: such a request written on one line does not decode on the
-  other and is refused with `GUARDIAN_EXECUTION_REQUEST_CODEC`.
+  other and is refused with `GUARDIAN_EXECUTION_REQUEST_CODEC`. That includes a
+  proposal created on 0.19.0-rc.1 that is still pending when the server is
+  upgraded: have GUARDIAN execute it first, or execute it afterwards from an SDK
+  on the line that created it.
 - **Private note transport.** `miden-client` 0.18 keeps one transport cursor with
   the tags it covers instead of one cursor per tag, and reads every tag up to one
   bound per fetch, so the Rust SDK's backlog drain is one fetch. The Rust store
