@@ -339,6 +339,21 @@ impl ModulePipeline {
     /// call. Without it a request could combine a new global rule with an old account layer, a
     /// combination no operator ever configured. The instance rows come from the cache when it
     /// holds the instance params version the store reports.
+    /// Whether the account has module history: any write to its layers or assignment, an
+    /// emptied assignment included. Only an account without any receives the `default`
+    /// instances, by the same rule the copy at registration applies.
+    pub async fn has_account_history(&self, account_id: &str) -> Result<bool, GuardianError> {
+        let Snapshot {
+            account_params_version,
+            account_rows,
+            ..
+        } = self.snapshot(&account_id.to_ascii_lowercase()).await?;
+        Ok(account_params_version != 0
+            || account_rows
+                .iter()
+                .any(|row| row.kind == ParamsKind::Assignment))
+    }
+
     pub(super) async fn snapshot(&self, account_id: &str) -> Result<Snapshot, GuardianError> {
         let cached = self
             .cache
@@ -601,7 +616,9 @@ impl Plan<'_> {
     }
 
     /// Runs the planned modules in order and returns the configuration they ran with. If
-    /// `build` fails, every module counts as failed and its `on_error` applies.
+    /// `build` fails (an account view or the projection could not be extracted, a proposal or
+    /// state read failed), the request is refused as unavailable whatever each module's
+    /// `on_error` says (RFC 0002 section 4.2): see [`Failure::refusal`].
     pub async fn run(
         self,
         build: impl FnOnce() -> Result<HookRequest, String>,
@@ -680,9 +697,7 @@ impl Plan<'_> {
                 continue;
             }
 
-            // A call that earlier modules left less than its timeout counts as a timeout, but is
-            // not the module's failure. The first call always has its whole share.
-            let cut_by_budget = called_before && remaining < instance.config.timeout;
+            let cut_by_budget = cut_by_budget(called_before, remaining, instance.config.timeout);
             called_before = true;
             let module = instance.module.clone();
             let started = tokio::time::Instant::now();
@@ -743,21 +758,37 @@ impl Plan<'_> {
                 Err(CallError::Timeout) => Failure::Timeout,
             };
             super::metrics::evaluated(id, super::metrics::Outcome::Error, took);
-            // The breaker stops calls to a module that is down for every account, so only
-            // failures that say so count: not a dry run's, which a cosigner sends without anyone's
-            // signature, not a request the module rejected, and not a budget cut.
             if !dry_run {
-                match failure {
-                    Failure::Rejected(_) => breakers.answered(id),
-                    Failure::Timeout if cut_by_budget => {}
-                    _ => breakers.failed(id),
-                }
+                count_toward_breaker(&breakers, id, &failure, cut_by_budget);
             }
             approval
                 .failed_open
                 .extend(fail(instance, layer, account_id, &failure)?);
         }
         Ok(approval)
+    }
+}
+
+/// Whether a call that times out did so because earlier modules used up the budget: it was
+/// left less than its own timeout. That is a timeout, but not the module's failure. The first
+/// call always has its whole share.
+fn cut_by_budget(
+    called_before: bool,
+    remaining: std::time::Duration,
+    timeout: std::time::Duration,
+) -> bool {
+    called_before && remaining < timeout
+}
+
+/// Records a failed call of a request (never a dry run's, which a cosigner sends without
+/// anyone's signature) on the instance's breaker. The breaker stops calls to a module that is
+/// down for every account, so only failures that say so count: a request the module rejected
+/// is an answer, and a timeout the budget caused is not the module's.
+fn count_toward_breaker(breakers: &Breakers, id: &str, failure: &Failure, cut_by_budget: bool) {
+    match failure {
+        Failure::Rejected(_) => breakers.answered(id),
+        Failure::Timeout if cut_by_budget => {}
+        _ => breakers.failed(id),
     }
 }
 

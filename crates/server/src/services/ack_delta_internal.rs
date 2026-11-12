@@ -340,8 +340,10 @@ pub(crate) async fn lookup_matching_proposal(
                     nonce,
                     proposal_id = %proposal_id,
                     error = %err,
-                    "delta_proposals lookup errored; a multisig push is refused, and a \
-                     single-key push or a Guardian execution continues without proposal metadata"
+                    "delta_proposals lookup errored; a multisig push is refused, a delta a \
+                     policy module evaluates is refused as unavailable, and a single-key push or \
+                     a Guardian execution with no module to run continues without proposal \
+                     metadata"
                 );
                 ProposalMatch::Unavailable(err)
             }

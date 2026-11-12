@@ -282,8 +282,10 @@ pub struct ModuleAccount {
 
 /// What policy modules receive about a delta, built from the decode that verifies and applies
 /// it: the account views of its base state and of the state it produces, and the transaction.
-/// Each part that cannot be extracted is kept as its error, which the modules' `on_error`
-/// then decides; it is never a failure of the application.
+/// Each part that cannot be extracted is kept as its error, so the decode itself still
+/// succeeds; a request that needs a missing part cannot be built, and the pipeline then refuses
+/// as unavailable whatever the modules' `on_error` says (RFC 0002 section 4.2), since a
+/// requester could otherwise switch fail-open modules off with a delta they cannot read.
 #[derive(Debug, Clone)]
 pub struct ModuleInputs {
     pub before: Result<ModuleAccount, String>,

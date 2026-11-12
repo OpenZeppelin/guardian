@@ -35,7 +35,85 @@ pub struct MidenNetworkClient {
     client: MidenRpcClient,
     /// The chain's fee faucet and the largest fee a transaction can owe, as last read by
     /// [`NetworkClient::load_fee_faucet`].
-    fee: std::sync::RwLock<Option<(module_views::ChainFee, std::time::Instant)>>,
+    fee: FeeCache,
+}
+
+/// How long a failed chain fee read waits before the next request tries again.
+const CHAIN_FEE_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The chain fee as last read, refreshed by one request at a time. Requests read on a
+/// transaction's path before the module evaluation budget starts, so a refresh in flight or one
+/// that just failed never makes another request wait on the network while a value is known.
+#[derive(Default)]
+struct FeeCache {
+    /// The last successful read and when it was made.
+    value: std::sync::RwLock<Option<(module_views::ChainFee, std::time::Instant)>>,
+    /// No read is tried before this, after one failed.
+    retry_at: std::sync::Mutex<Option<std::time::Instant>>,
+    /// Held by the request refreshing.
+    refreshing: tokio::sync::Mutex<()>,
+}
+
+/// What a request does about the chain fee.
+enum FeeRead {
+    /// The cached value is current, or a refresh is in flight or cooling down after a failure
+    /// and a value is known: use it.
+    Cached,
+    /// Nothing is known and the last read failed moments ago.
+    CoolingDown,
+    /// This request reads it.
+    Refresh,
+}
+
+impl FeeCache {
+    fn get(&self) -> Option<module_views::ChainFee> {
+        self.value
+            .read()
+            .ok()
+            .and_then(|fee| fee.as_ref().map(|(fee, _)| *fee))
+    }
+
+    fn known(&self) -> Option<std::time::Duration> {
+        self.value
+            .read()
+            .ok()
+            .and_then(|fee| fee.as_ref().map(|(_, at)| at.elapsed()))
+    }
+
+    fn cooling_down(&self) -> bool {
+        self.retry_at
+            .lock()
+            .ok()
+            .and_then(|retry_at| *retry_at)
+            .is_some_and(|retry_at| std::time::Instant::now() < retry_at)
+    }
+
+    fn plan(&self) -> FeeRead {
+        let age = self.known();
+        if age.is_some_and(|age| age < module_views::CHAIN_FEE_TTL) {
+            return FeeRead::Cached;
+        }
+        match (age.is_some(), self.cooling_down()) {
+            (true, true) => FeeRead::Cached,
+            (false, true) => FeeRead::CoolingDown,
+            (_, false) => FeeRead::Refresh,
+        }
+    }
+
+    fn store(&self, fee: module_views::ChainFee) {
+        if let Ok(mut value) = self.value.write() {
+            *value = Some((fee, std::time::Instant::now()));
+        }
+        if let Ok(mut retry_at) = self.retry_at.lock() {
+            *retry_at = None;
+        }
+    }
+
+    fn failed(&self) {
+        if let Ok(mut retry_at) = self.retry_at.lock() {
+            *retry_at = Some(std::time::Instant::now() + CHAIN_FEE_RETRY);
+        }
+    }
 }
 
 impl MidenNetworkClient {
@@ -61,7 +139,7 @@ impl MidenNetworkClient {
         }));
         Ok(Self {
             client,
-            fee: std::sync::RwLock::new(None),
+            fee: FeeCache::default(),
         })
     }
 
@@ -76,7 +154,7 @@ impl MidenNetworkClient {
             .expect("lazy client construction is infallible for a valid endpoint");
         Self {
             client,
-            fee: std::sync::RwLock::new(None),
+            fee: FeeCache::default(),
         }
     }
 
@@ -304,10 +382,7 @@ impl MidenNetworkClient {
 
     /// The chain fee [`NetworkClient::load_fee_faucet`] last loaded, if any.
     fn chain_fee(&self) -> Option<module_views::ChainFee> {
-        self.fee
-            .read()
-            .ok()
-            .and_then(|fee| fee.as_ref().map(|(fee, _)| *fee))
+        self.fee.get()
     }
 
     fn ensure_prev_commitment(account: &Account, prev_commitment: &str) -> Result<(), String> {
@@ -1030,13 +1105,22 @@ impl NetworkClient for MidenNetworkClient {
     }
 
     async fn load_fee_faucet(&self) -> Result<(), String> {
-        let loaded = self
-            .fee
-            .read()
-            .ok()
-            .and_then(|fee| fee.as_ref().map(|(_, at)| at.elapsed()));
-        if loaded.is_some_and(|age| age < module_views::CHAIN_FEE_TTL) {
-            return Ok(());
+        let unknown = || "the chain's fee asset is unknown; the last read failed".to_string();
+        let _refreshing = match self.fee.plan() {
+            FeeRead::Cached => return Ok(()),
+            FeeRead::CoolingDown => return Err(unknown()),
+            FeeRead::Refresh if self.fee.known().is_some() => {
+                match self.fee.refreshing.try_lock() {
+                    Ok(guard) => guard,
+                    Err(_) => return Ok(()),
+                }
+            }
+            FeeRead::Refresh => self.fee.refreshing.lock().await,
+        };
+        match self.fee.plan() {
+            FeeRead::Cached => return Ok(()),
+            FeeRead::CoolingDown => return Err(unknown()),
+            FeeRead::Refresh => {}
         }
         let read = async {
             let chain = self
@@ -1056,16 +1140,18 @@ impl NetworkClient for MidenNetworkClient {
         };
         match read.await {
             Ok(fee) => {
-                if let Ok(mut slot) = self.fee.write() {
-                    *slot = Some((fee, std::time::Instant::now()));
+                self.fee.store(fee);
+                Ok(())
+            }
+            Err(error) => {
+                self.fee.failed();
+                if self.fee.known().is_some() {
+                    tracing::warn!(%error, "Chain fee not refreshed; keeping the last value read");
+                    Ok(())
+                } else {
+                    Err(error)
                 }
-                Ok(())
             }
-            Err(error) if loaded.is_some() => {
-                tracing::warn!(%error, "Chain fee not refreshed; keeping the last value read");
-                Ok(())
-            }
-            Err(error) => Err(error),
         }
     }
 
@@ -1196,6 +1282,69 @@ mod tests {
     use miden_protocol::utils::serde::Serializable;
 
     use super::*;
+
+    fn fee() -> module_views::ChainFee {
+        module_views::ChainFee::new(
+            AccountId::from_hex(&history_account_id()).expect("account id"),
+            100,
+        )
+    }
+
+    #[test]
+    fn the_fee_cache_refreshes_once_stale_and_waits_out_a_failure() {
+        let cache = FeeCache::default();
+        assert!(matches!(cache.plan(), FeeRead::Refresh));
+        cache.failed();
+        assert!(
+            matches!(cache.plan(), FeeRead::CoolingDown),
+            "nothing known and a read just failed: no request tries again yet"
+        );
+        cache.store(fee());
+        assert!(matches!(cache.plan(), FeeRead::Cached));
+        if let Ok(mut value) = cache.value.write() {
+            *value = Some((
+                fee(),
+                std::time::Instant::now() - module_views::CHAIN_FEE_TTL,
+            ));
+        }
+        assert!(matches!(cache.plan(), FeeRead::Refresh));
+        cache.failed();
+        assert!(
+            matches!(cache.plan(), FeeRead::Cached),
+            "a stale value is used while a failed refresh cools down"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_fee_read_is_not_tried_again_by_the_next_request() {
+        let (client, _) = history_client(7, Vec::new()).await;
+        let first = client.load_fee_faucet().await.unwrap_err();
+        assert!(
+            first.contains("cannot read the chain's fee asset"),
+            "{first}"
+        );
+        let second = client.load_fee_faucet().await.unwrap_err();
+        assert!(
+            second.contains("the last read failed"),
+            "the second request does not call the node: {second}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_does_not_wait_for_a_refresh_in_flight_when_a_value_is_known() {
+        let (client, _) = history_client(7, Vec::new()).await;
+        if let Ok(mut value) = client.fee.value.write() {
+            *value = Some((
+                fee(),
+                std::time::Instant::now() - module_views::CHAIN_FEE_TTL,
+            ));
+        }
+        let _refreshing = client.fee.refreshing.lock().await;
+        let started = std::time::Instant::now();
+        client.load_fee_faucet().await.unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+        assert!(client.chain_fee().is_some());
+    }
 
     #[test]
     fn test_network_type_rpc_endpoint() {
@@ -1703,7 +1852,7 @@ mod tests {
         (
             MidenNetworkClient {
                 client,
-                fee: std::sync::RwLock::new(None),
+                fee: FeeCache::default(),
             },
             requests,
         )

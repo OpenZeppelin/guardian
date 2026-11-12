@@ -195,6 +195,9 @@ impl Module for ProtocolStub {
 pub struct Outage {
     pub down: std::sync::atomic::AtomicBool,
     pub evaluations: AtomicUsize,
+    /// The params `validate_params` answers as normalized, like a module that changed their
+    /// shape in a new release.
+    pub normalized: std::sync::Mutex<Option<serde_json::Value>>,
 }
 
 impl Outage {
@@ -202,6 +205,7 @@ impl Outage {
         Arc::new(Self {
             down: std::sync::atomic::AtomicBool::new(down),
             evaluations: AtomicUsize::new(0),
+            normalized: std::sync::Mutex::new(None),
         })
     }
 
@@ -233,7 +237,10 @@ impl Module for Outage {
 
     async fn validate_params(&self, _params: &[u8]) -> Result<ParamsVerdict, ModuleError> {
         self.reachable()?;
-        Ok(ParamsVerdict::ok())
+        Ok(match self.normalized.lock().unwrap().as_ref() {
+            Some(params) => ParamsVerdict::normalized(params),
+            None => ParamsVerdict::ok(),
+        })
     }
 
     async fn evaluate(&self, _request: &HookRequest) -> Result<Decision, ModuleError> {

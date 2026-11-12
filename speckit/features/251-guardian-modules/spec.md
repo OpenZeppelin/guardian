@@ -2,8 +2,8 @@
 
 **Feature Branch**: `251-guardian-modules`
 **Created**: 2026-10-13
-**Status**: M2a and M2c implemented on `251-modules-m2a` (not merged to `main`); M2b not started
-**Design source**: [RFC 0002](../../../docs/rfcs/0002-guardian-modules.md), written against revision 19; the RFC is now at revision 30. The RFC holds the wire protocol, configuration format and code citations; this spec states what the feature must achieve and how that is verified. Where the two differ, the RFC is corrected first and this spec follows.
+**Status**: M2a and M2c implemented on `251-modules-m2a` (not merged to `main`); M2b deferred past the first release (RFC 0002 section 7 and open question 1)
+**Design source**: [RFC 0002](../../../docs/rfcs/0002-guardian-modules.md), written against revision 19; the RFC is now at revision 34. The RFC holds the wire protocol, configuration format and code citations; this spec states what the feature must achieve and how that is verified. Where the two differ, the RFC is corrected first and this spec follows.
 **Input**: Issue #251 ("Modularization: middleware architecture and pluggable modules"), first consumer #182 (policy evaluation), later consumer #252 (x402 facilitator).
 **Planning note**: `plan.md` records the pre-prototype plan and its prototype findings; the gates (account view extraction effort, projection reuse, added latency, module author ergonomics, placement relative to PR #510) and their results are in `research.md`. `tasks-p0.md` holds the P0 prototype tasks and the follow-on phases; `tasks.md` holds the M2a implementation tasks. The M2a latency A/B ran on 2026-11-09 (`research.md`, "M2a end to end"); the quickstart walk-through against a local node of the 0.17 line, the SDK and browser smokes, and the timed run with the official image remain open (`tasks.md` T058 to T060).
 

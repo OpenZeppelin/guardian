@@ -236,11 +236,13 @@ pub async fn configure_account(
         (head, signer_commitment)
     };
 
-    // A new account, or a claim whose account never got its default modules, is evaluated
-    // with them and receives copies of them below.
+    // A new account, or a claim whose account has no module history yet, is evaluated with the
+    // default modules and receives copies of them below. One an operator already configured
+    // (a layer, an assignment, even an emptied one) is evaluated as it is configured, since the
+    // copy below never overrides that.
     let first_registration = match &existing {
         None => true,
-        Some(_) => unfinished_claim && !has_assignment(state, &params.account_id).await?,
+        Some(_) => unfinished_claim && !has_module_history(state, &params.account_id).await?,
     };
     let default_copies = approve_registration(
         state,
@@ -330,9 +332,9 @@ pub async fn configure_account(
             .await
             .map_err(GuardianError::StorageError)?;
         if !copied {
-            tracing::info!(
+            tracing::warn!(
                 account_id = %params.account_id,
-                "Default modules not copied: the account already has module assignments or module history"
+                "Default modules not copied: an operator configured the account's modules while it registered; the account keeps that configuration"
             );
         }
     }
@@ -696,17 +698,11 @@ async fn approve_registration(
 }
 
 /// Whether the account already holds module assignments.
-async fn has_assignment(state: &AppState, account_id: &str) -> Result<bool> {
-    let Some(modules) = state.modules.as_deref() else {
-        return Ok(false);
-    };
-    Ok(modules
-        .store()
-        .account_params(&account_id.to_ascii_lowercase())
-        .await
-        .map_err(GuardianError::StorageError)?
-        .iter()
-        .any(|row| row.kind == crate::modules::store::ParamsKind::Assignment))
+async fn has_module_history(state: &AppState, account_id: &str) -> Result<bool> {
+    match state.modules.as_deref() {
+        Some(modules) => modules.has_account_history(account_id).await,
+        None => Ok(false),
+    }
 }
 
 /// Whether the account has a stored state. A failed read counts as stored, so it can never make
@@ -3968,6 +3964,138 @@ mod tests {
             Err(GuardianError::ModuleDenied { .. })
         ));
         assert!(assignment_of(&run.modules).await.is_empty());
+    }
+
+    /// What an operator wrote to an account's modules between its claim and the retry that
+    /// finishes its registration.
+    enum Prior {
+        Nothing,
+        Layer,
+        EmptyAssignment,
+    }
+
+    /// The retry of a first configuration that claimed the account but stored no state, after
+    /// `prior`. The catalog holds a `default` instance judging registrations (`module`) and an
+    /// `all` instance an operator can layer.
+    async fn finish_claim_after(
+        prior: Prior,
+    ) -> (
+        Result<ConfigureAccountResult>,
+        Arc<crate::modules::ModulePipeline>,
+        Arc<crate::modules::testing::StubModule>,
+    ) {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(account_id);
+        let module = crate::modules::testing::StubModule::allowing();
+        let mut caps = crate::modules::testing::instance(
+            "caps",
+            &[HookName::BeforeTransactionApproved],
+            crate::modules::catalog::OnError::Deny,
+            crate::modules::testing::StubModule::allowing(),
+        );
+        caps.config.scope = crate::modules::catalog::Scope::All;
+        let modules = crate::modules::testing::pipeline(vec![
+            default_instance(
+                "screening",
+                &[HookName::BeforeAccountRegistered],
+                module.clone(),
+            ),
+            caps,
+        ]);
+        let change = crate::modules::store::Change {
+            operator: "0xoperator",
+            reason: "OPS-1",
+            at: "2026-11-12T00:00:00Z".to_string(),
+        };
+        match prior {
+            Prior::Nothing => {}
+            Prior::Layer => {
+                modules
+                    .store()
+                    .set_layer(
+                        account_id,
+                        "caps",
+                        Some(serde_json::json!({ "limit": 1 })),
+                        &change,
+                    )
+                    .await
+                    .unwrap();
+            }
+            Prior::EmptyAssignment => {
+                modules
+                    .store()
+                    .set_assignment(account_id, Vec::new(), &change)
+                    .await
+                    .unwrap();
+            }
+        }
+        let mut state = create_test_app_state(
+            MockNetworkClient::new()
+                .with_validate_credential(Ok(()))
+                .with_get_state_head(Ok(head("0x1234", 3)))
+                .with_module_views(
+                    guardian_module_sdk::AccountView {
+                        signer_commitments: vec![commitment.clone()],
+                        ..Default::default()
+                    },
+                    guardian_module_sdk::MidenTransaction::default(),
+                ),
+            MockStorageBackend::new()
+                .with_pull_state(Err("Failed to pull state: Record not found".to_string()))
+                .with_submit_state(Ok(())),
+            MockMetadataStore::new()
+                .with_get(Ok(Some(claimed_metadata(account_id, &commitment))))
+                .with_set(Ok(())),
+        )
+        .await;
+        state.modules = Some(modules.clone());
+        let result = configure_account(
+            &state,
+            ConfigureAccountParams {
+                account_id: account_id.to_string(),
+                auth: Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![commitment],
+                },
+                network_config: crate::metadata::NetworkConfig::miden_default(),
+                initial_state: serde_json::from_str(include_str!(
+                    "../testing/fixtures/account.json"
+                ))
+                .unwrap(),
+                credential: Credentials::signature(pubkey, signature, timestamp),
+            },
+        )
+        .await;
+        (result, modules, module)
+    }
+
+    #[tokio::test]
+    async fn finishing_a_claim_without_module_history_copies_the_defaults_it_was_judged_by() {
+        let (result, modules, module) = finish_claim_after(Prior::Nothing).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(module.calls(), 1);
+        assert_eq!(
+            assignment_of(&modules).await,
+            vec![("screening".to_string(), serde_json::json!({ "limit": 5 }))]
+        );
+    }
+
+    #[tokio::test]
+    async fn finishing_a_claim_an_operator_configured_meanwhile_judges_it_as_configured() {
+        for prior in [Prior::Layer, Prior::EmptyAssignment] {
+            let (result, modules, module) = finish_claim_after(prior).await;
+            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(
+                module.calls(),
+                0,
+                "the defaults are not judged, since they would never be copied"
+            );
+            assert!(
+                assignment_of(&modules).await.is_empty(),
+                "the operator's configuration stays as it was"
+            );
+        }
     }
 
     #[tokio::test]

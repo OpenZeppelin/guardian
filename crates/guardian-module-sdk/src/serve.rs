@@ -84,16 +84,18 @@ impl<M> Harness<M> {
     }
 }
 
-/// Compares in time independent of where the tokens differ, so response timing does not reveal
-/// a token prefix. An empty registered token matches nothing.
+/// Compares in time independent of where the tokens differ and of the registered token's
+/// length: every byte up to the longer of the two is compared, so response timing reveals
+/// neither a token prefix nor how long the token is. An empty registered token matches nothing.
 fn same_token(expected: &str, presented: &str) -> bool {
-    !expected.is_empty()
-        && expected.len() == presented.len()
-        && expected
-            .bytes()
-            .zip(presented.bytes())
-            .fold(0u8, |difference, (a, b)| difference | (a ^ b))
-            == 0
+    let (expected, presented) = (expected.as_bytes(), presented.as_bytes());
+    let length_differs = expected.len() != presented.len();
+    let difference = (0..expected.len().max(presented.len())).fold(0u8, |difference, index| {
+        let a = expected.get(index).copied().unwrap_or(0);
+        let b = presented.get(index).copied().unwrap_or(0);
+        difference | (a ^ b)
+    });
+    !expected.is_empty() && !length_differs && difference == 0
 }
 
 pub(crate) fn status(error: ModuleError) -> Status {
@@ -155,5 +157,22 @@ impl<M: Module + 'static> GuardianModule for Harness<M> {
             .await
             .map(|()| Response::new(NotifyAck {}))
             .map_err(status)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_token;
+
+    #[test]
+    fn only_the_registered_token_matches() {
+        assert!(same_token("secret-token", "secret-token"));
+        for presented in ["", "secret", "secret-tokeN", "secret-token-and-more", "x"] {
+            assert!(!same_token("secret-token", presented), "{presented:?}");
+        }
+        assert!(
+            !same_token("", ""),
+            "an empty registered token matches nothing"
+        );
     }
 }

@@ -37,8 +37,50 @@ impl ModulePipeline {
         }
     }
 
+    /// Stores the params a recovered module normalized `read` to, as a startup does for a module
+    /// that answered: kept out when they break the params rules or the instance's params are
+    /// file-managed, written only if the stored params are still `read`, with a history entry
+    /// by the module. A failed write is logged; the next start migrates again.
+    async fn store_recovered_migration(
+        &self,
+        instance: &crate::modules::registry::Instance,
+        read: &serde_json::Value,
+        params: serde_json::Value,
+    ) {
+        let id = instance.config.id.as_str();
+        if instance.config.file_managed_params || &params == read {
+            return;
+        }
+        if let Err(error) = super::startup::storable(&self.limits, &params) {
+            tracing::warn!(module = id, %error, "Module's normalized params break the params rules; kept the stored params");
+            return;
+        }
+        let operator = format!(
+            "module:{}",
+            instance.build.as_deref().unwrap_or(&instance.config.kind)
+        );
+        let change = crate::modules::store::Change {
+            operator: &operator,
+            reason: "params migrated by the module",
+            at: chrono::Utc::now().to_rfc3339(),
+        };
+        match self.store.set_global_if(id, read, params, &change).await {
+            Ok(Some(_)) => {
+                tracing::info!(module = id, %operator, "Module normalized its stored global params after it recovered; stored the migrated form")
+            }
+            Ok(None) => tracing::warn!(
+                module = id,
+                "Global params changed while the recovered module migrated them; kept the newer value, migration retries next start"
+            ),
+            Err(error) => {
+                tracing::warn!(module = id, %error, "Storing the recovered module's migrated params failed; migration retries next start")
+            }
+        }
+    }
+
     /// One health probe of every enabled instance: `Describe` under its timeout, with the startup
-    /// checks. A healthy module half-opens an open breaker so the next real call is sent. One
+    /// checks. An instance that started without them runs all of them here, the params that apply
+    /// included, before any call is let through, and stores the params its module migrated. A healthy module half-opens an open breaker so the next real call is sent. One
     /// that does not answer counts as a failed call toward its breaker. One that answers with a
     /// protocol version, capability or hook set this Guardian cannot work with opens its breaker
     /// at once: its decisions are not trusted until a probe passes again.
@@ -56,16 +98,18 @@ impl ModulePipeline {
                 .unchecked
                 .lock()
                 .is_ok_and(|unchecked| unchecked.contains(id));
-            // An instance that started without its startup checks runs all of them here, the
-            // params that apply included, before any call is let through.
             let healthy = if unchecked {
-                crate::modules::registry::check(
-                    &instance.config,
-                    &instance.module,
-                    &Self::global_params_in(&rows, instance),
-                )
-                .await
-                .map(|_| ())
+                let read = Self::global_params_in(&rows, instance);
+                match crate::modules::registry::check(&instance.config, &instance.module, &read)
+                    .await
+                {
+                    Ok(checked) => {
+                        self.store_recovered_migration(instance, &read, checked.params)
+                            .await;
+                        Ok(())
+                    }
+                    Err(unhealthy) => Err(unhealthy),
+                }
             } else {
                 crate::modules::registry::describe_healthy(&instance.config, &instance.module)
                     .await

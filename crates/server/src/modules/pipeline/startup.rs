@@ -524,6 +524,42 @@ timeout_ms = 50
     }
 
     #[tokio::test]
+    async fn a_module_that_recovers_from_an_outage_has_its_migrated_params_stored() {
+        let module = crate::modules::testing::Outage::new(false);
+        let store: Arc<dyn ModuleStore> =
+            Arc::new(crate::modules::store::FsModuleStore::in_memory());
+        start_with(module.clone(), OUTAGE_CATALOG, store.clone())
+            .await
+            .unwrap();
+        module.set_down(true);
+        let pipeline = start_with(module.clone(), OUTAGE_CATALOG, store.clone())
+            .await
+            .unwrap();
+
+        let migrated = serde_json::json!({ "lists": ["ofac"] });
+        *module.normalized.lock().unwrap() = Some(migrated.clone());
+        module.set_down(false);
+        pipeline.probe().await;
+
+        assert_eq!(store.instances().await.unwrap()[0].global_params, migrated);
+        let history = store.history("screening", None, 10).await.unwrap();
+        assert_eq!(history[0].new, migrated);
+        assert_eq!(history[0].reason, "params migrated by the module");
+        assert!(
+            history[0].operator.starts_with("module:"),
+            "{}",
+            history[0].operator
+        );
+
+        pipeline.probe().await;
+        assert_eq!(
+            store.history("screening", None, 10).await.unwrap().len(),
+            history.len(),
+            "a checked instance is not migrated again"
+        );
+    }
+
+    #[tokio::test]
     async fn an_instance_new_to_this_guardian_must_answer_at_startup() {
         let module = crate::modules::testing::Outage::new(true);
         let store: Arc<dyn ModuleStore> =
