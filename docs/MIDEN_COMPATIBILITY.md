@@ -319,8 +319,8 @@ server that queues chained candidates (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCO
   conflict_pending_delta`. At the default depth of one nothing changes: a queued
   candidate already refuses every submission. The queue helps the device that pushed
   the newest candidate; `/state` serves the canonical state, so every other cosigner
-  is refused until it drains, and serving the queue tail to cosigners is follow-up
-  work.
+  is refused until it drains. From 0.19.0 the server serves the tail to cosigners
+  (`GET /state/tail`; see "Queue tail for cosigners (0.19.0)" below).
 
 A Guardian server or SDK built on one protocol line rejects a node from another.
 Run a node matching the **Miden protocol** column. Node 0.18 is the exception: it
@@ -849,6 +849,79 @@ the client, not the contracts:
   between the two SDKs. The upgrade qualification from the published 0.19.0-rc.1
   image passed the same day: a database that release wrote is read and served by
   this build. Both ran on a locally built image.
+
+### Queue tail for cosigners (0.19.0)
+
+With `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1, a new delta or
+proposal must build on the queue tail, which only the device that pushed the
+newest candidate held (issue #517).
+
+- **`GET /state/tail` (gRPC `GetStateTail`)** serves the tail: the canonical
+  state with every queued candidate applied, shaped as `GET /state` serves a
+  state, and the queued candidates (`nonce`, `prev_commitment`,
+  `new_commitment`, oldest first). With nothing queued it is the canonical
+  state and an empty queue. `accepts_submissions` is false while a delta or
+  proposal built on the tail would be refused with `409
+  conflict_pending_delta`: the queue is full (at the default depth of 1,
+  whenever anything is queued), the tail changes the signers or the guardian
+  key, or its newest candidate was queued before 0.19.0 under a label other
+  than its nonce; wait for the queue to drain instead of building. It is
+  session-eligible as a recorded read (session operation 14), authorized like
+  `GET /state`, and each read replays the queue on the server, so it is not a
+  poll. A queue being swept after a candidate left it answers `409
+  conflict_pending_delta`. A server before 0.19.0 answers `404` (gRPC
+  `UNIMPLEMENTED`).
+- **Base clients.** Rust `GuardianClient::get_state_tail` and TypeScript
+  `GuardianHttpClient.getStateTail` read it; the proto gains `GetStateTail`,
+  `GetStateTailRequest`, `GetStateTailResponse` and `QueuedCandidate`, the
+  TypeScript client `StateTail` and `QueuedCandidate`, and the TypeScript
+  `SessionOperation` gains `GetStateTail`.
+- **Proposals name their base.** A proposal payload may carry
+  `base_commitment`, the state its summary was built on. The server classifies
+  it like a delta's `prev_commitment`: the tail is recorded, a base another
+  queued candidate already claimed is `409 conflict_pending_delta`, any other
+  state is `400 commitment_mismatch` (which also refuses a sibling state at the
+  tail's nonce, which the nonce label alone could not), and a malformed value
+  is `400 invalid_delta`. A proposal without it is judged as before. Both
+  multisig SDKs send it for every proposal they build; TypeScript
+  `createProposal(nonce, …)`, which takes a summary its caller built, sends
+  none. So a proposer whose state is ahead of GUARDIAN's (a landing GUARDIAN has
+  not recorded yet) now gets `commitment_mismatch` where it got `invalid_delta`;
+  the Rust `propose_with_fallback` still falls back to an offline switch on it.
+- **Proposals are pinned under the account lock.** Every proposal, with or
+  without a base, is recorded pinned to the tail the request read, and the
+  storage admission checks that pin again under the lock candidates are
+  admitted under. A candidate admitted meanwhile (or one that left the queue)
+  moved the tail, and the proposal is refused with `409
+  conflict_pending_delta` instead of stored on a state its delta could never
+  build on.
+- **Older servers.** The base travels inside the opaque payload, which a server
+  before 0.19.0 signs and stores unchanged, so new SDKs keep working against
+  it (a request field would have failed its signature check there). That
+  server ignores the base and keeps its old proposal rules.
+- **SDK API.** Rust `ProposalPayload` gains `base_commitment` (struct literals
+  of it must set it) and `with_base_commitment`; the TypeScript
+  `DeltaProposalRequest.deltaPayload` gains `baseCommitment`. TypeScript
+  `create*Proposal` with an explicit `options.nonce` now reads the store
+  account too, for the base.
+- **Not in the multisig SDKs yet.** Neither SDK imports the tail into its
+  store: both adopt only a state the chain holds, and an imported tail whose
+  candidate never lands would need rolling back, which the TypeScript store
+  cannot do. So a cosigner using the multisig SDKs is still refused until the
+  queue drains; integrations on the base clients can build on the tail.
+- **Building on the tail with the base clients.** Do not import the tail into a
+  miden-client store: the store cannot roll an account back to a lower nonce
+  (`add_account` refuses an older account), so a tail whose candidate never
+  lands cannot be undone, and a private account is locked when the chain
+  reports a state the store never held, such as an intermediate queued state
+  the imported tail skipped. Check the tail before building on it:
+  `queue[0].prev_commitment` is the canonical commitment the client already
+  verified against the chain, each later `prev_commitment` is the
+  `new_commitment` before it, the last `new_commitment` is `state.commitment`,
+  and `state.state_json` decodes to an account whose commitment is
+  `state.commitment`. To see which notes the queued candidates consume, read
+  `GET /delta` for each `queue[].nonce`: it serves the candidate's payload,
+  whose transaction summary lists its input notes.
 
 ### Open upstream items
 

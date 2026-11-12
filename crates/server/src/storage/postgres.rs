@@ -1890,6 +1890,43 @@ impl StorageBackend for PostgresService {
                     return Ok(ProposalWrite::AlreadyStored);
                 }
 
+                // The pin, re-read under the account lock candidate
+                // admission, promotion and discard all take, so the two reads
+                // agree and nothing moves the tail until this commits
+                // (`proposal_is_on_tail`).
+                let stored_commitment = states::table
+                    .filter(states::account_id.eq(&proposal.account_id))
+                    .select(states::commitment)
+                    .first::<String>(conn)
+                    .await?;
+                let queue: Vec<crate::storage::QueuedCandidate> = deltas::table
+                    .filter(deltas::account_id.eq(&proposal.account_id))
+                    .filter(deltas::status_kind.eq("candidate"))
+                    .order(deltas::nonce.asc())
+                    .select((
+                        deltas::nonce,
+                        deltas::prev_commitment,
+                        deltas::new_commitment,
+                    ))
+                    .load::<(i64, String, Option<String>)>(conn)
+                    .await?
+                    .into_iter()
+                    .map(|(nonce, prev_commitment, new_commitment)| {
+                        crate::storage::QueuedCandidate {
+                            nonce: nonce as u64,
+                            prev_commitment,
+                            new_commitment,
+                        }
+                    })
+                    .collect();
+                if !crate::storage::proposal_is_on_tail(
+                    &stored_commitment,
+                    &queue,
+                    &proposal.prev_commitment,
+                ) {
+                    return Ok(ProposalWrite::TailMoved);
+                }
+
                 // One statement shape whether or not the nonce is known: an
                 // unknown one admits every nonce.
                 let (lowest_viable, highest_viable) = admission

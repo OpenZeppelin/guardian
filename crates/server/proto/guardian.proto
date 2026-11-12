@@ -19,6 +19,13 @@ service Guardian {
   // Get account state
   rpc GetState(GetStateRequest) returns (GetStateResponse);
 
+  // The state a new delta or proposal must build on (issue #517): the
+  // canonical state with every queued candidate replayed onto it, and the
+  // queued candidates that lead there, oldest first. With nothing queued it
+  // is the canonical state and the queue is empty. Each read replays the
+  // queue, so read it before building on the account, not to poll it.
+  rpc GetStateTail(GetStateTailRequest) returns (GetStateTailResponse);
+
   // Get server's public key
   rpc GetPubkey(GetPubkeyRequest) returns (GetPubkeyResponse);
 
@@ -280,6 +287,35 @@ message AccountState {
   string created_at = 4;
   string updated_at = 5;
   optional string auth_scheme = 6; // "falcon", "ecdsa" or "mixed"
+}
+
+// Queue tail request (issue #517)
+message GetStateTailRequest {
+  string account_id = 1;
+}
+
+// A queued candidate the tail replays.
+message QueuedCandidate {
+  uint64 nonce = 1;
+  string prev_commitment = 2;
+  string new_commitment = 3;
+}
+
+message GetStateTailResponse {
+  bool success = 1;
+  string message = 2;
+  // The tail: its state_json and commitment are the replayed state.
+  AccountState state = 3;
+  // Oldest first. The first builds on the canonical state, each later one
+  // on the one before it, and the last one's new_commitment is the tail's.
+  repeated QueuedCandidate queue = 4;
+  string error_code = 5;
+  // Whether the queue takes a delta or proposal built on this tail now:
+  // false while the queue is full, while the tail changes the account's
+  // signers or guardian key, or while its newest candidate carries a label
+  // other than its nonce (queued before 0.19.0). Wait for the queue to drain
+  // and read again. True does not hold past this read.
+  bool accepts_submissions = 6;
 }
 
 // Canonical nonce request (issue #191)

@@ -180,6 +180,20 @@ impl CandidateChain {
         Self::load(storage, account_id, &current_state.commitment).await
     }
 
+    /// Load the chain behind a read of the tail (issue #517): as for an
+    /// admission whose base is the state read, a queue that no longer chains
+    /// from that state re-reads it once, in case a promotion raced the two
+    /// reads. An empty queue is served as read: nothing is judged against it,
+    /// so a state the account left a moment ago is only a stale read.
+    pub async fn load_for_read(
+        storage: &dyn StorageBackend,
+        account_id: &str,
+        current_state: &mut StateObject,
+    ) -> Result<Self> {
+        let read = current_state.commitment.clone();
+        Self::load_for_admission(storage, account_id, current_state, Some(&read)).await
+    }
+
     pub fn is_empty(&self) -> bool {
         self.candidates.is_empty()
     }

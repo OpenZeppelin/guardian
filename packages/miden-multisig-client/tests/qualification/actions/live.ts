@@ -3200,26 +3200,24 @@ function isPendingDeltaConflict(error: unknown): boolean {
 
 /**
  * While a stranded head holds the queue, a proposal built on the canonical
- * state is refused at once, and one that GUARDIAN does record behind the head
- * still cannot be executed by a client that does not hold the head's state.
+ * state is refused at once, whatever it is labelled with.
  *
  * The head is the producer's prepared but never submitted transaction (the
  * `custom-proposal-prepare` step): acknowledged, so queued, and never going to
  * land. The account's local state never included it, so the next proposal is
  * built on the canonical state and the SDK labels it with the account's next
- * nonce, which is the head's own nonce (as on the Rust leg). GUARDIAN records a
- * proposal behind the head only at the head's nonce plus one, so it is refused:
- * its delta could never be admitted, and on a queue with room it would
- * otherwise have been stored for cosigners to sign, pinned behind the head.
- * Mirrors `assert_stranded_head_blocks_proposal` in the Rust driver.
+ * nonce, which is the head's own nonce (as on the Rust leg). Its delta could
+ * never be admitted, and on a queue with room it would otherwise have been
+ * stored for cosigners to sign, pinned behind the head. Mirrors
+ * `assert_stranded_head_blocks_proposal` in the Rust driver.
  *
  * This leg then labels a proposal with the head's nonce plus one explicitly, as
- * an integration computing its own nonces might, which GUARDIAN records pinned
- * to the head's post-state. This client never held that state, so the SDK
- * refuses to execute the proposal and nothing reaches GUARDIAN or the chain. An
- * SDK that pushed the pinned base regardless (0.18.0 and earlier) had the
- * execution admitted behind the head while the transaction itself landed on the
- * head's base.
+ * an integration computing its own nonces might. The label extends the queue,
+ * but the SDK also names the state it built the summary on (`baseCommitment`,
+ * issue #517): the canonical state, which the head already claimed, so
+ * GUARDIAN refuses this one too, records nothing, and the account does not
+ * move. A server before 0.19.0 ignored the base and recorded it pinned to the
+ * head's post-state, where only the SDK's pin guard stopped its execution.
  */
 export async function assertStrandedHeadBlocksProposal(
   _context: ActionContext,
@@ -3266,54 +3264,48 @@ export async function assertStrandedHeadBlocksProposal(
     }
   }
 
-  let pastTheHead;
   let base: string;
   try {
     base = normalizeWord((await session.multisig.getStoreAccount()).to_commitment().toHex());
-    pastTheHead = await session.multisig.createP2idProposal(session.treasuryId, session.faucetId, P2ID_AMOUNT, {
+  } catch (error) {
+    return { kind: 'failed', classification: 'product', reason: `reading the account failed: ${String(error)}` };
+  }
+  try {
+    const pastTheHead = await session.multisig.createP2idProposal(session.treasuryId, session.faucetId, P2ID_AMOUNT, {
       nonce: head + 1,
     });
-    await session.multisig.signProposal(pastTheHead.id);
-  } catch (error) {
     return {
       kind: 'failed',
       classification: 'product',
-      reason: `a proposal labelled with the head's nonce plus one, which extends the queue, was not accepted and signed behind the stranded head while the queue has room: ${String(error)}`,
-    };
-  }
-  try {
-    await session.multisig.executeProposal(pastTheHead.id);
-    return {
-      kind: 'failed',
-      classification: 'product',
-      reason: `the proposal labelled past the head (nonce ${pastTheHead.nonce}) was executed, although it is pinned to the head's post-state and this client holds ${base}`,
+      reason: `a proposal labelled past the head (nonce ${pastTheHead.nonce}) was recorded behind the stranded head although it was built on ${base}, the state the head claimed`,
     };
   } catch (error) {
-    if (!String(error).includes('was made for account state')) {
+    if (!isPendingDeltaConflict(error)) {
       return {
         kind: 'failed',
         classification: 'product',
-        reason: `executing the proposal labelled past the head failed, but not because it is pinned to a state this client does not hold: ${String(error)}`,
+        reason: `the proposal labelled past the head, built on the state the head claimed, was refused, but not as a pending conflict: ${String(error)}`,
       };
     }
   }
-  // Refused before the push: GUARDIAN holds nothing at the proposal's nonce,
-  // and the account did not move.
+  // Nothing recorded at its nonce, and the account did not move.
   try {
-    await session.cosigners[0].multisigClient.guardianClient.getDelta(session.accountId!, pastTheHead.nonce);
-    return {
-      kind: 'failed',
-      classification: 'product',
-      reason: `GUARDIAN holds a delta at nonce ${pastTheHead.nonce}, although its execution was refused before anything was pushed`,
-    };
-  } catch (error) {
-    if ((error as { code?: unknown } | null)?.code !== 'delta_not_found') {
+    const recorded = (
+      await session.cosigners[0].multisigClient.guardianClient.getDeltaProposals(session.accountId!)
+    ).filter((proposal) => proposal.nonce === head + 1);
+    if (recorded.length > 0) {
       return {
         kind: 'failed',
         classification: 'product',
-        reason: `reading GUARDIAN at nonce ${pastTheHead.nonce} failed: ${String(error)}`,
+        reason: `GUARDIAN holds ${recorded.length} proposal(s) at nonce ${head + 1}, although the proposal labelled past the head was refused`,
       };
     }
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `listing GUARDIAN's proposals failed: ${String(error)}`,
+    };
   }
   try {
     const after = normalizeWord((await session.multisig.getStoreAccount()).to_commitment().toHex());
@@ -3321,7 +3313,7 @@ export async function assertStrandedHeadBlocksProposal(
       return {
         kind: 'failed',
         classification: 'product',
-        reason: `the refused execution still moved the local account from ${base} to ${after}`,
+        reason: `the refused proposal still moved the local account from ${base} to ${after}`,
       };
     }
   } catch (error) {

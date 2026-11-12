@@ -29,6 +29,7 @@ import type {
   SignatureScheme,
   Signer,
   StateObject,
+  StateTail,
   StatusResponse,
   CanonicalNonce,
 } from './types.js';
@@ -50,6 +51,7 @@ import type {
   ServerProposalsResponse,
   ServerPubkeyResponse,
   ServerStateObject,
+  ServerStateTail,
   ServerConfigureResponse,
   ServerCreateSessionResponse,
   ServerPushDeltaResponse,
@@ -66,6 +68,7 @@ import {
   fromServerHistoryPage,
   fromServerLookupResponse,
   fromServerStateObject,
+  fromServerStateTail,
   toServerConfigureRequest,
   toServerCreateSessionRequest,
   toServerDeltaProposalRequest,
@@ -516,6 +519,30 @@ export class GuardianHttpClient {
     }, accountId, requestQuery, SessionOperation.GetState);
     const server = (await response.json()) as ServerStateObject;
     return fromServerStateObject(server);
+  }
+
+  /**
+   * The queue tail (`GET /state/tail`, issue #517): the state a new delta or
+   * proposal must build on, and the queued candidates that lead to it. With
+   * nothing queued it is the canonical state and `queue` is empty. Otherwise
+   * it is not on chain until the queued candidates land, and if one never
+   * does, the tail is abandoned with it. `acceptsSubmissions` is false while
+   * the queue would refuse anything built on the tail with
+   * `conflict_pending_delta` (a full queue, which at the default depth of 1 is
+   * any queue; a tail that changes the signers or the guardian key; a
+   * candidate a server before 0.19.0 queued under another label): wait for
+   * the queue to drain instead of building. Each read replays the queue on the
+   * server, so read it before building on the account; poll
+   * `getCanonicalNonce` instead. A server before 0.19.0 answers 404.
+   */
+  async getStateTail(accountId: string): Promise<StateTail> {
+    const requestQuery = { account_id: accountId };
+    const params = new URLSearchParams(requestQuery);
+    const response = await this.fetchAuthenticated(`/state/tail?${params}`, {
+      method: 'GET',
+    }, accountId, requestQuery, SessionOperation.GetStateTail);
+    const server = (await response.json()) as ServerStateTail;
+    return fromServerStateTail(server);
   }
 
   /**

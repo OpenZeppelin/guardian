@@ -3,7 +3,8 @@ use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials, ExtractCredentials};
 use crate::services::{
     self, ConfigureAccountParams, GetCanonicalNonceParams, GetDeltaHistoryParams, GetDeltaParams,
-    GetDeltaProposalParams, GetStateParams, LookupAccountParams, PushDeltaParams,
+    GetDeltaProposalParams, GetStateParams, GetStateTailParams, LookupAccountParams,
+    PushDeltaParams,
 };
 use crate::state::AppState;
 use guardian_shared::SignatureScheme;
@@ -228,6 +229,32 @@ impl Guardian for GuardianService {
                 message: "State retrieved successfully".to_string(),
                 state: Some(state_to_proto(&response.state)),
                 error_code: String::new(),
+            })),
+            Err(e) => Err(Status::from(e)),
+        }
+    }
+
+    async fn get_state_tail(
+        &self,
+        request: Request<GetStateTailRequest>,
+    ) -> Result<Response<GetStateTailResponse>, Status> {
+        let auth = authenticated_request(&request)?;
+
+        let req = request.into_inner();
+
+        let params = GetStateTailParams {
+            account_id: req.account_id,
+            credentials: auth,
+        };
+
+        match services::get_state_tail(&self.app_state, params).await {
+            Ok(tail) => Ok(Response::new(GetStateTailResponse {
+                success: true,
+                message: "State tail retrieved successfully".to_string(),
+                state: Some(state_to_proto(&tail.state)),
+                queue: tail.queue.iter().map(queued_candidate_to_proto).collect(),
+                error_code: String::new(),
+                accepts_submissions: tail.accepts_submissions,
             })),
             Err(e) => Err(Status::from(e)),
         }
@@ -787,6 +814,14 @@ fn state_to_proto(state: &crate::state_object::StateObject) -> guardian::Account
         created_at: state.created_at.clone(),
         updated_at: state.updated_at.clone(),
         auth_scheme: Some(state.auth_scheme.clone()),
+    }
+}
+
+fn queued_candidate_to_proto(candidate: &services::QueuedCandidate) -> guardian::QueuedCandidate {
+    guardian::QueuedCandidate {
+        nonce: candidate.nonce,
+        prev_commitment: candidate.prev_commitment.clone(),
+        new_commitment: candidate.new_commitment.clone(),
     }
 }
 

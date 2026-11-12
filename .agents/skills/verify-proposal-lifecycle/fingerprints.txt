@@ -1,4 +1,4 @@
-crates/server/src/services/push_delta_proposal.rs push_delta_proposal 57e1f816ebde5834
+crates/server/src/services/push_delta_proposal.rs push_delta_proposal be040d9f4d82f318
 crates/server/src/services/push_delta.rs push_delta fa1ae5be30b44406
 crates/server/src/services/ack_delta_internal.rs lookup_matching_proposal 9b5ac8501f9abe75
 crates/server/src/services/candidate_chain.rs load_for_admission ed7abd9edcc81e9f
@@ -37,3 +37,9 @@ crates/server/src/storage/postgres.rs prune_superseded_deltas 6e53b7f672f1db26
 crates/server/src/storage/filesystem.rs restore_superseded_holding_lock 178e80f72d813daf
 crates/server/src/storage/filesystem.rs archive_delta_holding_lock 590f7a4e60b5c52c
 crates/server/src/jobs/canonicalization/reconciliation.rs select_recoverable_path 7282f9f4c7281a23
+crates/server/src/services/push_delta_proposal.rs proposal_base_commitment fa648832a44eecbb
+packages/miden-multisig-client/src/multisig.ts resolveProposalLabel d7abc1d82e323316
+crates/miden-multisig-client/src/payload.rs with_base_commitment f1a54b7fb8ac387f
+crates/server/src/storage/mod.rs proposal_is_on_tail 59045bb1bb1297cc
+crates/server/src/storage/postgres.rs admit_delta_proposal a57146fefaf4929f
+crates/server/src/storage/filesystem.rs admit_delta_proposal 9ba5c529e9919e13

@@ -6,8 +6,8 @@ use crate::services::{
     self, AbandonCandidateParams, CanonicalNonceResponse, ConfigureAccountParams,
     CreateSessionParams, GetCanonicalNonceParams, GetDeltaHistoryParams, GetDeltaParams,
     GetDeltaProposalParams, GetDeltaProposalsParams, GetDeltaSinceParams, GetStateParams,
-    LookupAccountParams, PushDeltaParams, PushDeltaProposalParams, RevokeAllSessionsParams,
-    RevokeSessionParams, SignDeltaProposalParams,
+    GetStateTailParams, LookupAccountParams, PushDeltaParams, PushDeltaProposalParams,
+    RevokeAllSessionsParams, RevokeSessionParams, SignDeltaProposalParams,
 };
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -381,6 +381,45 @@ pub async fn get_state(
 
     let response = services::get_state(&state, params).await?;
     Ok(Json(response.state))
+}
+
+/// The state a new delta or proposal must build on while the account's
+/// candidate queue holds candidates (issue #517): the canonical state with
+/// every queued candidate applied, and the queued candidates that lead there,
+/// oldest first. With nothing queued it is the canonical state and `queue` is
+/// empty. Each read replays the queue, one delta application per queued
+/// candidate, so read it before building on the account, not to poll it;
+/// `GET /state/nonce` is the poll. Authorized like `GET /state`, by the
+/// canonical state's signers.
+#[utoipa::path(
+    get,
+    path = "/state/tail",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(StateQuery, ("x-auth-format" = Option<String>, Header, description = "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures")),
+    responses(
+        (status = 200, description = "The queue tail and the queued candidates that lead to it", body = crate::services::StateTail),
+        (status = 400, description = "Account on an unsupported network (unsupported_for_network)", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or state not found", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "The queue has no tail to serve: a candidate left it and its successors await the worker's sweep, or its replay disagrees with the stored tail (conflict_pending_delta); retry once it drains", body = crate::openapi::ApiErrorResponse),
+        (status = 500, description = "Storage error", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn get_state_tail(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Query(query): Query<StateQuery>,
+) -> Result<Json<crate::services::StateTail>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&query).map_err(GuardianError::InvalidInput)?;
+
+    let params = GetStateTailParams {
+        account_id: query.account_id,
+        credentials: request_payload.apply_to(credentials),
+    };
+
+    Ok(Json(services::get_state_tail(&state, params).await?))
 }
 
 /// Nonce and commitment of the latest canonical state (issue #191), read

@@ -289,14 +289,42 @@ pub struct ProposalAdmission {
     pub max_account_request_bytes: u64,
 }
 
-/// Outcome of [`StorageBackend::admit_delta_proposal`]. The limits are checked and the proposal
-/// inserted as one step under the account lock.
+/// Outcome of [`StorageBackend::admit_delta_proposal`]. The pin and the limits are checked and the
+/// proposal inserted as one step under the account lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProposalWrite {
     Stored,
     AlreadyStored,
-    PendingLimit { limit: usize },
-    AccountRequestBytesLimit { limit: u64, used: u64 },
+    PendingLimit {
+        limit: usize,
+    },
+    AccountRequestBytesLimit {
+        limit: u64,
+        used: u64,
+    },
+    /// The proposal's pin (`proposal.prev_commitment`, the queue tail the request read) is no
+    /// longer the tail: a candidate was admitted after that read, or one left the queue
+    /// ([`proposal_is_on_tail`]). Its delta could never be admitted, so nothing was written.
+    TailMoved,
+}
+
+/// The in-lock twin of the request path's proposal pinning (issue #517): a proposal is recorded
+/// pinned to the queue tail the request read, so it is recorded only while that is still the
+/// tail of an unbroken chain from the stored state. A candidate admitted after the read moves
+/// the tail and claims the pinned state, and a candidate leaving the queue breaks the chain or
+/// moves the tail back, so a proposal stored on the old tail could be signed but its delta never
+/// admitted. Every backend evaluates this under the lock it admits candidates under, so a
+/// concurrent candidate either commits first, and this refuses, or waits for the proposal. The
+/// queue depth needs no recheck: a queue fills only by admitting a candidate, which moves the
+/// tail.
+pub fn proposal_is_on_tail(
+    stored_commitment: &str,
+    queue: &[QueuedCandidate],
+    pinned_commitment: &str,
+) -> bool {
+    first_unchained_candidate(stored_commitment, queue).is_none()
+        && classify_chain_position(stored_commitment, queue, pinned_commitment)
+            == ChainPosition::Tail
 }
 
 /// Outcome of a candidate submission.

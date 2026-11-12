@@ -129,6 +129,7 @@ fn http_operation(method: &str, uri: &str) -> Option<SessionOperation> {
     Some(match (method, path) {
         ("GET", "/state") => SessionOperation::GetState,
         ("GET", "/state/nonce") => SessionOperation::GetCanonicalNonce,
+        ("GET", "/state/tail") => SessionOperation::GetStateTail,
         ("GET", "/delta") => SessionOperation::GetDelta,
         ("GET", "/delta/since") => SessionOperation::GetDeltaSince,
         ("GET", "/delta/history") => SessionOperation::GetDeltaHistory,
@@ -543,6 +544,21 @@ async fn test_session_signature_is_bound_to_its_operation() {
         StatusCode::UNAUTHORIZED,
         "authentication_failed",
         "a GetState signature on /state/nonce, same payload",
+    );
+
+    let response = send(
+        &app,
+        presented_on(
+            format!("/state/tail?account_id={account_id_hex}"),
+            &signed_for_state,
+        ),
+    )
+    .await;
+    assert_error(
+        &response,
+        StatusCode::UNAUTHORIZED,
+        "authentication_failed",
+        "a GetState signature on /state/tail, same payload",
     );
 
     let signed_for_grpc = session_key.sign_bytes_hex(
@@ -1217,6 +1233,7 @@ async fn test_every_session_eligible_read_accepts_the_session() {
     let reads = [
         ("/state", json!({ "account_id": account_id_hex })),
         ("/state/nonce", json!({ "account_id": account_id_hex })),
+        ("/state/tail", json!({ "account_id": account_id_hex })),
         (
             "/delta",
             json!({ "account_id": account_id_hex, "nonce": 1 }),

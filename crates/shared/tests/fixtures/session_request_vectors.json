@@ -69,6 +69,11 @@
       "id": 13,
       "name": "GetCurrentExecution",
       "replay_policy": "read"
+    },
+    {
+      "id": 14,
+      "name": "GetStateTail",
+      "replay_policy": "read"
     }
   ],
   "vectors": [
@@ -409,6 +414,32 @@
       "signed_digest_hex": "0x2dec178e0dae5966e80452e89469b78fe4baa4fbbd324faabaa1c529b226bf37",
       "record_key_hex": "0x3c3e1ca1b36c547d34bb926b6062da10b47208721f1851a32ba8c0183050d5a4",
       "signature_hex": "0x097d3353b2790b0fed02db2dc3941032198465b330d9264e19e1d28dc2904f6b282cbe99dec2fb4e934023e861252cf894b17daebaca515a7932a79126917739"
+    },
+    {
+      "name": "GetStateTail_http",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 1,
+      "operation": 14,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f5245515545535400000201000e7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0x078a8ebdb8dc92225f9a25f8f7c30a580e1bde1b28b76a753e2d847a98711cfc",
+      "record_key_hex": "0xc6cb6fe7b3ef5bd51c0a0d52409c52c914187f1279067060d003a0d1a067c57e",
+      "signature_hex": "0xce81ff237b161cb2fa1814f1bc67d05ee6cb0eac6d5a864313f956a7753f8af8553d29bde341abead59eae6b0ea656b0886d7769b35fb95901d1ea5ef9ca67ad"
+    },
+    {
+      "name": "GetStateTail_grpc",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 2,
+      "operation": 14,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f5245515545535400000202000e7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0x5ab50835c1010920f6ee78023f62128928759aa7861d8b138ed984c953c27f96",
+      "record_key_hex": "0xb84175431206776c651aad305acfc9d7efa7096183ee93777e49c704647fe7f7",
+      "signature_hex": "0xf610d5f62da766c4cd78e38716a55fc08ffa4bd963f01441751668658b95ef61c142e00b3d8cd74bbbe6afde90e1a7903e5b73ad84bba107b22356bd81b50f49"
     },
     {
       "name": "empty_payload",

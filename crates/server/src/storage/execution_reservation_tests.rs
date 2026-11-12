@@ -1355,6 +1355,23 @@ async fn active_executions_list_every_unreleased_attempt(h: &Harness) {
 }
 
 impl Harness {
+    /// Replace the canonical state with one at `commitment`, as a promotion or
+    /// a re-onboarding would.
+    async fn move_canonical_state_to(&self, commitment: &str) {
+        self.storage
+            .submit_state(&StateObject {
+                account_id: self.account_id.clone(),
+                commitment: commitment.to_string(),
+                nonce: None,
+                state_json: serde_json::json!({ "state": commitment }),
+                created_at: "2026-09-30T12:00:00Z".to_string(),
+                updated_at: Utc::now().to_rfc3339(),
+                auth_scheme: String::new(),
+            })
+            .await
+            .expect("state moves");
+    }
+
     fn proposal_admission(&self, tag: u8, base: &str, request_bytes: u64) -> ProposalAdmission {
         let mut proposal = self.candidate(u64::from(tag));
         proposal.prev_commitment = base.to_string();
@@ -1377,25 +1394,25 @@ impl Harness {
 async fn proposal_admission_counts_only_viable_request_bytes(h: &Harness) {
     let admit = |admission| h.storage.admit_delta_proposal(admission);
     assert_eq!(
-        admit(h.proposal_admission(1, "0xsuperseded", 90))
-            .await
-            .unwrap(),
+        admit(h.proposal_admission(1, BASE, 90)).await.unwrap(),
         ProposalWrite::Stored
     );
+    // The account moves on, leaving the first proposal on a superseded base.
+    h.move_canonical_state_to(NEXT).await;
     assert_eq!(
-        admit(h.proposal_admission(2, BASE, 60)).await.unwrap(),
+        admit(h.proposal_admission(2, NEXT, 60)).await.unwrap(),
         ProposalWrite::Stored,
         "a proposal on a superseded base holds no capacity"
     );
     assert_eq!(
-        admit(h.proposal_admission(3, BASE, 50)).await.unwrap(),
+        admit(h.proposal_admission(3, NEXT, 50)).await.unwrap(),
         ProposalWrite::AccountRequestBytesLimit {
             limit: 100,
             used: 60
         }
     );
     assert_eq!(
-        admit(h.proposal_admission(2, BASE, 60)).await.unwrap(),
+        admit(h.proposal_admission(2, NEXT, 60)).await.unwrap(),
         ProposalWrite::AlreadyStored
     );
     assert!(
@@ -1404,6 +1421,71 @@ async fn proposal_admission_counts_only_viable_request_bytes(h: &Harness) {
             .await
             .is_err(),
         "a refused proposal is not stored"
+    );
+}
+
+/// Issue #517: the request path pins a proposal to the queue tail it read,
+/// and the admission checks that pin again under the account lock, so a
+/// candidate admitted after that read (or a queue that no longer chains) is
+/// seen and nothing is recorded on a state the delta could never build on.
+async fn proposal_admission_refuses_a_pin_the_tail_left(h: &Harness) {
+    let admit = |admission| h.storage.admit_delta_proposal(admission);
+    assert_eq!(
+        admit(h.proposal_admission(1, BASE, 0)).await.unwrap(),
+        ProposalWrite::Stored,
+        "with nothing queued the canonical state is the tail"
+    );
+    assert_eq!(
+        h.storage
+            .submit_candidate(
+                h.metadata.as_ref(),
+                &h.candidate(1),
+                &Utc::now().to_rfc3339(),
+                crate::storage::CandidatePolicy::new(4, true),
+            )
+            .await
+            .unwrap(),
+        CandidateSubmission::Submitted
+    );
+    assert_eq!(
+        admit(h.proposal_admission(2, BASE, 0)).await.unwrap(),
+        ProposalWrite::TailMoved,
+        "the candidate claimed the pinned state"
+    );
+    assert_eq!(
+        admit(h.proposal_admission(3, "0xelsewhere", 0))
+            .await
+            .unwrap(),
+        ProposalWrite::TailMoved,
+        "a state this account never reached"
+    );
+    for tag in [2, 3] {
+        assert!(
+            h.storage
+                .pull_delta_proposal(&h.account_id, &proposal_commitment(tag))
+                .await
+                .is_err(),
+            "a refused proposal is not stored"
+        );
+    }
+    assert_eq!(
+        admit(h.proposal_admission(4, NEXT, 0)).await.unwrap(),
+        ProposalWrite::Stored,
+        "the candidate's post-state is the new tail"
+    );
+    assert_eq!(
+        admit(h.proposal_admission(1, BASE, 0)).await.unwrap(),
+        ProposalWrite::AlreadyStored,
+        "a stored proposal is answered as stored"
+    );
+
+    // The canonical state moved under the queue (a re-onboarding), so the
+    // queued candidate no longer chains from it until the worker sweeps it.
+    h.move_canonical_state_to("0xreonboarded").await;
+    assert_eq!(
+        admit(h.proposal_admission(5, NEXT, 0)).await.unwrap(),
+        ProposalWrite::TailMoved,
+        "a queue that no longer chains from the stored state takes nothing"
     );
 }
 
@@ -1939,6 +2021,7 @@ mod filesystem {
         a_promotion_to_another_state_settles_nothing,
         active_executions_list_every_unreleased_attempt,
         proposal_admission_counts_only_viable_request_bytes,
+        proposal_admission_refuses_a_pin_the_tail_left,
         proposal_admission_enforces_the_viable_count,
         proposal_admission_counts_only_the_viable_nonce,
         concurrent_admissions_for_the_last_slot_accept_exactly_one,
@@ -2439,6 +2522,7 @@ mod postgres {
         a_promotion_to_another_state_settles_nothing,
         active_executions_list_every_unreleased_attempt,
         proposal_admission_counts_only_viable_request_bytes,
+        proposal_admission_refuses_a_pin_the_tail_left,
         proposal_admission_enforces_the_viable_count,
         proposal_admission_counts_only_the_viable_nonce,
         concurrent_admissions_for_the_last_slot_accept_exactly_one,
