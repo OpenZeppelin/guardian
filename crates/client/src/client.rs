@@ -1056,6 +1056,7 @@ impl GuardianClient {
     /// Retrieves the GUARDIAN server's ACK key commitment for `scheme` (`"falcon"` or
     /// `"ecdsa"`), plus the raw public key for ECDSA. `None` returns the Falcon key even on a
     /// server that admits only ECDSA accounts, so pass the scheme of the account it is for.
+    /// Any other scheme string is rejected by the server with `INVALID_ARGUMENT`.
     pub async fn get_pubkey(
         &mut self,
         scheme: Option<&str>,

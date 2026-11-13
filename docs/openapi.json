@@ -3734,7 +3734,7 @@
           {
             "name": "scheme",
             "in": "query",
-            "description": "`falcon` or `ecdsa`. Omitted or unrecognized values return the Falcon key, whichever\nschemes the server admits for new accounts.",
+            "description": "`falcon` or `ecdsa` (case-insensitive). Omitted returns the Falcon key, whichever\nschemes the server admits for new accounts; any other value is rejected with 400.",
             "required": false,
             "schema": {
               "type": "string"
@@ -3748,6 +3748,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PubkeyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`scheme` is neither `falcon` nor `ecdsa` (`invalid_input`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
                 }
               }
             }
