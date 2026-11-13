@@ -695,7 +695,7 @@ component schemas.
 | client | `GET /state/nonce` | signed headers | Nonce and commitment of the latest canonical state (sync pre-check) |
 | client | `GET /state/tail` | signed headers | The candidate queue tail a new delta or proposal must build on, and the queued candidates that lead to it |
 | client | `GET /state/lookup` | lookup signing (PoP) | Resolve a key commitment to account IDs |
-| client | `GET /pubkey` | public | ACK public key / commitment for `?scheme=falcon\|ecdsa` (default `falcon`) |
+| client | `GET /pubkey` | public | ACK public key / commitment for `?scheme=falcon\|ecdsa` (default `falcon`; any other value is 400 `invalid_input`) |
 | client | `GET /status` | public | Server liveness, version, environment, uptime, execution capability, session parameters |
 | client | `GET /` | public | Alias of `GET /status` |
 | client | `POST /delta/proposal` | signed headers | Create a multisig proposal |
