@@ -1,9 +1,11 @@
 //! Guardian execution metrics. Internal phases are diagnosed here and in logs, never on the wire.
 
 use crate::metrics::names::{
-    EXECUTION_CAPACITY_REFUSALS_TOTAL, EXECUTION_CHAIN_VIEW_DURATION_SECONDS,
-    EXECUTION_OBSERVATION_OUTAGE_SECONDS, EXECUTION_OLDEST_RESERVATION_AGE_SECONDS,
-    EXECUTION_OUTCOMES_TOTAL, EXECUTION_PHASE_DURATION_SECONDS, EXECUTION_PROVER_RETRIES_TOTAL,
+    EXECUTION_BATCH_PROVING_DURATION_SECONDS, EXECUTION_BATCHED_TRANSACTIONS_TOTAL,
+    EXECUTION_BATCHES_TOTAL, EXECUTION_CAPACITY_REFUSALS_TOTAL,
+    EXECUTION_CHAIN_VIEW_DURATION_SECONDS, EXECUTION_OBSERVATION_OUTAGE_SECONDS,
+    EXECUTION_OLDEST_RESERVATION_AGE_SECONDS, EXECUTION_OUTCOMES_TOTAL,
+    EXECUTION_PHASE_DURATION_SECONDS, EXECUTION_PROVER_RETRIES_TOTAL,
     EXECUTION_PROVING_DURATION_SECONDS, EXECUTION_RECONCILE_OUTCOMES_TOTAL,
     EXECUTION_RECORDS_PRUNED_TOTAL, LABEL_CODE, LABEL_OUTCOME, LABEL_PHASE,
 };
@@ -61,4 +63,48 @@ pub fn record_observation_outage(seconds: f64) {
 /// Counts the attempts one retention batch deleted.
 pub fn record_records_pruned(attempts: usize) {
     metrics::counter!(EXECUTION_RECORDS_PRUNED_TOTAL).increment(attempts as u64);
+}
+
+/// What became of a group of transactions the batcher tried to send together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchOutcome {
+    /// The node admitted the batch.
+    Accepted,
+    /// The node's answer did not arrive; the chain settles each transaction.
+    Unknown,
+    /// The node refused the batch before processing it, and would refuse each transaction alone
+    /// the same way.
+    NotProcessed,
+    /// The node refused the batch; each transaction was then sent alone.
+    Refused,
+    /// No batch was sent (no chain view, a batch that did not assemble or prove, or a send window
+    /// that closed); each transaction was sent alone.
+    NotBuilt,
+    /// Another batch was being proved; each transaction was sent alone.
+    ProverBusy,
+}
+
+impl BatchOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BatchOutcome::Accepted => "accepted",
+            BatchOutcome::Unknown => "unknown",
+            BatchOutcome::NotProcessed => "not_processed",
+            BatchOutcome::Refused => "refused",
+            BatchOutcome::NotBuilt => "not_built",
+            BatchOutcome::ProverBusy => "prover_busy",
+        }
+    }
+}
+
+/// Counts one group of `transactions` transactions the batcher tried to send together.
+pub fn record_batch(outcome: BatchOutcome, transactions: usize) {
+    metrics::counter!(EXECUTION_BATCHES_TOTAL, LABEL_OUTCOME => outcome.as_str()).increment(1);
+    metrics::counter!(EXECUTION_BATCHED_TRANSACTIONS_TOTAL, LABEL_OUTCOME => outcome.as_str())
+        .increment(transactions as u64);
+}
+
+/// Records how long assembling, executing and proving one batch took.
+pub fn record_batch_proving(took: std::time::Duration) {
+    metrics::histogram!(EXECUTION_BATCH_PROVING_DURATION_SECONDS).record(took.as_secs_f64());
 }

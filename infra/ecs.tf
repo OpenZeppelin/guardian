@@ -341,6 +341,18 @@ resource "aws_ecs_task_definition" "server" {
               name  = "GUARDIAN_TX_PROVER_MAX_CONCURRENT"
               value = tostring(var.guardian_tx_prover_max_concurrent)
             }
+          ] : [],
+          var.guardian_execution_max_txs_per_batch != null ? [
+            {
+              name  = "GUARDIAN_EXECUTION_MAX_TXS_PER_BATCH"
+              value = tostring(var.guardian_execution_max_txs_per_batch)
+            }
+          ] : [],
+          var.guardian_execution_batch_window_ms != null ? [
+            {
+              name  = "GUARDIAN_EXECUTION_BATCH_WINDOW_MS"
+              value = tostring(var.guardian_execution_batch_window_ms)
+            }
           ] : []
         )
 

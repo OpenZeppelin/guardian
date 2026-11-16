@@ -6,7 +6,8 @@
 | **Feature** | [#254](https://github.com/OpenZeppelin/guardian/issues/254) (parent [#253](https://github.com/OpenZeppelin/guardian/issues/253), "Transaction Orchestration") |
 | **Audience** | Integrators, operators, and upstream reviewers (Miden team or anyone reading publicly) |
 | **Working artifacts** | [`speckit/features/254-guardian-prove-and-commit/`](../../speckit/features/254-guardian-prove-and-commit/) — see appendix |
-| **Revision** | 22 (2026-10-28): GUARDIAN executes a transaction that creates a private output note like any other; the `allow_private_note` flag, the `private_note` refusal and the SDKs' `PrivateNote` local-execution reason are removed (proto field 3 of `ExecuteDeltaProposalRequest` is reserved). Revision 21 gave privacy as the reason, but GUARDIAN already holds the note before execution: the stored transaction request carries its recipient (serial number, script, inputs) and the send script its assets. The real gap was delivery, since a client could export only a note its own execution recorded; both SDKs now export the note a P2ID proposal creates from the proposal itself (`export_p2id_note_to_file` / `exportP2idNoteToFile`), checked against the summary the proposal id commits to, whoever executed it, from the cosigner's copy of the proposal (GUARDIAN deletes the proposal once its transaction is canonical). The HTTP execute payload is tagged `guardian.ExecuteDeltaProposal` like the gRPC one, since without the flag its body equals a signed status read. A session may sign the execute request. Earlier revisions follow as history |
+| **Revision** | 23 (2026-11-16): batched submission (#239), §3.2. With `GUARDIAN_EXECUTION_MAX_TXS_PER_BATCH` above one, transactions of different accounts that cross their no-retry boundaries within `GUARDIAN_EXECUTION_BATCH_WINDOW_MS` are proved together as one batch and sent through `SubmitProvenTxBatch`. Delivery only: what each boundary commit records, the no-retry rule and per-account outcome resolution are unchanged, a batch the node refuses is followed by single sends of the same proven transactions, and batching is off by default. No wire or SDK change |
+| **Revision 22** | 2026-10-28: GUARDIAN executes a transaction that creates a private output note like any other; the `allow_private_note` flag, the `private_note` refusal and the SDKs' `PrivateNote` local-execution reason are removed (proto field 3 of `ExecuteDeltaProposalRequest` is reserved). Revision 21 gave privacy as the reason, but GUARDIAN already holds the note before execution: the stored transaction request carries its recipient (serial number, script, inputs) and the send script its assets. The real gap was delivery, since a client could export only a note its own execution recorded; both SDKs now export the note a P2ID proposal creates from the proposal itself (`export_p2id_note_to_file` / `exportP2idNoteToFile`), checked against the summary the proposal id commits to, whoever executed it, from the cosigner's copy of the proposal (GUARDIAN deletes the proposal once its transaction is canonical). The HTTP execute payload is tagged `guardian.ExecuteDeltaProposal` like the gRPC one, since without the flag its body equals a signed status read. A session may sign the execute request. Earlier revisions follow as history |
 | **Revision 21** | 2026-10-08: GUARDIAN refuses to execute a transaction whose signed summary creates a private output note unless the execute request sets `allow_private_note` (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, `meta.reason` `private_note`; a switch carries `meta.reason` `switch_guardian` and is refused whatever the flag). The flag is part of the signed execute payload, and the gRPC execute payload is domain-separated from a signed status read. Execution failure messages are fixed per cause; raw node, prover and storage errors are log-only. Finished execution records are deleted after `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS` (default 30, `0` keeps them) unless they are the newest attempt of a proposal that still exists; a status read for a pruned proposal returns `GUARDIAN_EXECUTION_NOT_FOUND`. |
 | **Revision 20** | 2026-10-07: GUARDIAN refuses to execute a `switch_guardian` proposal with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, because only the client can finish the GUARDIAN handoff (register the account at the new GUARDIAN and switch its endpoint). A `guardian_executable` client still executes a switch locally, and executes a private-note P2ID locally unless the caller opts in with `allow_private_note`; the private-note P2ID gets no server rule. Earlier revisions follow as history |
 | **Revision 19** | 2026-10-07: a planned stop (SIGTERM) releases accounts of executions short of the no-retry boundary at once instead of after their lease; an execution is refused while any candidate is queued, at any candidate-queue depth (#486); the execution bound defaults to 64 per process and the prover bound is optional |
@@ -505,6 +506,61 @@ Reading guide for the upstream questions:
 
 ---
 
+### 3.2 Batched submission across accounts (#239)
+
+Off by default. With `GUARDIAN_EXECUTION_MAX_TXS_PER_BATCH` above one, an attempt that has
+crossed its no-retry boundary and claimed its send hands its proven transaction and sealed inputs
+to a per-process batcher instead of sending them. The batcher collects transactions of different
+accounts for `GUARDIAN_EXECUTION_BATCH_WINDOW_MS` after the first (a full batch leaves at once, a
+planned stop sends at once), reads a chain view at the tip that tracks every member's reference
+block, builds the `ProposedBatch` at the tip (which verifies every member's proof again), runs the
+batch kernel and proves it in process with `LocalBatchProver`, and sends it through
+`SubmitProvenTxBatch` with one sealed input per transaction. The node admits or refuses a batch
+as a whole and commits it in one block.
+
+The batch is a delivery mechanism; what this RFC fixes per execution does not change:
+
+- **The boundary.** Each member is exactly the transaction its own boundary commit recorded, sent
+  only after its own fenced send claim. Nothing is proved again or re-executed.
+- **Outcomes.** An accepted batch makes every member `Accepted`, an unanswered batch every
+  member `Unknown`; each account is then resolved from its own chain state, as in §1.2. A batch
+  the node refused definitely (`InvalidArgument`, `Unimplemented`, a rate limit, a batch over the
+  node's `max_txs_per_batch`) was never admitted, so none of its transactions is in flight, and each
+  is sent alone with what is left of its own send window and judged on its own: a refused batch
+  never costs an account its proposal. This is the one case where the same proven transaction
+  reaches the node twice. It is still the transaction the boundary recorded, never a new one,
+  the first copy was refused before admission, and it is sent alone at most once; an ambiguous
+  batch answer is never followed by a second send, so US4's single-submission guarantee holds for
+  every transaction the node may have admitted. A batch refused because its inputs were sealed against a
+  stale key is not resent when every member sealed against the same key, since each alone would
+  carry the same sealing; every member is `NotProcessed` and keeps its proposal. Members sealed
+  against different keys (a rotation between their attempts) are sent alone instead.
+- **Send time.** A transaction joins a batch only with the window plus `SendWindow::MIN_SEND`
+  (15 s) of its send window left, and the batch is built (chain view, assembly, proof) only within
+  the time that still leaves every member 15 s; otherwise each member is sent alone at once with
+  the time it has. The batch is sent with the send time its members have in common.
+- **Failure coupling.** The node reverts an admitted batch when its earliest expiration passes or
+  when a transaction it depends on is reverted. A transaction therefore joins a batch only with at
+  least 8 blocks left before it expires at the batch's reference block (the mempool itself needs 2; devnet's fee faucet caps a fee-paying transaction at 20), and never when it
+  consumes an unauthenticated note. Guardian holds one execution per account, so every account
+  appears at most once in a batch.
+- **Fallback.** A group of one, a chain view that cannot be read, a batch that does not assemble,
+  prove or finish within its members' time, or a batch proof already running in the process, sends
+  every member alone, as without batching.
+
+Two departures from the rest of this RFC: the batch proof is computed in the Guardian process (no
+remote batch prover client exists upstream yet; `miden-client` 0.18 has only
+`RemoteTransactionProver`), and a lone transaction waits one window longer than without batching.
+
+On the pinned protocol (0.18) the batch kernel is a skeleton whose proof binds nothing
+(`miden-tx-batch` `BatchVerifier`), the node still verifies every transaction proof and
+re-executes every transaction, and there is no batch fee, so batching buys neither fees nor
+latency yet. It is in place for the batch kernel (0xMiden/protocol#1122), node-side batch proof
+verification (0xMiden/node#1994, #2619) and the block kernel's batch fees (0xMiden/protocol#1706),
+behind the same calls Guardian makes now. Not included: a fee-collector transaction that would let
+Guardian, as the batch builder, consume its batch's fee notes (0xMiden/node#2563), and batches of
+one account's dependent transactions.
+
 ## Future extensions (outside v1)
 
 - **Optional server preparation.** An authenticated `prepare` operation could accept a
@@ -526,9 +582,8 @@ Reading guide for the upstream questions:
   executor could revalidate independent proposals after another transaction commits and
   retain signatures only if execution still reproduces the signed summary. Compatibility
   also depends on the pinned Miden version and signed execution context.
-- **Batching.** Compatible transactions could share a network batch. The design must
-  preserve each transaction's authorization and define how failures affect the batch.
-  This is distinct from both dependency chaining and independent proposal revalidation.
+- **Batching.** Implemented across accounts in revision 23, see §3.2. Batching several
+  transactions of one account needs dependent transaction chains first.
 
 ## 4. Protocol Questions for Upstream (Miden Team)
 

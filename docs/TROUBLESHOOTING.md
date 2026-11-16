@@ -861,6 +861,22 @@ once come back synchronously and create nothing.
   (`alarm_execution_reservation_age_threshold_seconds`, default 1800 s) sits above even the
   256-block window built-in proposals script, so it fires only when a reservation outlives the
   transaction's expiration, which is worth investigating.
+- **Batched submission looks wrong (`GUARDIAN_EXECUTION_MAX_TXS_PER_BATCH` above 1).** A batch
+  changes how transactions reach the node, never an execution's state or failure code, so
+  diagnose an execution as above. Each batch sent logs "Guardian execution batch submitted" with
+  its `batch_id`, `accounts`, `transactions`, `outcome` and `build_ms`/`prove_ms`/`send_ms`.
+  "the node refused the batch, so none of its transactions is in flight; sending each alone" names
+  the node's `reason`: "the mempool is at capacity" on every batch usually means
+  `GUARDIAN_EXECUTION_MAX_TXS_PER_BATCH` is above the node's `max_txs_per_batch` (4 by default on
+  node 0.18), which costs one wasted batch send per group, so lower it. "Guardian did not send these
+  transactions as a batch; sending each alone" names why no batch was built (chain view, assembly,
+  proving, a build that would have eaten into its transactions' last 15 s of send time, or another
+  batch being proved). `guardian_execution_batches_total` counts each group by
+  outcome. A transaction that consumes an unauthenticated note, or expires within 8 blocks of the
+  tip, or reaches the batcher with less than the window plus 15 s of send time left, is sent alone
+  and logs nothing special. With batching on, a lone transaction is sent
+  one `GUARDIAN_EXECUTION_BATCH_WINDOW_MS` later than without it, which shows in the `send` phase
+  of `guardian_execution_phase_duration_seconds`.
 
 ### Rate limits triggered
 

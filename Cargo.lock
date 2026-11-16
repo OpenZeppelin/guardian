@@ -3619,6 +3619,7 @@ dependencies = [
  "miden-standards",
  "miden-testing",
  "miden-tx",
+ "miden-tx-batch",
  "moka",
  "percent-encoding",
  "pin-project-lite",
