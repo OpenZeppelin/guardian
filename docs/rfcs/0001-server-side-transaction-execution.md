@@ -535,6 +535,42 @@ The batch is a delivery mechanism; what this RFC fixes per execution does not ch
   stale key is not resent when every member sealed against the same key, since each alone would
   carry the same sealing; every member is `NotProcessed` and keeps its proposal. Members sealed
   against different keys (a rotation between their attempts) are sent alone instead.
+- **Why a refusal means the batch was not admitted.** Checked against node v0.18.2 (`d3a01153`,
+  the devnet node; node paths below are in `0xMiden/node@v0.18.2`) and the `miden-client` 0.18.0
+  pin.
+  - Guardian reads a batch answer as it reads a single send (`send_batch` and
+    `classify_submission_error`, `crates/server/src/network/miden/execution/attempt.rs:976-1064`).
+    Only `InvalidArgument`, `NotFound`, `OutOfRange`, `ResourceExhausted`, `Unauthenticated`,
+    `PermissionDenied` and `Unimplemented` are a refusal. `FailedPrecondition` is the stale-key
+    case above. `AlreadyExists` and every other code, `Internal` included, are `Unknown`
+    (`miden-client-0.18.0/src/rpc/errors/mod.rs:64-104`) **[READ]**.
+  - The RPC handler issues its own refusals (decoding, account admission, the reference block, the
+    network-account gate, the batch proof check) before it calls the validators, and calls the
+    block producer only after every validator accepted
+    (`crates/rpc/src/server/api/submit_proven_tx_batch.rs:64-123`). A full node runs the same
+    steps against the sequencer's authenticated batch API or forwards the request verbatim
+    (`:125-155`) **[READ]**.
+  - The block producer authenticates each transaction against its store, then adds the batch under
+    the mempool lock (`crates/block-producer/src/server/mod.rs:385-447`). `add_user_batch` checks
+    capacity (`tx_capacity`, `max_txs_per_batch`), the batch id, authentication staleness,
+    expiration and fee notes before it touches the transaction graph
+    (`crates/block-producer/src/mempool/mod.rs:296-315`). The graph appends the batch atomically,
+    reverting what it appended when a transaction conflicts
+    (`crates/block-producer/src/mempool/graph/transaction.rs:162-174`) **[READ]**.
+  - Those mempool errors reach the client as `InvalidArgument`, except the store-read,
+    future-input, stale-input and poisoned-lock errors, which are `Internal`
+    (`crates/block-producer/src/errors.rs:40-103`, `crates/grpc-error-macro/src/lib.rs:139-146`).
+    Guardian leaves an `Internal` answer to the chain and never resends after it **[READ]**.
+  - Neither the handler nor the block producer issues `Unimplemented` or `ResourceExhausted` on
+    this path outside tests **[READ]**. Both come from before the handler runs: a server without
+    the method, or a rate limit in front of the node **[INFERRED]**.
+  - Whether a validator keeps state from a batch the block producer then refuses is outside the
+    node repository. On devnet, a five-transaction batch was refused at the node's cap
+    (`InvalidArgument`, "the mempool is at capacity", raised in `add_user_batch` after the
+    validators accepted), and each of the five transactions then sent alone was accepted and
+    committed **[RAN]**. The mock-node tests cover `InvalidArgument`, `Unimplemented`,
+    `Unavailable` and `FailedPrecondition` batch answers
+    (`crates/server/src/network/miden/execution/batch.rs`, `mod tests`) **[RAN]**.
 - **Send time.** A transaction joins a batch only with the window plus `SendWindow::MIN_SEND`
   (15 s) of its send window left, and the batch is built (chain view, assembly, proof) only within
   the time that still leaves every member 15 s; otherwise each member is sent alone at once with
