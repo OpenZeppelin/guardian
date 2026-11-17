@@ -35,8 +35,10 @@ pub const HOOKS: [Hook; 3] = [
 const ACCOUNT_ID_DIGITS: usize = 30;
 const COMMITMENT_DIGITS: usize = 64;
 
-/// Who is verified and who is sanctioned. Read from a JSON file here; a real deployment would
-/// read the same three lists from its compliance database or vendor API (see the guide).
+/// Who is verified and who is sanctioned. Read from a JSON file here to keep the example
+/// self-contained; a real deployment reads the same three lists from wherever its compliance
+/// program keeps them: its own database, a screening vendor, or an on-chain registry (see the
+/// guide, "Using your own data").
 #[derive(Debug, Default)]
 pub struct Lists {
     kyc_signers: BTreeSet<String>,

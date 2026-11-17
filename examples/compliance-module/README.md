@@ -11,8 +11,11 @@ gRPC with [`guardian-module-sdk`](../../crates/guardian-module-sdk):
   reclaimer.
 
 The lists come from a JSON file read at startup
-([`lists.example.json`](./lists.example.json)); each catalog instance's params
-choose which checks apply. The walkthrough, catalog and production notes are
+([`lists.example.json`](./lists.example.json)) to keep the example
+self-contained; a real module would read them from its own database, a
+screening vendor or an on-chain registry, depending on its requirements (see
+the guide's "Using your own data"). Each catalog instance's params choose which
+checks apply. The walkthrough, catalog and production notes are
 in the [compliance guide](../../docs/guides/policy-modules/compliance.md).
 
 ```sh

@@ -21,9 +21,12 @@ starting point for your own. It enforces two rules:
   recipient it cannot read (a partial note, a custom script), since a
   sanctioned recipient could hide there.
 
-The lists come from a JSON file the module reads when it starts. A production
-module reads the same lists from its compliance database or vendor; see
-[Using your own data](#using-your-own-data).
+The lists come from a JSON file the module reads when it starts. That keeps the
+example self-contained, and it is not a recommendation: where the data lives
+depends on your compliance program. A production module would typically read
+the same lists from its own database, a screening vendor's API, or on-chain
+rules such as a sanctions or attestation registry. The rest of the module stays
+the same; see [Using your own data](#using-your-own-data).
 
 Do the [setup](./README.md#setup) first (operator key, `.env`, server). This
 page replaces its catalog with [`compliance.toml`](./compliance.toml).
@@ -247,14 +250,28 @@ refuses the request.
 
 All data access goes through `Lists` in
 [`src/lib.rs`](../../../examples/compliance-module/src/lib.rs): three sets,
-filled once by `Lists::from_file`. To read from a database or a vendor
-instead:
+filled once by `Lists::from_file`. Replace that function with whatever fits
+your requirements:
+
+- **Your own database.** The KYC records your onboarding process already keeps,
+  and the sanctions list you maintain or import.
+- **A screening vendor.** A sanctions or risk-scoring service, queried for the
+  accounts and signers you care about, or a list it publishes for download.
+- **On-chain rules.** A registry contract or account whose storage holds the
+  list (for example an allowlist an issuer maintains, or attestations from a
+  KYC provider), read through a node's RPC. Pin the network and the registry
+  address in your module's configuration, not in the request: the request's
+  account is the one being judged, never a source of rules about itself.
+- **A combination.** For example, KYC from your database and sanctions from a
+  vendor. Each list can come from a different place.
+
+Whatever the source:
 
 - **Load into memory, refresh in the background.** `evaluate` must answer
   within `timeout_ms` (tens of milliseconds in practice). Do not query a vendor
-  API for each request. Keep the lists in memory (for example behind an
-  `ArcSwap` or `RwLock`), and refresh them on a timer or on a change
-  notification from your database.
+  API or a node for each request. Keep the lists in memory (for example behind
+  an `ArcSwap` or `RwLock`), and refresh them on a timer, on a change
+  notification from your database, or on new blocks for an on-chain registry.
 - **Fail closed.** If the lists cannot be loaded at startup, exit, as this
   example does. If a refresh fails, keep serving the last good lists and alert;
   if they become too old for your policy, return
