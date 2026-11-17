@@ -14,7 +14,6 @@ use miden_confidential_contracts::multisig_guardian::{
 use miden_protocol::account::auth::Signature;
 use miden_protocol::account::AccountId;
 use miden_protocol::assembly::Package;
-use miden_protocol::crypto::SequentialCommit;
 use miden_protocol::{Felt, Hasher};
 use miden_standards::account::auth::MultisigAuthArgs;
 use miden_standards::StandardsLib;
@@ -174,14 +173,12 @@ where
     // preimage (bound block + expiration, salt, fee conversion info) carried in the advice
     // map. A declared `fee_conversion_salt` would let miden-client commit its own auth arg
     // over this one. Declaring the bound block lets the request execute at any later tip.
-    let auth_args_commitment = auth_args.to_commitment();
     let request = TransactionRequestBuilder::new()
         .custom_script(script)
         .script_arg(config_hash)
         .extend_advice_map([(config_hash, config_values)])
-        .extend_advice_map([(auth_args_commitment, auth_args.to_elements())])
         .extend_advice_map(extra_advice)
-        .auth_arg(auth_args_commitment)
+        .auth_args(auth_args)
         .block_numbers([auth_args.bound_block_num()])
         .build()?;
 

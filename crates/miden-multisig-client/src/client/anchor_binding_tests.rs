@@ -789,6 +789,13 @@ async fn custom_proposal_bound_to_an_older_block_lands_after_the_proposer_syncs_
     assert_eq!(pushed.len(), 1, "one proposal pushed: {pushed:?}");
     let pushed_payload: serde_json::Value = serde_json::from_str(&pushed[0].delta_payload).unwrap();
     assert_eq!(
+        pushed_payload["base_commitment"],
+        serde_json::json!(word_to_hex(
+            &proposer.require_account().unwrap().commitment()
+        )),
+        "a custom proposal names the state it was built on"
+    );
+    assert_eq!(
         pushed_payload["metadata"]["bound_block_num"].as_u64(),
         Some(u64::from(bound_block.as_u32())),
         "the pushed proposal names the block the producer's request binds"

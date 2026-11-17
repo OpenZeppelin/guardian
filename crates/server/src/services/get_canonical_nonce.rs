@@ -82,7 +82,7 @@ pub async fn get_canonical_nonce(
 /// A missing state row is `state_not_found` (404); any other read failure
 /// (pool exhaustion, a dropped connection, an undecryptable row) is a
 /// retryable storage error rather than a spurious 404.
-fn state_read_error(account_id: &str, error: String) -> GuardianError {
+pub(crate) fn state_read_error(account_id: &str, error: String) -> GuardianError {
     if crate::storage::is_storage_not_found(&error) {
         return GuardianError::StateNotFound(account_id.to_string());
     }

@@ -122,6 +122,18 @@ export interface ServerStateObject {
   auth_scheme?: string;
 }
 
+export interface ServerQueuedCandidate {
+  nonce: number;
+  prev_commitment: string;
+  new_commitment: string;
+}
+
+export interface ServerStateTail {
+  state: ServerStateObject;
+  queue: ServerQueuedCandidate[];
+  accepts_submissions: boolean;
+}
+
 export interface ServerCanonicalNonceResponse {
   account_id: string;
   nonce: number;
@@ -159,6 +171,7 @@ export interface ServerDeltaProposalRequest {
     signatures: Array<{ signer_id: string; signature: ServerProposalSignature }>;
     metadata?: ServerProposalMetadata;
     transaction_request?: TransactionRequestEnvelope;
+    base_commitment?: string;
   };
 }
 

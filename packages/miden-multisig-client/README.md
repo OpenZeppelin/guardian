@@ -17,7 +17,7 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client@0.19.0-rc.1 @miden-sdk/miden-sdk@0.17.3
+npm install @openzeppelin/miden-multisig-client@0.19.0-rc.2 @miden-sdk/miden-sdk@0.17.8
 ```
 
 Miden 0.17 requires a new client database: a store created under 0.16 does not
@@ -97,7 +97,7 @@ Node.js has no worker and is unaffected.
 
 ### Cedar
 
-`@miden-sdk/miden-sdk` 0.17.3 has no Cedar preset and no `'cedar'` shorthand,
+`@miden-sdk/miden-sdk` 0.17.8 has no Cedar preset and no `'cedar'` shorthand,
 so a Cedar client names its endpoints explicitly:
 
 ```typescript
@@ -120,7 +120,7 @@ Cedar addresses use the `mm` prefix, today the same as mainnet's. In Rust,
 
 ### Mainnet
 
-`@miden-sdk/miden-sdk` 0.17.3 has no `createMainnet()` preset and no
+`@miden-sdk/miden-sdk` 0.17.8 has no `createMainnet()` preset and no
 `'mainnet'` shorthand for `rpcUrl`, `proverUrl`, or `noteTransportUrl` either,
 so a mainnet client names its endpoints the same way:
 
@@ -553,8 +553,16 @@ All methods accept `nonce` (identifies the proposal; defaults to the store
 account's nonce plus one, the nonce the executed transaction will have, as the
 Rust SDK labels proposals; through 0.18.0 the default was `Date.now()`).
 GUARDIAN from 0.19.0 records a proposal only at the account's next nonce and
-refuses any other label with `invalid_delta`, so leave `nonce` unset unless
-you track the account's nonce yourself.
+refuses any other label: with `conflict_pending_delta` when it is at or below
+a queued candidate's nonce (wait for the queue to drain), otherwise with
+`invalid_delta`. So leave `nonce` unset unless you track the account's nonce
+yourself. Each method also sends the commitment
+of the store account it built the summary on (`baseCommitment`, issue #517),
+which GUARDIAN 0.19.0 and later check is the candidate queue's tail; the raw
+`createProposal(nonce, summary, metadata)` sends none. The SDK does not build
+on another device's queued candidates (`getStateTail` in
+`@openzeppelin/guardian-client` serves them): while one is queued, a proposal
+built here is refused with `conflict_pending_delta` until the queue drains.
 `newThreshold` defaults to the current threshold on add and to
 the min of the current threshold and the remaining signer count on remove.
 The option shapes are exported as `CreateProposalOptions`,

@@ -10,10 +10,10 @@ use crate::proto::{
     GetDeltaProposalExecutionResponse, GetDeltaProposalRequest, GetDeltaProposalResponse,
     GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse,
     GetDeltaSinceRequest, GetDeltaSinceResponse, GetPoliciesRequest, GetPoliciesResponse,
-    GetPubkeyRequest, GetStateRequest, GetStateResponse, PolicyEntry, PushDeltaProposalRequest,
-    PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse, RevokeAllSessionsRequest,
-    RevokeAllSessionsResponse, RevokeSessionRequest, RevokeSessionResponse,
-    SignDeltaProposalRequest, SignDeltaProposalResponse,
+    GetPubkeyRequest, GetStateRequest, GetStateResponse, GetStateTailRequest, GetStateTailResponse,
+    PolicyEntry, PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest,
+    PushDeltaResponse, RevokeAllSessionsRequest, RevokeAllSessionsResponse, RevokeSessionRequest,
+    RevokeSessionResponse, SignDeltaProposalRequest, SignDeltaProposalResponse,
 };
 use guardian_shared::FromJson;
 use miden_protocol::account::Account;
@@ -144,6 +144,9 @@ pub struct MockGuardianService {
     get_delta_history_response: Arc<StdMutex<Option<Result<GetDeltaHistoryResponse, Status>>>>,
     get_delta_history_requests: Arc<StdMutex<Vec<(GetDeltaHistoryRequest, i64, String)>>>,
     get_state_responses: Arc<StdMutex<Vec<Result<GetStateResponse, Status>>>>,
+    get_state_tail_response: Arc<StdMutex<Option<Result<GetStateTailResponse, Status>>>>,
+    /// x-auth-format and x-pubkey of each GetStateTail call.
+    get_state_tail_auth_formats: Arc<StdMutex<Vec<(String, String)>>>,
     get_state_auth_headers: Arc<StdMutex<Vec<(i64, String)>>>,
     get_canonical_nonce_responses: Arc<StdMutex<Vec<Result<GetCanonicalNonceResponse, Status>>>>,
     get_account_by_key_commitment_response:
@@ -281,6 +284,18 @@ impl MockGuardianService {
     pub fn with_get_state(self, response: Result<GetStateResponse, Status>) -> Self {
         self.get_state_responses.lock().unwrap().push(response);
         self
+    }
+
+    /// Serve `response` from `get_state_tail`; without one it answers
+    /// `UNIMPLEMENTED`, as a server before 0.19.0 does.
+    pub fn with_get_state_tail(self, response: Result<GetStateTailResponse, Status>) -> Self {
+        *self.get_state_tail_response.lock().unwrap() = Some(response);
+        self
+    }
+
+    /// x-auth-format and x-pubkey of each `get_state_tail` call.
+    pub fn get_state_tail_auth_formats_handle(&self) -> Arc<StdMutex<Vec<(String, String)>>> {
+        self.get_state_tail_auth_formats.clone()
     }
 
     /// Queue a `get_canonical_nonce` response. Responses are served FIFO;
@@ -788,6 +803,23 @@ impl Guardian for MockGuardianService {
             }],
             error_code: String::new(),
         }))
+    }
+
+    async fn get_state_tail(
+        &self,
+        request: Request<GetStateTailRequest>,
+    ) -> Result<Response<GetStateTailResponse>, Status> {
+        self.get_state_tail_auth_formats.lock().unwrap().push((
+            metadata_str(&request, "x-auth-format"),
+            metadata_str(&request, "x-pubkey"),
+        ));
+        self.record_call("get_state_tail");
+        self.get_state_tail_response
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| Err(Status::unimplemented("GetStateTail")))
+            .map(Response::new)
     }
 
     async fn get_canonical_nonce(

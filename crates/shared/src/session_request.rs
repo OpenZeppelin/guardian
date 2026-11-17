@@ -77,12 +77,13 @@ pub enum SessionOperation {
     ExecuteDeltaProposal = 11,
     GetDeltaProposalExecution = 12,
     GetCurrentExecution = 13,
-    GetPolicies = 14,
-    CheckDeltaProposal = 15,
+    GetStateTail = 14,
+    GetPolicies = 15,
+    CheckDeltaProposal = 16,
 }
 
 impl SessionOperation {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::GetState,
         Self::GetCanonicalNonce,
         Self::GetDelta,
@@ -96,6 +97,7 @@ impl SessionOperation {
         Self::ExecuteDeltaProposal,
         Self::GetDeltaProposalExecution,
         Self::GetCurrentExecution,
+        Self::GetStateTail,
         Self::GetPolicies,
         Self::CheckDeltaProposal,
     ];
@@ -119,6 +121,7 @@ impl SessionOperation {
             | Self::GetDeltaProposal
             | Self::GetDeltaProposalExecution
             | Self::GetCurrentExecution
+            | Self::GetStateTail
             | Self::GetPolicies
             | Self::CheckDeltaProposal => ReplayPolicy::Read,
             Self::PushDelta
@@ -145,6 +148,7 @@ impl SessionOperation {
             Self::ExecuteDeltaProposal => "ExecuteDeltaProposal",
             Self::GetDeltaProposalExecution => "GetDeltaProposalExecution",
             Self::GetCurrentExecution => "GetCurrentExecution",
+            Self::GetStateTail => "GetStateTail",
             Self::GetPolicies => "GetPolicies",
             Self::CheckDeltaProposal => "CheckDeltaProposal",
         }
@@ -243,7 +247,7 @@ mod tests {
             assert_eq!(SessionOperation::from_id(operation.id()), Some(operation));
         }
         assert_eq!(SessionOperation::from_id(0), None);
-        assert_eq!(SessionOperation::from_id(16), None);
+        assert_eq!(SessionOperation::from_id(17), None);
         assert_eq!(SessionTransport::from_id(3), None);
     }
 

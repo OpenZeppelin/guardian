@@ -9,7 +9,9 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use miden_client::rpc::domain::account::{GetAccountRequest, StorageMapFetch, VaultFetch};
+use miden_client::rpc::domain::account::{
+    AccountFetch, GetAccountRequest, StorageMapFetch, VaultFetch,
+};
 use miden_client::rpc::{AccountStateAt, NodeRpcClient};
 use miden_protocol::Word;
 use miden_protocol::account::{
@@ -144,10 +146,12 @@ impl ForeignAccounts {
         let (served_at, mut proof) = self
             .rpc
             .get_account(
-                account_id,
-                GetAccountRequest::new()
-                    .with_storage(StorageMapFetch::All)
-                    .with_vault(VaultFetch::Always)
+                GetAccountRequest::new(account_id)
+                    .with_fetch(
+                        AccountFetch::new()
+                            .with_storage(StorageMapFetch::All)
+                            .with_vault(VaultFetch::Always),
+                    )
                     .at(AccountStateAt::Block(self.reference_block)),
             )
             .await

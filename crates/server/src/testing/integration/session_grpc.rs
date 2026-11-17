@@ -11,8 +11,8 @@ use crate::api::grpc::guardian::{
     ExecuteDeltaProposalRequest, GetAccountByKeyCommitmentRequest, GetCanonicalNonceRequest,
     GetCurrentExecutionRequest, GetDeltaHistoryRequest, GetDeltaProposalExecutionRequest,
     GetDeltaProposalRequest, GetDeltaProposalsRequest, GetDeltaRequest, GetDeltaSinceRequest,
-    GetStateRequest, PushDeltaRequest, RevokeAllSessionsRequest, RevokeSessionRequest,
-    SessionGrantFields,
+    GetStateRequest, GetStateTailRequest, PushDeltaRequest, RevokeAllSessionsRequest,
+    RevokeSessionRequest, SessionGrantFields,
 };
 use crate::network::NetworkType;
 use crate::network::miden::MidenNetworkClient;
@@ -563,6 +563,19 @@ async fn test_grpc_every_session_eligible_read_accepts_the_session() {
     );
     refused(
         service
+            .get_state_tail(session_request(
+                GetStateTailRequest {
+                    account_id: account_id(),
+                },
+                &account_id_hex,
+                &key,
+            ))
+            .await
+            .map(drop),
+        "GetStateTail",
+    );
+    refused(
+        service
             .get_delta_proposals(session_request(
                 GetDeltaProposalsRequest {
                     account_id: account_id(),
@@ -615,6 +628,60 @@ async fn test_grpc_every_session_eligible_read_accepts_the_session() {
             .map(drop),
         "GetCurrentExecution",
     );
+}
+
+/// A session signature binds its RPC: `GetState` and `GetStateTail` carry
+/// the same request bytes, and one signed for `GetState` does not read the
+/// tail.
+#[tokio::test]
+async fn test_grpc_get_state_signature_does_not_read_the_tail() {
+    let (service, state, signer, account_id_hex) = configured_account().await;
+    let key = falcon_session(&service, &state, &signer).await;
+    let message = GetStateTailRequest {
+        account_id: account_id_hex.clone(),
+    };
+    let timestamp = now_ms();
+    let word = AuthRequestMessage::from_account_id_hex(
+        &account_id_hex,
+        timestamp,
+        AuthRequestPayload::from_protobuf_message(&message),
+    )
+    .unwrap()
+    .to_word();
+    let signed_for_get_state = key.sign_bytes_hex(
+        &SessionRequestEnvelope::from_request_word(
+            SessionTransport::Grpc,
+            SessionOperation::GetState,
+            word,
+        )
+        .to_bytes(),
+    );
+    let status = service
+        .get_state_tail(as_session(create_request_with_auth(
+            message,
+            &key.public_key_hex(),
+            &signed_for_get_state,
+            timestamp,
+        )))
+        .await
+        .expect_err("a GetState signature does not authenticate GetStateTail");
+    assert_error(
+        &status,
+        Code::Unauthenticated,
+        "authentication_failed",
+        "GetState signature on GetStateTail",
+    );
+
+    service
+        .get_state_tail(session_request(
+            GetStateTailRequest {
+                account_id: account_id_hex.clone(),
+            },
+            &account_id_hex,
+            &key,
+        ))
+        .await
+        .expect("its own operation reads the tail");
 }
 
 /// FR-007 order on gRPC: wallet-only RPCs answer `wallet_signature_required`

@@ -28,6 +28,7 @@ once the chain reaches it.
 | Property | In plain words | Harm if broken |
 |---|---|---|
 | `ExecutesOnPinnedBase` | A proposal Guardian pinned to the state its summary was built on lands only from that state. | An intent the cosigners approved for one state runs on another: a proposal made concurrently with a sibling on the same base runs after the sibling, or one built behind a candidate that never landed runs without it. `spec/processes.md` promises SDKs keep a proposal from executing anywhere but on the tail. |
+| `LandsOnItsNamedBase` | A proposal that named the state its summary was built on (`base_commitment`, issue #517) lands only from that state. Needs both halves: Guardian records it only when that state is the queue tail, and the SDKs execute it only on the state it is pinned to. | An intent approved for one state runs on another: a proposer left on a sibling of the tail at the tail's nonce, which the label alone cannot tell apart, gets its proposal pinned to the tail and executed there. |
 | `AckedForLandingBase` | Every landed transaction carries a Guardian ack issued for the state it landed from. | Guardian queued a different transition from the one on chain; its candidate never verifies and the stored state falls behind the chain. |
 | `GuardianCatchesUp` | With the worker's promote, park and reconcile steps taken whenever they stay enabled (`LiveSpec`), Guardian's stored state ends up equal to the chain and stays there. A liveness property: unlike `LandedStepRecorded`, it fails when a recorded row is one reconciliation never promotes. | Guardian stays behind the chain for good. |
 | `LandedStepRecorded` | Every on-chain step Guardian has not caught up with is still in a delta row (candidate, retained, abandoned, archived superseded, or canonical). | Neither the worker nor reconciliation can ever promote past that step: Guardian stays behind the chain, and every push gets `400 commitment_mismatch`. |
@@ -52,7 +53,10 @@ TypeScript). The `check.sh` drift check hashes each one. In particular:
   its local commitment.
 - How Guardian pins and labels: `push_delta_proposal` pins to the queue
   tail and records a proposal only at the next nonce (the tail's plus
-  one, or the stored account nonce plus one with nothing queued).
+  one, or the stored account nonce plus one with nothing queued), and a
+  proposal that names its base (`base_commitment`, issue #517) only when
+  that base is the tail. Both SDKs name it: Rust `payload.rs`
+  `with_base_commitment` at every builder push, TS `resolveProposalLabel`.
   `push_delta` checks label = applied nonce at every depth (issue #518).
 - Which rows exist after a park: `retain_candidate` /
   `finalize_abandoned_candidate`, and `submit_candidate`'s supersede of a
@@ -125,7 +129,7 @@ TLC could not run the model; its first error lines are printed.
 | Model action | Code |
 |---|---|
 | `Sync` | Rust `client/account.rs` `sync`; TS `multisig.ts` `syncState` (adopt the chain state or Guardian's canonical state) |
-| `Propose` | Rust `client/proposals.rs` `propose_transaction_with_options` (label `account.nonce() + 1`); TS `resolveProposalNonce` (store nonce + 1, `Date.now()` through 0.18.0); server `services/push_delta_proposal.rs` `push_delta_proposal` (pin to tail; refuse a full queue or a label other than the next nonce: tail + 1, or stored nonce + 1 with nothing queued) |
+| `Propose` | Rust `client/proposals.rs` `propose_transaction_with_options` (label `account.nonce() + 1`, base `account.commitment()` via `ProposalPayload::with_base_commitment`); TS `resolveProposalLabel` / `resolveProposalNonce` (store nonce + 1, `Date.now()` through 0.18.0; base the store account's commitment); server `services/push_delta_proposal.rs` `push_delta_proposal` (pin to tail; refuse a full queue, a named base other than the tail via `proposal_base_commitment` and `CandidateChain::position`, or a label other than the next nonce: tail + 1, or stored nonce + 1 with nothing queued), then the storage admission (`postgres.rs` / `filesystem.rs` `admit_delta_proposal`) re-checks the pin under the account lock via `storage/mod.rs` `proposal_is_on_tail`, which makes the step atomic. `NamesBase = {TRUE, FALSE}`: proposals from SDKs before 0.19.0 and caller-built summaries name none |
 | `ExecuteRust` | Rust `execute_proposal` (sync, refuse `proposal.nonce <= account.nonce()`, refuse a pinned base other than the local commitment via `ensure_executes_on_pinned_base`), `helpers.rs` `get_guardian_ack_signature` (push with the local commitment), `finalize_transaction` (execute on the local account) |
 | `ExecuteTs` | TS `prepareProposalExecution` → `assertExecutesOnPinnedBase`, `pushDelta` with the served `prevCommitment`; `executeProposal` → `submitAtTip` on the store account |
 | `Admits`, `Admit` | server `services/push_delta.rs` `push_delta` and `storage::gate_candidate_submission` / `submit_candidate` (tail position, full queue, label = applied nonce at every depth, supersede of a parked row at the nonce) |
@@ -159,16 +163,23 @@ TLC could not run the model; its first error lines are printed.
   like any other proposal), offline import/export, custom
   proposals, EVM proposals, the pending-proposal limit, and every queue
   race covered by `verify-candidate-queue`.
-- Guardian cannot know which state a proposer built a summary on: it pins
-  to the queue tail. A proposer whose local state is ahead of the tail
-  (its own candidate was parked) gets a proposal pinned to a state it did
-  not build on. `ExecutesOnPinnedBase` only judges correctly pinned
-  proposals, so this case is noted here rather than checked.
+- Without `base_commitment` Guardian cannot know which state a proposer
+  built a summary on: it pins to the queue tail. A proposer whose local
+  state is ahead of the tail (its own candidate was parked) gets a
+  proposal pinned to a state it did not build on. `ExecutesOnPinnedBase`
+  only judges correctly pinned proposals, so for an unnamed base this
+  case is noted here rather than checked; `LandsOnItsNamedBase` checks
+  it for every proposal that names its base.
 
 Guards the model shows are load-bearing: TS `assertExecutesOnPinnedBase`
 (without it both passing properties fail), and Rust pushing the local
 commitment rather than the proposal's pin (acking the pin breaks
-`AckedForLandingBase`).
+`AckedForLandingBase`). For `LandsOnItsNamedBase` (issue #517): dropping
+the server's base check (`named => local[d] = QueueTail` in `Propose`)
+fails every pairing at depth 1 and 2 (a device left on a sibling of the
+canonical state proposes at the right nonce; the proposal is pinned to
+the canonical state and lands there); dropping the Rust pin guard fails
+at depth 2, and the TS one at depth 1 and 2.
 
 ## Findings in the baseline
 

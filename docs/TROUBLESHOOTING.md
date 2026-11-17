@@ -16,7 +16,9 @@ example a 0.17 build against a 0.16 node, or the reverse) at the RPC
 boundary: the Miden client sends the genesis commitment with every request,
 so a version mismatch surfaces as a gRPC rejection when connecting or
 syncing, not as silent corruption. Point the client at a node running the
-line this build pins. The
+line this build pins. Node 0.18 is the exception: it serves 0.17 clients as
+well, so from Guardian 0.19.0-rc.2 the server and the Rust SDK (Miden 0.18)
+and the TypeScript SDK (web SDK 0.17.8) all point at a node on 0.18. The
 [compatibility matrix](./MIDEN_COMPATIBILITY.md#support-matrix) lists that
 line and the public networks running it; a local `miden-node` from that
 line is the fallback when none does.
@@ -666,6 +668,12 @@ GET /delta/since?account_id=...&nonce=<last-known-nonce>
 Replay the returned canonical deltas locally, then resubmit your new
 delta. This is the same pattern as a Git fast-forward.
 
+The same code on `PushDeltaProposal` means the state the proposal names as
+its base (`base_commitment`) is one Guardian does not know: the proposer is
+behind the canonical state, on a sibling of it, or ahead of it on a landing
+Guardian has not recorded yet (it does within one reconcile interval).
+Resync and propose again.
+
 ### `commitment_mismatch` on `ConfigureAccount`
 
 Re-onboarding an existing account never puts an older state over a newer
@@ -819,7 +827,12 @@ once come back synchronously and create nothing.
   server upgrade.** Stored requests carry no `miden-client` version, and prerelease clients have
   changed the serialization. A proposal created by an SDK on a different `miden-client` than the
   server may not decode, or may decode to a different transaction, which execution refuses
-  before proving. Run the same `miden-client` on both sides, or execute the proposal from an SDK.
+  before proving. Create the proposal with an SDK whose `miden-client` writes the layout the
+  server reads, or execute the proposal from an SDK. From 0.19.0-rc.2 the Rust SDK and the
+  server are on Miden 0.18 and the TypeScript SDK on 0.17; the two layouts differ only for a
+  public foreign account declaration, which a custom proposal can carry, so create such a
+  proposal with the Rust SDK or execute it from an SDK (see
+  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#rust-on-miden-018-typescript-on-miden-017-0190)).
 - **An execution ends `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED` while a cosigner's delta was
   parked on the same state.** A parked delta (`retained`, or client-abandoned) does not block
   execution: admission moves it to the superseded-delta archive. If its transaction lands
@@ -1024,7 +1037,7 @@ come from
 | Code | HTTP | First check |
 |---|---|---|
 | `account_already_exists` | 409 | `/configure` called twice for the same account. |
-| `conflict_pending_delta` | 409 | The account's candidate queue is full (one candidate by default, `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`), the delta builds on a state another in-flight candidate already claimed, the delta's nonce does not exceed the newest queued candidate's, the proposal's nonce does not exceed the newest queued candidate's, the newest queued candidate changes the account's signer set or guardian key, or a queued candidate's predecessor left the queue and the worker has not swept it yet. A parked (`retained` or client-abandoned) delta does not refuse a Guardian execution request. Wait for the queue to drain and resync; with queueing enabled, the client that holds the newest candidate's post-state can chain the next delta on it with the next nonce. |
+| `conflict_pending_delta` | 409 | The account's candidate queue is full (one candidate by default, `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`), the delta builds on a state another in-flight candidate already claimed, the delta's nonce does not exceed the newest queued candidate's, the proposal's nonce does not exceed the newest queued candidate's, the proposal's `base_commitment` names a state another queued candidate already claimed, the newest queued candidate changes the account's signer set or guardian key, a candidate was admitted (or left the queue) while a proposal was being recorded, which moved the tail the proposal was pinned to, or a queued candidate's predecessor left the queue and the worker has not swept it yet (`GET /state/tail` gets this too: there is no tail to serve). A parked (`retained` or client-abandoned) delta does not refuse a Guardian execution request. Wait for the queue to drain and resync; with queueing enabled, a client can read the queue tail (`GET /state/tail`) and, while its `accepts_submissions` is true, chain the next delta or proposal on it with the next nonce. |
 | `conflict_pending_proposal` | 409 | Pending proposals exist; resolve before pushing a direct delta. |
 | `pending_proposals_limit` | 409 | Account hit `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` (default 20). |
 | `proposal_already_signed` | 409 | This signer already signed this proposal. |
@@ -1090,7 +1103,7 @@ Only on servers started with a module catalog. See
 | `invalid_account_id` | 400 | Malformed account ID. |
 | `invalid_delta` | 400 | Delta payload failed schema or commitment validation. Also a delta or proposal labelled with the wrong nonce (issue #518): a delta's `nonce` must be the account nonce it leaves the account at, and a proposal's the account's next nonce (the newest queued candidate's plus one, or the canonical nonce plus one with nothing queued). The response carries only the code; the server logs the refusal at `info` with the label and the expected nonce (`next_nonce` for a proposal, `applied_nonce` for a delta). Both SDKs label this way by default (the TypeScript SDK since 0.18.1, which used `Date.now()` before), so check an explicit `nonce` option or a custom client. A proposer whose state is behind GUARDIAN's, or ahead of it because GUARDIAN has not recorded a landing yet, is refused the same way: resync and retry. A Guardian execution request for a proposal an earlier release recorded under another label gets it too: create the proposal again. |
 | `invalid_commitment` | 400 | Commitment string isn't a valid hex hash. |
-| `commitment_mismatch` | 400 | `prev_commitment` doesn't match server's view; use `GetDeltaSince` to catch up. On `ConfigureAccount` for an existing account: the submitted state is older than the stored one, which the chain already reached, or a delta was promoted while the request ran; `expected` is the commitment now stored. Re-read the account's state and retry. |
+| `commitment_mismatch` | 400 | `prev_commitment` doesn't match server's view; use `GetDeltaSince` to catch up. On `PushDeltaProposal`: the payload's `base_commitment` (issue #517) is neither the canonical state nor a queued candidate's post-state; `expected` is the canonical commitment. Resync and build the proposal again. On `ConfigureAccount` for an existing account: the submitted state is older than the stored one, which the chain already reached, or a delta was promoted while the request ran; `expected` is the commitment now stored. Re-read the account's state and retry. |
 | `state_not_on_chain` | 409 | `ConfigureAccount` that must submit the account's on-chain state (a first registration past nonce 0, a released account, a key the stored auth does not list, or a state other than the stored one) submitted a state the chain does not hold yet (typically right after submitting a guardian switch back or a signer change). Retryable: register again once the transaction lands. After a guardian switch both SDKs wait for the chain to hold the switched state (about 45 seconds at most, with no wallet signature) before they register, and do not retry the registration; if it persists, check that the transaction landed, or that the client is not submitting a state the chain has already moved past (sync and register again). |
 | `invalid_proposal_signature` | 400 | Signature doesn't verify against the proposal payload, its signer is not a cosigner of the account, or it is made under another scheme than the account registers that cosigner with (an ECDSA approval for a key the account stores as Falcon, which the chain would refuse). |
 | `invalid_network_config` | 400 | `Configure` payload's network config is malformed. |

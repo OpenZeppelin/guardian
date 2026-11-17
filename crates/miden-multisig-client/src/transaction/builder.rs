@@ -406,6 +406,7 @@ impl ProposalBuilder {
             .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
+        let payload = payload.with_base_commitment(account.commitment());
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -508,6 +509,7 @@ impl ProposalBuilder {
             .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
+        let payload = payload.with_base_commitment(account.commitment());
 
         let proposal = Proposal::new(
             tx_summary,
@@ -614,6 +616,7 @@ impl ProposalBuilder {
             .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
+        let payload = payload.with_base_commitment(account.commitment());
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -702,6 +705,7 @@ impl ProposalBuilder {
             .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
+        let payload = payload.with_base_commitment(account.commitment());
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -821,6 +825,7 @@ impl ProposalBuilder {
         }
 
         let nonce = account.nonce() + 1;
+        let payload = payload.with_base_commitment(account.commitment());
 
         // Clone notes for the runtime TransactionType; metadata keeps its own copy.
         let notes_for_tx_type = metadata.consume_notes_notes.clone();
@@ -906,6 +911,7 @@ impl ProposalBuilder {
             .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
+        let payload = payload.with_base_commitment(account.commitment());
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -974,6 +980,7 @@ impl ProposalBuilder {
             .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
+        let payload = payload.with_base_commitment(account.commitment());
 
         let proposal = Proposal::new(
             tx_summary,

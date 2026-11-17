@@ -62,7 +62,7 @@ impl MultisigClient {
     ) -> Result<Word> {
         let rpc_client = self.node_rpc_client();
         let (_, proof) = rpc_client
-            .get_account(account_id, GetAccountRequest::new())
+            .get_account(GetAccountRequest::new(account_id))
             .await
             .map_err(|e| match e {
                 RpcError::RequestError {
@@ -86,7 +86,7 @@ impl MultisigClient {
     ) -> Result<Option<Word>> {
         let rpc_client = self.node_rpc_client();
         match rpc_client
-            .get_account(account_id, GetAccountRequest::new())
+            .get_account(GetAccountRequest::new(account_id))
             .await
         {
             Ok((_, proof)) => {

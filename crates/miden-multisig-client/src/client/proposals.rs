@@ -624,6 +624,7 @@ impl MultisigClient {
             .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
+        let payload = payload.with_base_commitment(account.commitment());
         let proposal = Proposal::new(tx_summary, nonce, TransactionType::Custom, metadata);
         Ok(ProposalDraft::new(proposal, payload))
     }

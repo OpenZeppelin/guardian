@@ -233,7 +233,6 @@ impl Fixtures {
     /// before Guardian reads the chain.
     pub fn executable_proposal_payload(&self) -> anyhow::Result<ProposalPayload> {
         use miden_client::transaction::TransactionRequestBuilder;
-        use miden_protocol::crypto::SequentialCommit;
         use miden_standards::account::auth::MultisigAuthArgs;
 
         let summary = self.executable_summary()?;
@@ -243,10 +242,8 @@ impl Fixtures {
                 miden_multisig_client::GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA,
             )
             .map_err(|error| anyhow!("building the fixture auth args: {error}"))?;
-        let commitment = auth_args.to_commitment();
         let request = TransactionRequestBuilder::new()
-            .auth_arg(commitment)
-            .extend_advice_map([(commitment, auth_args.to_elements())])
+            .auth_args(&auth_args)
             .block_numbers([bound])
             .build()
             .map_err(|error| anyhow!("building the fixture request: {error}"))?;

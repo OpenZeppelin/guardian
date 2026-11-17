@@ -224,6 +224,9 @@ export type CheckableTransaction =
  */
 interface ProposalDraft {
   nonce: number;
+  /** The commitment of the account state the summary was built on, for a summary this client
+   * built (issue #517); GUARDIAN checks it is the queue tail. Absent for a caller-supplied one. */
+  baseCommitment?: string;
   txSummaryBase64: string;
   metadata: ProposalMetadata;
   transactionRequest: TransactionRequestEnvelope | undefined;
@@ -242,6 +245,7 @@ function deltaPayloadOf(
     signatures,
     metadata: ProposalMetadataCodec.toGuardian(draft.metadata),
     ...(draft.transactionRequest ? { transactionRequest: draft.transactionRequest } : {}),
+    ...(draft.baseCommitment !== undefined ? { baseCommitment: draft.baseCommitment } : {}),
   };
 }
 
@@ -251,10 +255,12 @@ export interface CreateProposalOptions {
    * Defaults to the store account's nonce plus one, as the Rust SDK labels
    * proposals. GUARDIAN keys the proposal and its delta by it, orders
    * history and the candidate queue by it, and records a proposal only at
-   * the account's next nonce, refusing any other with `invalid_delta`
-   * (server 0.19.0, issue #518; earlier servers checked it only behind a
-   * queued candidate). Pass it only to label from another record of the
-   * account's nonce. Through 0.18.0 the default was `Date.now()`.
+   * the account's next nonce (server 0.19.0, issue #518; earlier servers
+   * checked it only behind a queued candidate): a label at or below a queued
+   * candidate's nonce is refused with `conflict_pending_delta` (wait for the
+   * queue to drain), any other with `invalid_delta`. Pass it only to label
+   * from another record of the account's nonce. Through 0.18.0 the default
+   * was `Date.now()`.
    */
   nonce?: number;
   /**
@@ -289,6 +295,16 @@ interface ProposalCreation {
 /** How a typed `create*Proposal` method pushes the draft it built. */
 function builtHere(options: CreateProposalOptions | undefined): ProposalCreation {
   return { summary: 'built_here', signOnCreate: options?.signOnCreate === true };
+}
+
+/**
+ * What a proposal is pushed under: its nonce label and, for a summary this
+ * client built, the commitment of the account state it was built on (issue
+ * #517), which GUARDIAN checks is the queue tail.
+ */
+interface ProposalLabel {
+  nonce: number;
+  baseCommitment?: string;
 }
 
 export interface CreateSignerProposalOptions extends CreateProposalOptions {
@@ -683,6 +699,28 @@ export class Multisig {
       );
     }
     return Number(next);
+  }
+
+  /**
+   * The label a proposal built here is pushed under: the nonce
+   * {@link resolveProposalNonce} resolves, and the commitment of the store
+   * account it reads (issue #517). Both come from one read, so the base
+   * GUARDIAN checks is the state the label was derived from. The summary is
+   * then executed on the same store account: a new proposal binds the
+   * store's own sync height, so building it syncs nothing. An app syncing the
+   * store concurrently can still move it in between; GUARDIAN then refuses a
+   * base it has moved past, and a proposal on one it has not cannot execute.
+   */
+  private async resolveProposalLabel(
+    method: string,
+    options: CreateProposalOptions,
+    legacyArgs: readonly unknown[] = [],
+  ): Promise<ProposalLabel> {
+    const account = await this.getStoreAccount();
+    return {
+      nonce: await this.resolveProposalNonce(method, options, legacyArgs, account),
+      baseCommitment: normalizeHexWord(account.to_commitment().toHex()),
+    };
   }
 
   /**
@@ -1450,7 +1488,8 @@ export class Multisig {
    * Create a new proposal.
    *
    * @param nonce - The account nonce the transaction leaves the account at, its current nonce
-   *   plus one; GUARDIAN 0.19.0 and later refuse any other with `invalid_delta`
+   *   plus one; GUARDIAN 0.19.0 and later refuse any other, with `conflict_pending_delta` at or
+   *   below a queued candidate's nonce and with `invalid_delta` otherwise
    * @param txSummaryBase64 - Base64-encoded transaction summary
    * @param metadata - Optional metadata for execution (target config, salt, etc.)
    */
@@ -1714,7 +1753,7 @@ export class Multisig {
       this.proposalRequestOptions(options),
     );
 
-    const proposalNonce = await this.resolveProposalNonce('createAddSignerProposal', options);
+    const proposalLabel = await this.resolveProposalLabel('createAddSignerProposal', options);
     const transactionRequest = await attachmentFor(this.executionMode, () => request.serialize());
     const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
 
@@ -1728,7 +1767,7 @@ export class Multisig {
       description: `Add signer ${newCommitment.slice(0, 10)}...`,
     };
 
-    return { nonce: proposalNonce, txSummaryBase64: summaryBase64, metadata, transactionRequest };
+    return { ...proposalLabel, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   /**
@@ -1781,7 +1820,7 @@ export class Multisig {
       this.proposalRequestOptions(options),
     );
 
-    const proposalNonce = await this.resolveProposalNonce('createRemoveSignerProposal', options);
+    const proposalLabel = await this.resolveProposalLabel('createRemoveSignerProposal', options);
     const transactionRequest = await attachmentFor(this.executionMode, () => request.serialize());
     const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
 
@@ -1795,7 +1834,7 @@ export class Multisig {
       description: `Remove signer ${signerToRemove.slice(0, 10)}...`,
     };
 
-    return { nonce: proposalNonce, txSummaryBase64: summaryBase64, metadata, transactionRequest };
+    return { ...proposalLabel, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   /**
@@ -1835,7 +1874,7 @@ export class Multisig {
       this.proposalRequestOptions(options),
     );
 
-    const proposalNonce = await this.resolveProposalNonce('createChangeThresholdProposal', options);
+    const proposalLabel = await this.resolveProposalLabel('createChangeThresholdProposal', options);
     const transactionRequest = await attachmentFor(this.executionMode, () => request.serialize());
     const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
 
@@ -1849,7 +1888,7 @@ export class Multisig {
       description: `Change threshold from ${this.threshold} to ${newThreshold}`,
     };
 
-    return { nonce: proposalNonce, txSummaryBase64: summaryBase64, metadata, transactionRequest };
+    return { ...proposalLabel, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   async createUpdateProcedureThresholdProposal(
@@ -1892,7 +1931,7 @@ export class Multisig {
       this.proposalRequestOptions(options),
     );
 
-    const proposalNonce = await this.resolveProposalNonce('createUpdateProcedureThresholdProposal', options);
+    const proposalLabel = await this.resolveProposalLabel('createUpdateProcedureThresholdProposal', options);
     const transactionRequest = await attachmentFor(this.executionMode, () => request.serialize());
     const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
     const action = targetThreshold === 0
@@ -1909,7 +1948,7 @@ export class Multisig {
       description: action,
     };
 
-    return { nonce: proposalNonce, txSummaryBase64: summaryBase64, metadata, transactionRequest };
+    return { ...proposalLabel, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   /**
@@ -1940,9 +1979,9 @@ export class Multisig {
     // SwitchGuardian is a regular delta proposal; push it to GUARDIAN so
     // sign/execute (which fetch from GUARDIAN) can find it. To leave an
     // unreachable GUARDIAN, use createSwitchGuardianProposalOffline instead.
-    const proposalNonce = await this.resolveProposalNonce('createSwitchGuardianProposal', options);
+    const proposalLabel = await this.resolveProposalLabel('createSwitchGuardianProposal', options);
     return this.pushDraft(
-      { nonce: proposalNonce, txSummaryBase64: summaryBase64, metadata, transactionRequest: undefined },
+      { ...proposalLabel, txSummaryBase64: summaryBase64, metadata, transactionRequest: undefined },
       builtHere(options),
     );
   }
@@ -2108,7 +2147,7 @@ export class Multisig {
     await this.ensureNotesAuthenticated(fetchedNotes);
     await this.refreshConfigFromStore();
     this.assertKeySchemeMatches();
-    const proposalNonce = await this.resolveProposalNonce('createConsumeNotesProposal', options);
+    const proposalLabel = await this.resolveProposalLabel('createConsumeNotesProposal', options);
     const embeddedNotes = fetchedNotes.map((n) => noteToBase64(n));
 
     const { request, salt } =
@@ -2148,7 +2187,7 @@ export class Multisig {
       throw new ConsumeNotesMetadataOversizeError(MAX_CONSUME_NOTES_METADATA_BYTES, metadataSize);
     }
 
-    return { nonce: proposalNonce, txSummaryBase64: summaryBase64, metadata, transactionRequest };
+    return { ...proposalLabel, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   /**
@@ -2197,7 +2236,7 @@ export class Multisig {
       { ...noteOptions, ...this.proposalBounds(this.executionMode, noteOptions.approvalExpirationDelta) },
     );
 
-    const proposalNonce = await this.resolveProposalNonce('createP2idProposal', options);
+    const proposalLabel = await this.resolveProposalLabel('createP2idProposal', options);
     const transactionRequest = await attachmentFor(this.executionMode, () => request.serialize());
     const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
 
@@ -2217,7 +2256,7 @@ export class Multisig {
       description: `Send ${amount} of asset ${faucetId.slice(0, 10)}... to ${recipientId.slice(0, 10)}...`,
     };
 
-    return { nonce: proposalNonce, txSummaryBase64: summaryBase64, metadata, transactionRequest };
+    return { ...proposalLabel, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   /**
@@ -3018,7 +3057,7 @@ export class Multisig {
     }
 
     const request = deserializeTransactionRequest(transactionRequestBytes);
-    const proposalNonce = await this.resolveProposalNonce('createCustomProposal', options);
+    const proposalLabel = await this.resolveProposalLabel('createCustomProposal', options);
     const transactionRequest = await attachmentFor(this.executionMode, () => transactionRequestBytes);
     const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
 
@@ -3030,7 +3069,7 @@ export class Multisig {
       requiredSignatures: this.getEffectiveThreshold('custom'),
     };
 
-    return { nonce: proposalNonce, txSummaryBase64: summaryBase64, metadata, transactionRequest };
+    return { ...proposalLabel, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   /**

@@ -20,6 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
+| 0.19.0-rc.2 | 0.18 (Rust), 0.17 (TypeScript) | `=0.18.0` | `=0.18.0` | `0.17.8` (exact) |
 | 0.19.0-rc.1 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.3 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.2 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
@@ -40,6 +41,17 @@ contracts (see the 0.19.0 upgrade notes below). The release candidates are publi
 to npm under the `rc` dist-tag, so `npm install` without an explicit version still
 resolves the 0.18.x line.
 
+0.19.0-rc.2 replaces 0.19.0-rc.1 and splits the pins: the server and the Rust SDK move
+to Miden 0.18.0, and the TypeScript SDK moves to `@miden-sdk/miden-sdk` 0.17.8 because
+no 0.18 web SDK is published yet. Accounts and server data carry over; see
+[Rust on Miden 0.18, TypeScript on Miden 0.17](#rust-on-miden-018-typescript-on-miden-017-0190).
+The 0.19.0 notes below describe it. New since the first candidate are operation-bound session requests
+(session-v2), the delta and proposal nonce check at every queue depth (issue #518),
+block watch, and the TypeScript `signOnCreate` option. For session
+requests 0.19.0-rc.1 counts as an earlier release: an rc.1 SDK and an rc.2 Guardian,
+or the reverse, refuse each other's session requests, so move server and SDKs from
+rc.1 to rc.2 together. Its Postgres migrations are additive and no data reset runs.
+
 0.18.1 moves to the Miden 0.17 patch releases. `@miden-sdk/miden-sdk` 0.17.3 embeds
 `miden-client` 0.17.3 and `miden-protocol` / `miden-standards` 0.17.1, which is why the
 Rust pins are 0.17.1 for the protocol crates and 0.17.3 for the client crates.
@@ -53,9 +65,11 @@ published to npm under the `rc` dist-tag, and are not supported.
 `miden-client` 0.16.0 and `miden-protocol` / `miden-standards` 0.16.1, which is why the
 Rust pins are 0.16.1 for the protocol crates and 0.16.0 for the client crates.
 
-Pins are exact on both lines, and the Rust and npm pins must move together: nothing
-at build time verifies that the npm SDK's embedded `miden-standards` matches the Rust
-pin, so the CI parity gates are what catch drift. See
+Pins are exact on both lines. Through 0.19.0-rc.1 the Rust and npm pins embed the same
+protocol crates and move together; from 0.19.0-rc.2 they sit on adjacent lines that
+share account code. Nothing at build time verifies that the npm SDK's embedded
+`miden-standards` builds the same account as the Rust pin, so the CI parity gates are
+what catch drift. See
 [`MULTISIG_SDK.md`](./MULTISIG_SDK.md#contract-version-pinning).
 
 **Upgrading from 0.17.0 (Miden 0.16) to 0.18.x (Miden 0.17)** is a protocol-line change.
@@ -305,11 +319,12 @@ server that queues chained candidates (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCO
   conflict_pending_delta`. At the default depth of one nothing changes: a queued
   candidate already refuses every submission. The queue helps the device that pushed
   the newest candidate; `/state` serves the canonical state, so every other cosigner
-  is refused until it drains, and serving the queue tail to cosigners is follow-up
-  work.
+  is refused until it drains. From 0.19.0 the server serves the tail to cosigners
+  (`GET /state/tail`; see "Queue tail for cosigners (0.19.0)" below).
 
 A Guardian server or SDK built on one protocol line rejects a node from another.
-Run a node matching the **Miden protocol** column.
+Run a node matching the **Miden protocol** column. Node 0.18 is the exception: it
+serves 0.17 clients as well, and `miden-client` 0.18 requires it.
 
 ## Data resets
 
@@ -372,10 +387,13 @@ Nothing stored under Miden 0.16 survives:
 ### Guardian execution
 
 Guardian 0.19.0 adds server-side execution of Guardian-executable proposals on this line. A
-stored request declaring a protocol line other than `0.17` is refused before it is decoded.
-Within the line, `TransactionRequest` serialization carries no version tag and the 0.17
-release candidates changed it, so the SDK that created a proposal and the server should run the
-same `miden-client`: this build pins client 0.17.3 in the server and the Rust SDK and web SDK
+stored request declaring a protocol line the server does not execute is refused before it is
+decoded: 0.19.0-rc.1 executes `0.17` only, and from 0.19.0-rc.2 the server executes `0.17` and
+`0.18` (see
+[Rust on Miden 0.18, TypeScript on Miden 0.17](#rust-on-miden-018-typescript-on-miden-017-0190)).
+`TransactionRequest` serialization carries no version tag and the 0.17 release candidates
+changed it, so the SDK that created a proposal and the server should run clients that write
+the same layout: 0.19.0-rc.1 pins client 0.17.3 in the server and the Rust SDK and web SDK
 0.17.3 in the TypeScript SDK. A request from a different client either fails to decode
 (`GUARDIAN_EXECUTION_REQUEST_CODEC`) or reproduces a transaction other than the signed one
 (`GUARDIAN_EXECUTION_BINDING_MISMATCH`); either way nothing is submitted. The live
@@ -779,6 +797,132 @@ so the check keeps every new row in chain order. It also refuses labels past
   timestamp-labelled delta at the head until they are replaced. Such a
   candidate is treated as above once the rollout completes.
 
+### Rust on Miden 0.18, TypeScript on Miden 0.17 (0.19.0)
+
+From 0.19.0-rc.2 the server and the Rust SDK build on Miden 0.18.0 (`miden-client`
+0.18.0, VM 0.36), while the TypeScript SDK stays on `@miden-sdk/miden-sdk` 0.17.8
+(`miden-client` 0.17.5, protocol crates 0.17.1, VM 0.35), because the web SDK has no
+0.18 release yet. The two lines work together because Miden 0.18.0 changes the VM and
+the client, not the contracts:
+
+- **Accounts carry over.** The MASM of `miden-protocol` and `miden-standards` is the
+  same in 0.17.1 and 0.18.0, so procedure roots, account IDs and commitments are
+  unchanged and a serialized account is byte-identical. No data reset runs and no
+  account is recreated. The determinism vectors, the procedure-root table, the
+  account round-trip test and the browser parity gate pass with Rust on 0.18.0 and
+  the web SDK on 0.17.8.
+- **The node must run 0.18.** `miden-client` 0.18 uses the node 0.18 RPC, so the
+  server and the Rust SDK need a node on 0.18. Node 0.18 still serves 0.17 clients,
+  so the TypeScript SDK works against the same node. Devnet and testnet ran node
+  0.18.2 on 2026-11-11.
+- **Rust client stores are recreated.** A SQLite store written by `miden-client`
+  0.17 does not load in 0.18, which cannot read the RPC limits the earlier client
+  stored. Unconsumed private notes exist only in that store, and the note
+  transport returns only the notes it still retains, so one delivered outside the
+  transport or already pruned from it cannot be fetched again. Before upgrading,
+  consume the notes the account is waiting on, or keep a copy of the store file
+  to read with the earlier SDK. Then start from an empty store, load the account
+  from GUARDIAN again and run note recovery (`recover_notes`); keys live in the
+  keystore and are unaffected. Browser stores are untouched.
+- **Stored requests.** The Rust SDK seals a Guardian-executable request with
+  protocol line `0.18` and the TypeScript SDK with `0.17`; the server executes
+  both. A server up to 0.19.0-rc.1 refuses the `0.18` line
+  (`GUARDIAN_EXECUTION_PROTOCOL_MISMATCH`), so upgrade the server before Rust
+  clients create Guardian-executable proposals. The request layout is the same on
+  both lines except for a public foreign account declaration, which only a custom
+  proposal can carry: such a request written on one line does not decode on the
+  other and is refused with `GUARDIAN_EXECUTION_REQUEST_CODEC`. That includes a
+  proposal created on 0.19.0-rc.1 that is still pending when the server is
+  upgraded: have GUARDIAN execute it first, or execute it afterwards from an SDK
+  on the line that created it.
+- **Private note transport.** `miden-client` 0.18 keeps one transport cursor with
+  the tags it covers instead of one cursor per tag, and reads every tag up to one
+  bound per fetch, so the Rust SDK's backlog drain is one fetch. The Rust store
+  is recreated on this upgrade, so no per-tag cursor is carried over.
+- **Rust API.** `TransactionRequestBuilder::auth_arg` is deprecated upstream; the
+  Rust SDK sets multisig auth args through `auth_args`. A custom producer that
+  attaches them by hand should do the same, or use
+  `TransactionRequestBuilderExt::multisig_auth_args`.
+- **Verified live.** The live qualification suite passed on devnet (node 0.18.2)
+  on 2026-11-11 with this split, 37 scenarios on each SDK, among them Guardian
+  execution, guardian switch and migration, the candidate queue and the handoffs
+  between the two SDKs. The upgrade qualification from the published 0.19.0-rc.1
+  image passed the same day: a database that release wrote is read and served by
+  this build. Both ran on a locally built image.
+
+### Queue tail for cosigners (0.19.0)
+
+With `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1, a new delta or
+proposal must build on the queue tail, which only the device that pushed the
+newest candidate held (issue #517).
+
+- **`GET /state/tail` (gRPC `GetStateTail`)** serves the tail: the canonical
+  state with every queued candidate applied, shaped as `GET /state` serves a
+  state, and the queued candidates (`nonce`, `prev_commitment`,
+  `new_commitment`, oldest first). With nothing queued it is the canonical
+  state and an empty queue. `accepts_submissions` is false while a delta or
+  proposal built on the tail would be refused with `409
+  conflict_pending_delta`: the queue is full (at the default depth of 1,
+  whenever anything is queued), the tail changes the signers or the guardian
+  key, or its newest candidate was queued before 0.19.0 under a label other
+  than its nonce; wait for the queue to drain instead of building. It is
+  session-eligible as a recorded read (session operation 14), authorized like
+  `GET /state`, and each read replays the queue on the server, so it is not a
+  poll. A queue being swept after a candidate left it answers `409
+  conflict_pending_delta`. A server before 0.19.0 answers `404` (gRPC
+  `UNIMPLEMENTED`).
+- **Base clients.** Rust `GuardianClient::get_state_tail` and TypeScript
+  `GuardianHttpClient.getStateTail` read it; the proto gains `GetStateTail`,
+  `GetStateTailRequest`, `GetStateTailResponse` and `QueuedCandidate`, the
+  TypeScript client `StateTail` and `QueuedCandidate`, and the TypeScript
+  `SessionOperation` gains `GetStateTail`.
+- **Proposals name their base.** A proposal payload may carry
+  `base_commitment`, the state its summary was built on. The server classifies
+  it like a delta's `prev_commitment`: the tail is recorded, a base another
+  queued candidate already claimed is `409 conflict_pending_delta`, any other
+  state is `400 commitment_mismatch` (which also refuses a sibling state at the
+  tail's nonce, which the nonce label alone could not), and a malformed value
+  is `400 invalid_delta`. A proposal without it is judged as before. Both
+  multisig SDKs send it for every proposal they build; TypeScript
+  `createProposal(nonce, …)`, which takes a summary its caller built, sends
+  none. So a proposer whose state is ahead of GUARDIAN's (a landing GUARDIAN has
+  not recorded yet) now gets `commitment_mismatch` where it got `invalid_delta`;
+  the Rust `propose_with_fallback` still falls back to an offline switch on it.
+- **Proposals are pinned under the account lock.** Every proposal, with or
+  without a base, is recorded pinned to the tail the request read, and the
+  storage admission checks that pin again under the lock candidates are
+  admitted under. A candidate admitted meanwhile (or one that left the queue)
+  moved the tail, and the proposal is refused with `409
+  conflict_pending_delta` instead of stored on a state its delta could never
+  build on.
+- **Older servers.** The base travels inside the opaque payload, which a server
+  before 0.19.0 signs and stores unchanged, so new SDKs keep working against
+  it (a request field would have failed its signature check there). That
+  server ignores the base and keeps its old proposal rules.
+- **SDK API.** Rust `ProposalPayload` gains `base_commitment` (struct literals
+  of it must set it) and `with_base_commitment`; the TypeScript
+  `DeltaProposalRequest.deltaPayload` gains `baseCommitment`. TypeScript
+  `create*Proposal` with an explicit `options.nonce` now reads the store
+  account too, for the base.
+- **Not in the multisig SDKs yet.** Neither SDK imports the tail into its
+  store: both adopt only a state the chain holds, and an imported tail whose
+  candidate never lands would need rolling back, which the TypeScript store
+  cannot do. So a cosigner using the multisig SDKs is still refused until the
+  queue drains; integrations on the base clients can build on the tail.
+- **Building on the tail with the base clients.** Do not import the tail into a
+  miden-client store: the store cannot roll an account back to a lower nonce
+  (`add_account` refuses an older account), so a tail whose candidate never
+  lands cannot be undone, and a private account is locked when the chain
+  reports a state the store never held, such as an intermediate queued state
+  the imported tail skipped. Check the tail before building on it:
+  `queue[0].prev_commitment` is the canonical commitment the client already
+  verified against the chain, each later `prev_commitment` is the
+  `new_commitment` before it, the last `new_commitment` is `state.commitment`,
+  and `state.state_json` decodes to an account whose commitment is
+  `state.commitment`. To see which notes the queued candidates consume, read
+  `GET /delta` for each `queue[].nonce`: it serves the candidate's payload,
+  whose transaction summary lists its input notes.
+
 ### Policy modules (0.19.0)
 
 Policy modules are off unless the operator configures a catalog, so a
@@ -800,7 +944,7 @@ deployment without one behaves as before. With one:
   - Neither enum is `#[non_exhaustive]`, so an exhaustive `match` over either
     stops compiling until the new variants are handled.
 - **New calls.** `get_policies` / `getPolicies`, `check_transaction` /
-  `checkTransaction`, Rust `check_custom_transaction`, session operations 14 (`GetPolicies`) and 15
+  `checkTransaction`, Rust `check_custom_transaction`, session operations 15 (`GetPolicies`) and 16
   (`CheckDeltaProposal`), and the operator client's module routes and the
   `policies:write_global` and `modules:disable` permissions. An operator client
   from 0.18.x fails to parse a session that holds either permission.
@@ -820,9 +964,13 @@ deployment without one behaves as before. With one:
 
 The facts below change independently of this repository. This list is the one
 place that tracks them; other documents point here rather than restating them.
-Last checked 2026-10-20.
+Last checked 2026-11-11.
 
-- **Public networks.** Devnet runs node 0.17.0, which this build's pins reach:
+- **Public networks.** On 2026-11-11 devnet and testnet both ran node 0.18.2
+  (protocol 0.18.0), which serves 0.17 and 0.18 clients: its RPC no longer
+  refuses a client whose accept header names another version. The npm web SDK
+  has no 0.18 release; its latest is 0.17.8. The dated results that follow are
+  from the 0.17 nodes. Devnet ran node 0.17.0, which the 0.17 pins reach:
   live qualification, including the `live-guardian-execute-*` scenarios, passed
   there on both SDKs on 2026-10-06, and on 2026-10-12 it answered requests whose
   accept header named client 0.17.3 (and 0.17.0), and refused 0.18.0 and
@@ -845,12 +993,12 @@ Last checked 2026-10-20.
   (`scripts/devnet-register-account.sh`). `miden-client`'s `register_account`
   does not send the request on devnet, because devnet enforces no allowlist and
   reports every account as already allowed.
-- **miden-client fee path.** miden-client (still in 0.17.3) commits the
-  two-word 0.16 auth arg when a request declares `fee_conversion_salt`, so both
-  SDKs set the three-word auth arg themselves (rationale in the multisig
-  client's `transaction/auth_args.rs`). When the client builds
-  `MultisigAuthArgs` itself: the helper can delegate to it; nothing stored or
-  signed changes.
+- **miden-client fee path.** miden-client through 0.17.3 commits the two-word
+  0.16 auth arg when a request declares `fee_conversion_salt`, so both SDKs set
+  the three-word auth arg themselves (rationale in the multisig client's
+  `transaction/auth_args.rs`). miden-client 0.17.4 and later build the
+  three-word auth args for such a request; the SDKs still set them, so the
+  helper can delegate to the client later and nothing stored or signed changes.
 - **Web SDK worker mode.** A browser `MidenClient` created with the default
   `useWorker: true` is two WASM instances, each with its own in-memory copy of
   the account's storage trees: `accounts.insert` runs on the page, while
@@ -868,13 +1016,17 @@ Last checked 2026-10-20.
   and recovery are in
   [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md#account-data-wasnt-found-or-incomplete-storage-map-in-a-browser).
   When the web SDK fixes it: remove that guidance (`git grep useWorker`).
-- **Pins.** The workspace pins protocol crates 0.17.1, client crates 0.17.3 and
-  web SDK 0.17.3 (see the matrix). The protocol pin follows the client and web
-  SDK releases, not the protocol tags, because both SDKs must embed the same
-  kernel.
+- **Pins.** The Rust workspace pins protocol and client crates 0.18.0, and the
+  TypeScript SDK pins web SDK 0.17.8, which embeds client 0.17.5 and protocol
+  crates 0.17.1 (see the matrix). Move the TypeScript pin to the 0.18 web SDK
+  when it ships, and rerun the parity gates.
 
-Data effect: full reset, see above. Client stores are recreated, not migrated.
-Operator steps: [`PRODUCTION.md`](./PRODUCTION.md#upgrading-to-miden-017).
+Data effect of moving from Miden 0.16 to this line: full reset, see above. Client
+stores are recreated, not migrated. Operator steps:
+[`PRODUCTION.md`](./PRODUCTION.md#upgrading-to-miden-017). Releases within the line,
+0.19.0-rc.2 included, reset nothing on the server; 0.19.0-rc.2 does recreate Rust
+client stores (see
+[Rust on Miden 0.18, TypeScript on Miden 0.17](#rust-on-miden-018-typescript-on-miden-017-0190)).
 
 ### Before bumping the Miden pin
 

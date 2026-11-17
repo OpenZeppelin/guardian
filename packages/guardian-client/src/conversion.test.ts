@@ -475,6 +475,23 @@ describe('conversion', () => {
       expect(result.delta_payload.tx_summary.data).toBe('base64data');
       expect(result.delta_payload.signatures[0].signer_id).toBe('0xsig');
       expect(result.delta_payload.metadata?.proposal_type).toBe('add_signer');
+      expect('base_commitment' in result.delta_payload).toBe(false);
+    });
+
+    it('carries the base a proposal was built on in its payload', () => {
+      const base = '0x' + 'c'.repeat(64);
+      const result = toServerDeltaProposalRequest({
+        accountId: '0xaccount',
+        nonce: 6,
+        deltaPayload: {
+          txSummary: { data: 'base64data' },
+          signatures: [],
+          baseCommitment: base,
+        },
+      });
+
+      expect(result.delta_payload.base_commitment).toBe(base);
+      expect(Object.keys(result)).toEqual(['account_id', 'nonce', 'delta_payload']);
     });
 
     it('converts SignProposalRequest', () => {

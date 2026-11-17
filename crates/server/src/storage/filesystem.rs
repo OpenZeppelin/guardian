@@ -1019,6 +1019,23 @@ impl StorageBackend for FilesystemService {
         if live.contains(&admitted) {
             return Ok(ProposalWrite::AlreadyStored);
         }
+        // The pin, re-read under the lock candidate admission, promotion and
+        // discard all take, so the two reads agree and nothing moves the tail
+        // until the proposal is written (`proposal_is_on_tail`).
+        let stored_commitment = self.pull_state(&account_id).await?.commitment;
+        let queue: Vec<crate::storage::QueuedCandidate> = self
+            .pull_candidate_deltas(&account_id)
+            .await?
+            .iter()
+            .map(crate::storage::QueuedCandidate::of)
+            .collect();
+        if !crate::storage::proposal_is_on_tail(
+            &stored_commitment,
+            &queue,
+            &admission.proposal.prev_commitment,
+        ) {
+            return Ok(ProposalWrite::TailMoved);
+        }
         let viable = records
             .iter()
             .filter(|record| {

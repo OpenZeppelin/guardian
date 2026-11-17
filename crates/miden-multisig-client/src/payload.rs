@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::keystore::{KeyManager, proposal_public_key_hex};
 use crate::procedures::ProcedureName;
 use crate::proposal::P2ideHeights;
+use crate::transaction::word_to_hex;
 
 /// Metadata for multisig transaction proposals.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -113,6 +114,12 @@ pub struct ProposalPayload {
     /// its wire shape is unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transaction_request: Option<TransactionRequestEnvelope>,
+    /// Commitment of the account state the summary was built on (issue #517).
+    /// GUARDIAN 0.19.0 and later record the proposal only when this is the
+    /// queue tail; earlier servers store it with the payload and ignore it.
+    /// Absent, the proposal is judged by its nonce alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_commitment: Option<String>,
 }
 
 impl ProposalPayload {
@@ -127,7 +134,14 @@ impl ProposalPayload {
                 ..Default::default()
             }),
             transaction_request: None,
+            base_commitment: None,
         }
+    }
+
+    /// Names `base` as the account state the summary was built on.
+    pub fn with_base_commitment(mut self, base: miden_protocol::Word) -> Self {
+        self.base_commitment = Some(word_to_hex(&base));
+        self
     }
 
     /// Stores `request` with the proposal, when there is one to store.
@@ -381,6 +395,7 @@ mod tests {
                 ..Default::default()
             }),
             transaction_request: None,
+            base_commitment: None,
         };
 
         let json = payload.to_json();
@@ -404,6 +419,7 @@ mod tests {
             signatures: vec![],
             metadata: None,
             transaction_request: None,
+            base_commitment: None,
         }
         .with_add_signer_metadata(
             3,
@@ -425,6 +441,7 @@ mod tests {
             signatures: vec![],
             metadata: None,
             transaction_request: None,
+            base_commitment: None,
         }
         .with_remove_signer_metadata(2, vec!["0xabc".to_string()], "0xsalt".to_string());
 
@@ -483,6 +500,7 @@ mod tests {
             signatures: vec![],
             metadata: None,
             transaction_request: None,
+            base_commitment: None,
         }
         .with_payment_metadata(
             "0xrecipient".to_string(),
@@ -511,6 +529,7 @@ mod tests {
             signatures: vec![],
             metadata: None,
             transaction_request: None,
+            base_commitment: None,
         }
         .with_payment_metadata(
             "0xrecipient".to_string(),
@@ -532,6 +551,7 @@ mod tests {
             signatures: vec![],
             metadata: None,
             transaction_request: None,
+            base_commitment: None,
         }
         .with_payment_metadata(
             "0xrecipient".to_string(),
@@ -556,6 +576,7 @@ mod tests {
             signatures: vec![],
             metadata: None,
             transaction_request: None,
+            base_commitment: None,
         }
         .with_payment_metadata(
             "0xrecipient".to_string(),
@@ -578,6 +599,7 @@ mod tests {
             signatures: vec![],
             metadata: None,
             transaction_request: None,
+            base_commitment: None,
         }
         .with_payment_metadata(
             "0xrecipient".to_string(),
@@ -624,6 +646,7 @@ mod tests {
             signatures: vec![],
             metadata: None,
             transaction_request: None,
+            base_commitment: None,
         }
         .with_note_consumption_metadata(&note_ids, "0xsalt".to_string());
 
@@ -641,6 +664,7 @@ mod tests {
             signatures: vec![],
             metadata: None,
             transaction_request: None,
+            base_commitment: None,
         }
         .with_guardian_update_metadata(
             "0xpubkey".to_string(),
@@ -665,6 +689,7 @@ mod tests {
             signatures: vec![],
             metadata: None,
             transaction_request: None,
+            base_commitment: None,
         };
 
         let json = payload.to_json();
@@ -678,6 +703,7 @@ mod tests {
             signatures: vec![],
             metadata: None,
             transaction_request: None,
+            base_commitment: None,
         };
 
         let json = payload.to_json();
@@ -748,6 +774,7 @@ mod tests {
                 ..Default::default()
             }),
             transaction_request: None,
+            base_commitment: None,
         };
         let salt = || "0xsalt".to_string();
         let built = [
@@ -893,6 +920,7 @@ mod tests {
             signatures: vec![],
             metadata: None,
             transaction_request: None,
+            base_commitment: None,
         }
         .with_note_consumption_metadata_v2(
             vec!["0xabc".to_string()],

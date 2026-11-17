@@ -330,6 +330,47 @@ export interface StateObject {
   authScheme?: string;
 }
 
+/** A queued candidate the queue tail replays (`GET /state/tail`). */
+export interface QueuedCandidate {
+  /** The account nonce the candidate's transaction leaves the account at. */
+  nonce: number;
+  /** The state it builds on: the canonical state for the oldest, the previous candidate's `newCommitment` after it. */
+  prevCommitment: string;
+  /** The state it leaves the account at. */
+  newCommitment: string;
+}
+
+/**
+ * The queue tail (`GET /state/tail`, issue #517): the state a new delta or
+ * proposal must build on while the account's candidate queue holds
+ * candidates, and the candidates that lead to it.
+ */
+export interface StateTail {
+  /**
+   * The canonical state with every queued candidate applied, shaped as
+   * `getState` returns a state; the canonical state itself when nothing is
+   * queued. Not on chain until the queued candidates land.
+   */
+  state: StateObject;
+  /**
+   * The queued candidates, oldest first: the first builds on the canonical
+   * state, each later one on the one before it, and the last one's
+   * `newCommitment` is the tail's commitment. Empty when nothing is queued.
+   */
+  queue: QueuedCandidate[];
+  /**
+   * Whether the queue takes a delta or proposal built on this tail now.
+   * False while the queue is full (at the default depth of 1, whenever
+   * anything is queued), while the tail changes the account's signers or
+   * guardian key, or while its newest candidate was queued by a server before
+   * 0.19.0 under a label other than its nonce: a submission on the tail then
+   * gets `conflict_pending_delta`, so wait for the queue to drain and read
+   * again. True holds only at this read: the tail can move before the push,
+   * and the account's status and the proposal limits still apply.
+   */
+  acceptsSubmissions: boolean;
+}
+
 /**
  * Head of the latest canonical state (`GET /state/nonce`): the account
  * nonce carried by the state GUARDIAN holds as canonical and that state's
@@ -387,6 +428,15 @@ export interface DeltaProposalRequest {
     metadata?: ProposalMetadata;
     /** The request a Guardian-executable proposal stores. Omit for a self-executed one. */
     transactionRequest?: TransactionRequestEnvelope;
+    /**
+     * Commitment of the state the summary was built on (issue #517). GUARDIAN
+     * 0.19.0 and later record the proposal only when it is the queue tail,
+     * refusing a base another queued candidate claimed with
+     * `conflict_pending_delta` and an unknown one with `commitment_mismatch`.
+     * Omit it to be judged by the nonce alone; earlier servers store it with
+     * the payload and ignore it.
+     */
+    baseCommitment?: string;
   };
 }
 

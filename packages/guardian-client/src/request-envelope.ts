@@ -1,12 +1,12 @@
 /**
  * The envelope a Guardian-executable proposal stores its serialized `TransactionRequest` in.
  * Mirrors `guardian_shared::request_envelope`; the same bytes seal to the same envelope in both
- * SDKs.
+ * SDKs, apart from the protocol line each one declares.
  */
 
 export const ENVELOPE_FORMAT_VERSION = 1;
 
-/** The Miden protocol line requests are serialized for, as `MAJOR.MINOR`. */
+/** The Miden protocol line this SDK serializes requests for, as `MAJOR.MINOR`: that of its web SDK pin. */
 export const PROTOCOL_LINE = '0.17';
 
 /** Wire form: snake_case, exactly as the server stores it. */

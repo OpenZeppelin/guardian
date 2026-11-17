@@ -1,4 +1,4 @@
-//! Read-only checks against a live 0.17 node. They default to devnet; set
+//! Read-only checks against a live 0.18 node. They default to devnet; set
 //! `GUARDIAN_LIVE_MIDEN_RPC_URL` to point them elsewhere (for example a local node).
 
 use std::collections::BTreeSet;
