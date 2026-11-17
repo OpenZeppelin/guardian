@@ -17,11 +17,10 @@ pub mod proto {
 }
 
 pub use proto::{
-    AccountStateProjection, AccountView, Asset, CommitEvent, Decision, DescribeRequest, Direction,
-    Effect, Gap, Hook, HookRequest, InputNote, MidenAccountState, MidenTransaction, ModuleInfo,
-    NoteType, OutputNote, ParamsVerdict, PendingTransaction, RawTransaction, RegistrationSubject,
-    StorageChange, StorageOp, StorageSlotKind, TransactionProjection, TransactionSubject,
-    ValidateParamsRequest, VaultChange,
+    AccountStateProjection, AccountView, Asset, Decision, DescribeRequest, Direction, Effect, Hook,
+    HookRequest, InputNote, MidenAccountState, MidenTransaction, ModuleInfo, NoteType, OutputNote,
+    ParamsVerdict, RawTransaction, RegistrationSubject, StorageChange, StorageOp, StorageSlotKind,
+    TransactionProjection, TransactionSubject, ValidateParamsRequest, VaultChange,
 };
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -59,14 +58,6 @@ pub trait Module: Send + Sync {
     /// Must be free of side effects: the same transaction is evaluated at proposal creation
     /// and again at approval, and clients retry.
     async fn evaluate(&self, request: &HookRequest) -> Result<Decision, ModuleError>;
-
-    async fn notify(&self, _event: &CommitEvent) -> Result<(), ModuleError> {
-        Ok(())
-    }
-
-    async fn notify_gap(&self, _gap: &Gap) -> Result<(), ModuleError> {
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -81,14 +72,6 @@ impl<M: Module + ?Sized> Module for Arc<M> {
 
     async fn evaluate(&self, request: &HookRequest) -> Result<Decision, ModuleError> {
         (**self).evaluate(request).await
-    }
-
-    async fn notify(&self, event: &CommitEvent) -> Result<(), ModuleError> {
-        (**self).notify(event).await
-    }
-
-    async fn notify_gap(&self, gap: &Gap) -> Result<(), ModuleError> {
-        (**self).notify_gap(gap).await
     }
 }
 
@@ -219,20 +202,6 @@ fn miden_transaction(projection: &Option<TransactionProjection>) -> Option<&Mide
 }
 
 impl TransactionSubject {
-    /// The Miden projection, when this is a Miden transaction.
-    pub fn miden(&self) -> Option<&MidenTransaction> {
-        miden_transaction(&self.projection)
-    }
-}
-
-impl PendingTransaction {
-    /// The Miden projection, when this is a Miden transaction.
-    pub fn miden(&self) -> Option<&MidenTransaction> {
-        miden_transaction(&self.projection)
-    }
-}
-
-impl CommitEvent {
     /// The Miden projection, when this is a Miden transaction.
     pub fn miden(&self) -> Option<&MidenTransaction> {
         miden_transaction(&self.projection)

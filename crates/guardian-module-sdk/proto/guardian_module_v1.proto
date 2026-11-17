@@ -12,15 +12,12 @@ service GuardianModule {
   rpc Describe(DescribeRequest) returns (ModuleInfo);
   rpc ValidateParams(ValidateParamsRequest) returns (ParamsVerdict);
   rpc Evaluate(HookRequest) returns (Decision);
-  rpc Notify(CommitEvent) returns (NotifyAck);
-  rpc NotifyGap(Gap) returns (NotifyAck);
 }
 
 enum Hook {
   HOOK_UNSPECIFIED = 0;
   HOOK_BEFORE_TRANSACTION_APPROVED = 1;
   HOOK_BEFORE_ACCOUNT_REGISTERED = 2;
-  HOOK_AFTER_TRANSACTION_COMMITTED = 3;
   HOOK_BEFORE_PROPOSAL_CREATED = 4;
 }
 
@@ -45,8 +42,6 @@ message ParamsVerdict {
   string message = 2;
   bytes normalized_params = 3;               // UTF-8 JSON; empty: store the params as sent (section 3.5)
 }
-message NotifyAck {}
-
 message HookRequest {
   string request_id = 1;              // one per hook invocation, shared by every module and layer called in it (section 3.1)
   Hook hook = 2;
@@ -56,7 +51,7 @@ message HookRequest {
   string account_id = 6;
   string instance_id = 7;             // catalog id of the instance being called
   bytes params = 8;                   // UTF-8 JSON, params of the layer being evaluated (global, account layer, or the account's own for default/assigned)
-  google.protobuf.Timestamp accounting_time = 9;  // recorded as signed_at if this transaction is signed (section 3.4); at before_proposal_created and in a dry run, the evaluation time, never recorded
+  google.protobuf.Timestamp accounting_time = 9;  // the evaluation time, from the Guardian's clock
   string submitter = 10;              // signer commitment that authenticated this request; verified (section 3.2)
   bool submitter_session = 11;        // the request was authenticated by a session key the submitter delegated (section 3.2)
   optional AccountView before = 12;   // the account as the Guardian holds it; absent for a first configuration (section 3.2)
@@ -81,25 +76,8 @@ message AccountView {
 message TransactionSubject {
   TransactionProjection projection = 1;  // the contract modules should rely on, per network
   RawTransaction raw = 2;             // the network's own encoding; UNSTABLE across that network's protocol bumps
-  repeated PendingTransaction pending = 3;  // signed for this account, not yet acknowledged by this module (section 3.4)
   string proposer = 4;                // signer commitment that created the matching proposal; verified; empty when there is none (section 3.2)
   bytes unverified_metadata = 5;      // UTF-8 JSON, proposer-asserted proposal metadata; never authoritative; UNSTABLE across SDK releases (section 3.2)
-}
-
-message PendingTransaction {
-  string new_commitment = 1;          // = event_id once committed
-  TransactionProjection projection = 2;
-  google.protobuf.Timestamp signed_at = 3;      // the accounting clock (section 3.4)
-  PendingState state = 4;
-  uint64 nonce = 5;                   // account nonce after this transaction; compared with the module's watermark
-  optional google.protobuf.Timestamp committed_at = 6;  // set when state = committed
-  string submitter = 7;               // as in HookRequest at the ack that signed this transaction; verified (section 3.2)
-  string proposer = 8;                // as in TransactionSubject at that ack; empty when there was no matching proposal
-}
-enum PendingState {
-  PENDING_STATE_UNSPECIFIED = 0;
-  PENDING_STATE_CANDIDATE = 1;        // signed, waiting to become committed
-  PENDING_STATE_COMMITTED = 2;        // committed, notify not yet acknowledged by this module
 }
 
 message RegistrationSubject {
@@ -195,29 +173,4 @@ message StorageSlot {
   string slot_name = 1;
   StorageSlotKind kind = 2;
   oneof content { string value = 3; MapChanges map = 4; }
-}
-
-message CommitEvent {
-  string event_id = 1;                // = new_commitment; stable across redelivery
-  string instance_id = 2;
-  string account_id = 3;
-  string network = 4;                 // as in HookRequest
-  string network_id = 5;              // as in HookRequest
-  string prev_commitment = 6;
-  string new_commitment = 7;
-  uint64 nonce = 8;                   // account nonce after this transaction; the delivery watermark (section 3.3)
-  TransactionProjection projection = 9;
-  google.protobuf.Timestamp committed_at = 10;
-  google.protobuf.Timestamp signed_at = 11;  // the accounting clock, identical to the value the module saw in pending (section 3.4)
-  string submitter = 12;              // as in HookRequest at the ack that signed this transaction; verified (section 3.2)
-  string proposer = 13;               // as in TransactionSubject at that ack; empty when there was no matching proposal (section 3.2)
-}
-
-message Gap {
-  string instance_id = 1;
-  string account_id = 2;
-  string network = 3;                 // as in HookRequest
-  string network_id = 4;              // as in HookRequest
-  google.protobuf.Timestamp dropped_before = 5;  // restart position: events for the account committed before this and not acknowledged may be missing
-  uint64 resume_from_nonce = 6;       // first nonce delivered after the gap; the module's watermark becomes resume_from_nonce - 1 (section 3.3)
 }

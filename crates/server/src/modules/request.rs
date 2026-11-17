@@ -140,7 +140,6 @@ pub fn transaction_request(input: TransactionInput<'_>) -> Result<HookRequest, S
             }),
             proposer,
             unverified_metadata,
-            ..Default::default()
         })),
         ..Default::default()
     })

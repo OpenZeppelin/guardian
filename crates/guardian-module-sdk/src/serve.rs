@@ -6,11 +6,10 @@ use std::sync::Arc;
 
 use tonic::{Request, Response, Status};
 
-use crate::proto::NotifyAck;
 use crate::proto::guardian_module_server::{GuardianModule, GuardianModuleServer};
 use crate::{
-    CommitEvent, Decision, DescribeRequest, Gap, HookRequest, Module, ModuleError, ModuleInfo,
-    ParamsVerdict, ValidateParamsRequest,
+    Decision, DescribeRequest, HookRequest, Module, ModuleError, ModuleInfo, ParamsVerdict,
+    ValidateParamsRequest,
 };
 
 /// Serves `module`. Register every instance the Guardian calls with [`Serve::instance`]: a
@@ -171,24 +170,6 @@ impl<M: Module + 'static> GuardianModule for Harness<M> {
             .evaluate(request.get_ref())
             .await
             .map(Response::new)
-            .map_err(status)
-    }
-
-    async fn notify(&self, request: Request<CommitEvent>) -> Result<Response<NotifyAck>, Status> {
-        self.authorize(&request, Some(&request.get_ref().instance_id))?;
-        self.module
-            .notify(request.get_ref())
-            .await
-            .map(|()| Response::new(NotifyAck {}))
-            .map_err(status)
-    }
-
-    async fn notify_gap(&self, request: Request<Gap>) -> Result<Response<NotifyAck>, Status> {
-        self.authorize(&request, Some(&request.get_ref().instance_id))?;
-        self.module
-            .notify_gap(request.get_ref())
-            .await
-            .map(|()| Response::new(NotifyAck {}))
             .map_err(status)
     }
 }

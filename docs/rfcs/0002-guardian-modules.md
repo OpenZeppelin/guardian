@@ -6,7 +6,7 @@
 | **Depends on** | [RFC 0001](./0001-server-side-transaction-execution.md) (server-side transaction execution, merged in PR #510): the execution worker is the second caller of the pipeline |
 | **Feature** | [#251](https://github.com/OpenZeppelin/guardian/issues/251) ("Modularization: middleware architecture and pluggable modules"); first consumer [#182](https://github.com/OpenZeppelin/guardian/issues/182) (policy evaluation). [#252](https://github.com/OpenZeppelin/guardian/issues/252) (x402 facilitator) is a later consumer: its payment-policy half (caps, allowlists, replay) fits `before_transaction_approved` and `after_transaction_committed`, its facilitator half (`/verify`, `/settle`, a flow that starts and waits) does not fit allow/deny and is future work (section 7) |
 | **Audience** | Operators, module authors, integrators, and anyone reviewing the Guardian trust model |
-| **Working artifacts** | [`speckit/features/251-guardian-modules/`](../../speckit/features/251-guardian-modules/spec.md): the specification, written alongside this RFC; the plan, the M2a tasks (`tasks.md`) and the prototype record (`tasks-p0.md`) |
+| **Working artifacts** | [`speckit/features/251-guardian-modules/`](../../speckit/features/251-guardian-modules/spec.md): the specification, written alongside this RFC; the plan and the M2a tasks (`tasks.md`) |
 | **Revision** | 34 (2026-11-12): M2b deferred past the first release (section 7); changes in Appendix C |
 | **Review sought** | Review of the M2a and M2c implementation before it merges; comments on how stateful limits should be delivered (section 9) |
 | **Code baseline** | `main` at `ca503704`; execution-path citations read on `254-execution-impl` at `29c722b4` (PR #510, since merged to `main` as `1100f3a4`) and kept as dated evidence. Miden pins: protocol and standards 0.17.1. Appendices B and C cite the baselines of their revisions. Prototype findings (2026-10-13 to 2026-10-15) in `speckit/features/251-guardian-modules/research.md` |
@@ -122,12 +122,6 @@ pub trait Module: Send + Sync {
     async fn describe(&self, guardian: &DescribeRequest) -> Result<ModuleInfo, ModuleError>;
     async fn validate_params(&self, params: &[u8]) -> Result<ParamsVerdict, ModuleError>;
     async fn evaluate(&self, request: &HookRequest) -> Result<Decision, ModuleError>;
-    async fn notify(&self, event: &CommitEvent) -> Result<(), ModuleError> {
-        Ok(())
-    }
-    async fn notify_gap(&self, gap: &Gap) -> Result<(), ModuleError> {
-        Ok(())
-    }
 }
 
 pub trait ModuleFactory: Send + Sync {
@@ -135,9 +129,9 @@ pub trait ModuleFactory: Send + Sync {
 }
 ```
 
-**Instance identity.** Every message the Guardian sends to a module carries `instance_id`, the catalog `id` of the instance it is calling (`ValidateParamsRequest`, `HookRequest`, `CommitEvent`, `Gap`). One remote service can therefore back several instances, for example a sanctions service configured once per list, and keep their state, delivery watermarks and resync handling apart: a module keys all state by (`instance_id`, `account_id`). Each instance has its own `auth` credential, and the `serve` harness binds credentials to instance ids (`.instance("sanctions-ofac", token)`), rejecting with `PERMISSION_DENIED` a request whose `instance_id` does not match the credential that authenticated it. An operator who prefers full isolation can still give each instance its own endpoint; the protocol does not depend on it.
+**Instance identity.** Every message the Guardian sends to a module carries `instance_id`, the catalog `id` of the instance it is calling (`ValidateParamsRequest`, `HookRequest`, and with M2b `CommitEvent` and `Gap`). One remote service can therefore back several instances, for example a sanctions service configured once per list, and keep their state, delivery watermarks and resync handling apart: a module keys all state by (`instance_id`, `account_id`). Each instance has its own `auth` credential, and the `serve` harness binds credentials to instance ids (`.instance("sanctions-ofac", token)`), rejecting with `PERMISSION_DENIED` a request whose `instance_id` does not match the credential that authenticated it. An operator who prefers full isolation can still give each instance its own endpoint; the protocol does not depend on it.
 
-The trait, the factory and all protocol types live in a separately published crate, `guardian-module-sdk`, so a kind can be written without depending on the server (section 2.5). `notify` and `notify_gap` have default no-ops, so a stateless kind implements only `describe`, `validate_params` and `evaluate`; stateful kinds override it to reset or re-seed state after a gap (section 3.3). Besides the trait, the SDK provides what the prototype showed every module needs: `Decision::allow` and `Decision::deny`, `ParamsVerdict::ok` and `ParamsVerdict::invalid`, reason-code validation, typed accessors over the generated messages (for example the fungible amount of an `Asset`), and `ModuleInstanceConfig`, the configuration a factory receives, whose bearer token is a secret type, redacted from debug output and zeroized when dropped. The `GrpcModule` implementation (and `HttpModule`, when that kind ships) calls the `NotifyGap` RPC, and the `serve` harness routes `NotifyGap` to `notify_gap`, so in-process and remote modules see gaps the same way.
+The trait, the factory and all protocol types live in a separately published crate, `guardian-module-sdk`, so a kind can be written without depending on the server (section 2.5). A kind implements `describe`, `validate_params` and `evaluate`. The stateful methods of section 3.3 (`notify`, `notify_gap`) join the trait with M2b, with default bodies, so existing kinds keep compiling. Besides the trait, the SDK provides what the prototype showed every module needs: `Decision::allow` and `Decision::deny`, `ParamsVerdict::ok` and `ParamsVerdict::invalid`, reason-code validation, typed accessors over the generated messages (for example the fungible amount of an `Asset`), and `ModuleInstanceConfig`, the configuration a factory receives, whose bearer token is a secret type, redacted from debug output and zeroized when dropped. With M2b, the `GrpcModule` implementation (and `HttpModule`, when that kind ships) will call the `NotifyGap` RPC and the `serve` harness route it to `notify_gap`, so in-process and remote modules see gaps the same way.
 
 First-party kinds, registered by the official binary (through `ServerBuilder::from_env()` once M2c ships, section 7) and present in the official image:
 
@@ -355,7 +349,7 @@ Account self-service configuration is out of scope for this revision (section 7)
 | `before_transaction_approved` | Gate | Inside the single function that produces the Guardian ack. On `main` the only production ack is `push_delta` before `state.ack.ack_delta` (`crates/server/src/services/push_delta.rs:181`) **[READ]**. PR #510 (`254-execution-impl`) adds a second caller, the execution worker, and routes both through `ack_delta_internal::acknowledge_delta` (`push_delta.rs:145`, `execute_proposal/worker.rs:389` at `29c722b4`) **[READ]**; the pipeline runs inside that shared function, so no caller can ack around it. The pause and release check runs earlier (`push_delta.rs:35`, before the ack at `:181`) **[READ]**, so a paused or released account is refused before any module sees its transaction. A denial on the execution path does not reach a `push_delta` caller; it ends the execution with a typed abort the multisig SDKs read (section 4.1) |
 | `before_proposal_created` | Gate (filter) | `push_delta_proposal` (`crates/server/src/services/push_delta_proposal.rs:47`) after queue admission, the pending-proposal limit (`:173-186`), tail reconstruction (`:188`), `verify_delta` (`:210`) and the proposer signature check (`:228-251`), and before the proposal is stored (`submit_delta_proposal`, `:275`) **[READ]**. The request has the same shape as at the ack: `before` is the tail the proposal is pinned to, `after` comes from applying the delta to that tail, as `push_delta` does (`push_delta.rs:143`) **[READ]**, done only when a module will be called, and `pending` is built as for the ack (section 3.4). `accounting_time` is the evaluation time and is not stored, since nothing is signed. A deny refuses the proposal with `GUARDIAN_MODULE_DENIED` and nothing is stored, so it takes no proposal slot. See "Proposal filtering" below |
 | `before_account_registered` | Gate | `configure_account` (`crates/server/src/services/configure_account.rs:32`) after the credential, canonical signer set and Guardian commitment checks, and before the account is claimed, its replay timestamp consumed or anything stored. One exception: when the account is registered and the requesting key is not one of its stored signers, the replay timestamp is consumed and the submitted state vouched for (on chain, or as a first state at nonce 0) before the hook runs, so nobody outside an account can submit a made-up state for it and read its module verdicts or hand its modules forged states. New and existing accounts run different module sets; see "Registration" below |
-| `after_transaction_committed` | Notify | Outbox row written in the same storage write that makes the delta committed. In candidate mode that is `promote_candidate` on the Postgres backend (`crates/server/src/storage/postgres.rs:1786`) **[READ]**; the filesystem backend does not support this hook (section 3.3). With canonicalization disabled the delta commits at push time (`DeltaCommitStrategy::Optimistic`, `crates/server/src/services/delta_commit.rs:18-31`) **[READ]**, and the row is written in that commit |
+| `after_transaction_committed` (M2b, not in this release) | Notify | Outbox row written in the same storage write that makes the delta committed. In candidate mode that is `promote_candidate` on the Postgres backend (`crates/server/src/storage/postgres.rs:1786`) **[READ]**; the filesystem backend does not support this hook (section 3.3). With canonicalization disabled the delta commits at push time (`DeltaCommitStrategy::Optimistic`, `crates/server/src/services/delta_commit.rs:18-31`) **[READ]**, and the row is written in that commit |
 
 **Registration.** `configure_account` serves first configurations and existing accounts alike, including re-onboarding after a release. Since #558 a first configuration claims the account by creating its metadata row (`configure_account.rs:198-220`), then consumes the request's replay timestamp (`:237`), then stores the initial state (`:261`); a claim whose state was never stored is detected on the next request as an unfinished claim (`:78-96`) and treated as a first configuration again (`:98`) **[READ]**. The hook follows the same three cases:
 
@@ -564,15 +558,12 @@ service GuardianModule {
   rpc Describe(DescribeRequest) returns (ModuleInfo);
   rpc ValidateParams(ValidateParamsRequest) returns (ParamsVerdict);
   rpc Evaluate(HookRequest) returns (Decision);
-  rpc Notify(CommitEvent) returns (NotifyAck);
-  rpc NotifyGap(Gap) returns (NotifyAck);
 }
 
 enum Hook {
   HOOK_UNSPECIFIED = 0;
   HOOK_BEFORE_TRANSACTION_APPROVED = 1;
   HOOK_BEFORE_ACCOUNT_REGISTERED = 2;
-  HOOK_AFTER_TRANSACTION_COMMITTED = 3;
   HOOK_BEFORE_PROPOSAL_CREATED = 4;
 }
 
@@ -597,8 +588,6 @@ message ParamsVerdict {
   string message = 2;
   bytes normalized_params = 3;               // UTF-8 JSON; empty: store the params as sent (section 3.5)
 }
-message NotifyAck {}
-
 message HookRequest {
   string request_id = 1;              // one per hook invocation, shared by every module and layer called in it (section 3.1)
   Hook hook = 2;
@@ -608,7 +597,7 @@ message HookRequest {
   string account_id = 6;
   string instance_id = 7;             // catalog id of the instance being called
   bytes params = 8;                   // UTF-8 JSON, params of the layer being evaluated (global, account layer, or the account's own for default/assigned)
-  google.protobuf.Timestamp accounting_time = 9;  // recorded as signed_at if this transaction is signed (section 3.4); at before_proposal_created and in a dry run, the evaluation time, never recorded
+  google.protobuf.Timestamp accounting_time = 9;  // the evaluation time, from the Guardian's clock
   string submitter = 10;              // signer commitment that authenticated this request; verified (section 3.2)
   bool submitter_session = 11;        // the request was authenticated by a session key the submitter delegated (section 3.2)
   optional AccountView before = 12;   // the account as the Guardian holds it; absent for a first configuration (section 3.2)
@@ -633,25 +622,8 @@ message AccountView {
 message TransactionSubject {
   TransactionProjection projection = 1;  // the contract modules should rely on, per network
   RawTransaction raw = 2;             // the network's own encoding; UNSTABLE across that network's protocol bumps
-  repeated PendingTransaction pending = 3;  // signed for this account, not yet acknowledged by this module (section 3.4)
   string proposer = 4;                // signer commitment that created the matching proposal; verified; empty when there is none (section 3.2)
   bytes unverified_metadata = 5;      // UTF-8 JSON, proposer-asserted proposal metadata; never authoritative; UNSTABLE across SDK releases (section 3.2)
-}
-
-message PendingTransaction {
-  string new_commitment = 1;          // = event_id once committed
-  TransactionProjection projection = 2;
-  google.protobuf.Timestamp signed_at = 3;      // the accounting clock (section 3.4)
-  PendingState state = 4;
-  uint64 nonce = 5;                   // account nonce after this transaction; compared with the module's watermark
-  optional google.protobuf.Timestamp committed_at = 6;  // set when state = committed
-  string submitter = 7;               // as in HookRequest at the ack that signed this transaction; verified (section 3.2)
-  string proposer = 8;                // as in TransactionSubject at that ack; empty when there was no matching proposal
-}
-enum PendingState {
-  PENDING_STATE_UNSPECIFIED = 0;
-  PENDING_STATE_CANDIDATE = 1;        // signed, waiting to become committed
-  PENDING_STATE_COMMITTED = 2;        // committed, notify not yet acknowledged by this module
 }
 
 message RegistrationSubject {
@@ -726,7 +698,7 @@ message OutputNote {
   string script_root = 6;
   optional string p2id_target = 7;    // set only for known P2ID / P2IDE scripts
   bool tx_fee = 8;                    // the fee note pay_fee creates; not a payment (section 3.1: set only for that one note, and only while it carries no more of the fee asset than a transaction can owe)
-  optional string reclaimer = 9;      // P2IDE only, set when its reclaim height is set: the account that can take the note once that height is reached
+  optional string reclaimer = 9;      // P2IDE only, set when its reclaim height is set: the account that can take the note once that height is reached, chosen freely by the note's creator; a recipient rule must judge it as well as p2id_target
 }
 enum NoteType { NOTE_TYPE_UNSPECIFIED = 0; NOTE_TYPE_PUBLIC = 1; NOTE_TYPE_PRIVATE = 2; }
 
@@ -748,41 +720,18 @@ message StorageSlot {
   StorageSlotKind kind = 2;
   oneof content { string value = 3; MapChanges map = 4; }
 }
-
-message CommitEvent {
-  string event_id = 1;                // = new_commitment; stable across redelivery
-  string instance_id = 2;
-  string account_id = 3;
-  string network = 4;                 // as in HookRequest
-  string network_id = 5;              // as in HookRequest
-  string prev_commitment = 6;
-  string new_commitment = 7;
-  uint64 nonce = 8;                   // account nonce after this transaction; the delivery watermark (section 3.3)
-  TransactionProjection projection = 9;
-  google.protobuf.Timestamp committed_at = 10;
-  google.protobuf.Timestamp signed_at = 11;  // the accounting clock, identical to the value the module saw in pending (section 3.4)
-  string submitter = 12;              // as in HookRequest at the ack that signed this transaction; verified (section 3.2)
-  string proposer = 13;               // as in TransactionSubject at that ack; empty when there was no matching proposal (section 3.2)
-}
-
-message Gap {
-  string instance_id = 1;
-  string account_id = 2;
-  string network = 3;                 // as in HookRequest
-  string network_id = 4;              // as in HookRequest
-  google.protobuf.Timestamp dropped_before = 5;  // restart position: events for the account committed before this and not acknowledged may be missing
-  uint64 resume_from_nonce = 6;       // first nonce delivered after the gap; the module's watermark becomes resume_from_nonce - 1 (section 3.3)
-}
 ```
+
+Version 1 as first published carries only the stateless contract. The stateful additions of sections 3.3 and 3.4 (the `Notify` and `NotifyGap` RPCs, `CommitEvent`, `Gap`, `NotifyAck`, `TransactionSubject.pending` with `PendingTransaction` and `PendingState`, and the `after_transaction_committed` hook) are added with M2b, as a named capability within version 1 (section 3.5), so modules built against this contract keep working.
 
 ### 3.1 Typed projection
 
 **Encodings.** All string-typed values in the protocol follow one convention, normalized by the Guardian at the boundary (AGENTS.md section 12, Hex/Bytes Boundary Rule):
 
-- Words, digests, commitments and roots (`AccountView.commitment`, `signer_commitments`, `procedure_thresholds` keys, `code_commitment`, `procedure_roots`, `new_code_commitment`, `prev_commitment`, `new_commitment`, `note_id`, `recipient_digest`, `script_root`, `nft_id`, storage values, map keys and values): `0x` followed by 64 lowercase hex characters.
+- Words, digests, commitments and roots (`AccountView.commitment`, `signer_commitments`, `procedure_thresholds` keys, `code_commitment`, `procedure_roots`, `new_code_commitment`, `note_id`, `recipient_digest`, `script_root`, `nft_id`, storage values, map keys and values): `0x` followed by 64 lowercase hex characters.
 - Amounts and other single field elements (`fungible_amount`): unsigned decimal strings, so values above 2^53 survive JSON.
 - Account ids (`account_id`, `faucet_id`, `p2id_target`): the Guardian's canonical `0x` lowercase hex form of the account id.
-- Nonces (`nonce`, `resume_from_nonce`): `uint64`, which the proto3 JSON mapping renders as a decimal string, consistent with the amount rule.
+- Nonces (`nonce_delta`; with M2b also `nonce` and `resume_from_nonce`): `uint64`, which the proto3 JSON mapping renders as a decimal string, consistent with the amount rule. The M2b commitments (`prev_commitment`, `new_commitment`) follow the word rule above.
 - Storage slots: the slot's `StorageSlotName` as its string form, which is stable across accounts and protocol bumps and is what the dashboard projector already emits (`crates/server/src/delta_summary/projection.rs:301`) **[READ]**. Miden 0.17 identifies slots by name and records each changed slot as a value or map patch with a create, update or remove operation (`miden-protocol-0.17.1/src/account/patch/storage/slot_patch.rs:27-30`, `value_patch.rs:18-26`, `map_patch.rs:20-33`) **[READ]**; `StorageChange` carries exactly that. A removed slot has `op = remove` and no content. A removed map entry has the empty word as its value, as in the existing projector.
 - Timestamps: `google.protobuf.Timestamp`, RFC 3339 in UTC in the JSON mapping, always taken from the Guardian's clock.
 
@@ -934,7 +883,7 @@ A candidate that is discarded or superseded drops out of `pending`, so no releas
 
 **Recoverable rows.** A candidate the canonicalization worker parks as `Retained`, with any successors parked as orphans, and a client-abandoned discard (issues #345 and #319) are signed, are neither queued nor committed, and so are not in `pending`; yet the reconcile pass promotes such a row if it turns out to have landed (`promote_candidate` with `PromotableKind::Retained`, `crates/server/src/storage/mod.rs:413`) **[READ]**. Leaving them out does not let a limit be exceeded. A parked row is never the queue tail, so every delta admitted after it builds on the stored state without it (`gate_candidate_submission`, `storage/mod.rs:374`) **[READ]**, and an admitted delta at the parked row's nonce supersedes the row (`submit_candidate`, `storage/postgres.rs:1726`) **[READ]**. The parked row and any delta admitted after it share a base or descend from deltas that do, and Miden executes at most one delta per account state, so at most one of them lands. Every delta that lands was therefore evaluated with all of its ancestors counted, and a parked row that is later promoted writes its `module_events` row like any other promotion and is counted from then on **[RAN]**. What the snapshot cannot give for these rows is exactness: an evaluation may leave out a parked row that later lands instead of the delta being evaluated, which only ever undercounts a transaction that will not execute.
 
-**Checked by model.** Sections 3.3 and 3.4 are model-checked with TLA+ (`.agents/skills/verify-module-counting/`, on the prototype branch): one account and one stateful module, concurrent `push_delta` requests, deltas executing on chain, promotion, retention and reconcile of parked rows, two replicas delivering under the notifier lease with calls and replies delayed, duplicated or lost, a replica that has lost the lease still sending, retention drops and resyncs, up to four deltas with amounts 1 and 2. Within those bounds the account never spends more than the cap, no delta is counted twice, and every queued or committed delta is counted. The same model found the resync ordering faults corrected in revision 23 (Appendix B).
+**Checked by model.** Sections 3.3 and 3.4 are model-checked with TLA+ (the `verify-module-counting` skill, kept with the M2b work until M2b resumes): one account and one stateful module, concurrent `push_delta` requests, deltas executing on chain, promotion, retention and reconcile of parked rows, two replicas delivering under the notifier lease with calls and replies delayed, duplicated or lost, a replica that has lost the lease still sending, retention drops and resyncs, up to four deltas with amounts 1 and 2. Within those bounds the account never spends more than the cap, no delta is counted twice, and every queued or committed delta is counted. The same model found the resync ordering faults corrected in revision 23 (Appendix B).
 
 In optimistic mode two overlapping pushes can share a nonce (`submit_delta` upserts on `(account_id, nonce)`); the watermark then counts whichever is delivered first, one more reason stateful limits are exact only in candidate mode.
 
@@ -979,7 +928,7 @@ A stateful module requires `notify`, and a module that requires it is also refus
 
 **Parameter migration.** Params belong to the module, which changes their shape between its own releases. `ValidateParams` may return `normalized_params`: the params in the module's current shape. The Guardian stores what the module returns. At startup, before enabling an instance, and when an instance whose module was unreachable at startup passes its delayed checks, when the module normalizes the stored global params, the Guardian writes them with a history entry by `module:<name> <version>` and reason "params migrated by the module", so an upgrade is a recorded data change instead of a startup failure. Operator writes store the normalized form too, and the response shows what was stored. Account layers and assignments are migrated when they are next written; until then the module receives them in the shape they were stored in, so a module must keep accepting the shapes of its previous release. Normalized params are subject to the same rules as the input: a JSON object, and no secret references through the operator API.
 
-**SDK compatibility.** `guardian-module-sdk` follows semantic versioning, and a protocol version change is a major SDK release. Types the SDK owns are `#[non_exhaustive]` with constructors (`ModuleInstanceConfig::new(..).with_endpoint(..)`, `ModuleTls::new`, `ClientIdentity::new`), so new fields do not break module code. Generated protocol types grow with new fields; module code builds them with `..Default::default()` or the SDK helpers (`Decision::allow`, `Decision::deny`, `ParamsVerdict::ok`, `ParamsVerdict::invalid`, `ParamsVerdict::normalized`). New trait methods get default bodies, as `notify` and `notify_gap` have.
+**SDK compatibility.** `guardian-module-sdk` follows semantic versioning, and a protocol version change is a major SDK release. Types the SDK owns are `#[non_exhaustive]` with constructors (`ModuleInstanceConfig::new(..).with_endpoint(..)`, `ModuleTls::new`, `ClientIdentity::new`), so new fields do not break module code. Generated protocol types grow with new fields; module code builds them with `..Default::default()` or the SDK helpers (`Decision::allow`, `Decision::deny`, `ParamsVerdict::ok`, `ParamsVerdict::invalid`, `ParamsVerdict::normalized`). New trait methods get default bodies, as `notify` and `notify_gap` will when M2b adds them.
 
 ## 4. Errors and failure handling
 
@@ -1059,7 +1008,7 @@ The health probe is a `Describe` call every `GUARDIAN_MODULE_PROBE_INTERVAL_MS` 
 - mTLS is an optional per-instance setting (`tls.client_cert_secret`, `tls.client_key_secret`, both secret names) for operators who already run a CA.
 - The bearer token and client key are held in secret types: redacted from logs and debug output, and zeroized when dropped.
 - No Guardian signing key is reused for module authentication.
-- Replaying a captured `CommitEvent` cannot change a module's state: its nonce is at or below the module's watermark, so it is acknowledged without effect (section 3.3). Forging a new event requires the bearer token. Signing each request body with a timestamp (the Standard Webhooks pattern) was considered; with a shared secret it adds only that the secret itself is never sent, which mTLS already provides for operators who need it.
+- With M2b, replaying a captured `CommitEvent` cannot change a module's state: its nonce is at or below the module's watermark, so it is acknowledged without effect (section 3.3). Forging a new event requires the bearer token. Signing each request body with a timestamp (the Standard Webhooks pattern) was considered; with a shared secret it adds only that the secret itself is never sent, which mTLS already provides for operators who need it.
 
 ### 5.3 Disclosure and probing
 
@@ -1099,7 +1048,7 @@ The first enclave step allows in-process kinds only; the attested tier follows o
 
 **Dependency on PR #510.** PR #510 has merged (`1100f3a4`), so M2a can start: the pipeline is placed once, in the shared `acknowledge_delta`, rather than in `push_delta` and moved later. Carrying the authenticated requester to the ack (section 3.2) is M2a work on top of #510, not a change requested of it.
 
-**Protocol version 1 is fixed at M2a.** The full `guardian.module.v1` proto above, including `Notify`, `NotifyGap`, `pending`, `accounting_time` and the watermark fields, is published with M2a, so modules written against M2a need no change when M2b ships. In M2a the Guardian sends an empty `pending`, never calls `Notify` or `NotifyGap`, does not offer the `notify` capability, and refuses at startup a catalog that subscribes an instance to `after_transaction_committed`, so a stateful module cannot start on it (section 3.5).
+**Protocol version 1 is fixed at M2a.** The `guardian.module.v1` proto above is published with M2a and carries the stateless contract only. M2b adds `Notify`, `NotifyGap`, `pending`, the watermark fields and the `after_transaction_committed` hook as the `notify` capability within version 1 (section 3.5), additively, so modules written against M2a need no change when M2b ships. The M2a Guardian does not offer that capability and refuses at startup a catalog that subscribes an instance to `after_transaction_committed`, so a stateful module cannot start on it.
 
 **Freeze criteria.** Version 1 freezes only once the prototype implements, with tests, the protocol surface added in revision 24 that is so far derived from reading code: the renumbered proto, registration before the claim (new account, unfinished claim, lost claim), `network_id`, `code_commitment` and `procedure_roots` with effective-override filtering (non-zero, exported, not the auth procedure), `reference_block` and the optional `expiration_block`, `new_code_commitment`, `submitter_session`, `dry_run` with approval instances in the check, and the `allowed_code_commitments` rule with `code_check`. Extraction details are where the prototype found errors before (the fee note, single-key views), so these are measured against real accounts, not only fixtures.
 
@@ -1218,7 +1167,7 @@ Questions resolved in earlier revisions are kept below with their answers.
 
 | Revision | Date | Changes |
 |---|---|---|
-| 35 | 2026-11-17 | Red-team fixes. A P2IDE note names a reclaimer, chosen freely by its creator, that can consume it once its reclaim height is reached; `OutputNote.reclaimer` now carries it, and `recipient-policy` judges it like the target unless it is the paying account, closing a payment to a blocked account through an allowed target (section 3.2). A deny with a reason code outside the rule is now a deny reported as `policy_denied`, not a protocol error under `on_error`, which let a fail-open instance sign what its module refused (section 4.1). A registration by a key the account does not list is vouched for before `before_account_registered` runs (section 2.3). `HookRequest.account_id` is now always lowercase, as section 3.1 states. `seeded_params` stores the catalog value as written, so a module that normalizes it no longer reports drift. Operator writes accept an optional expected version (section 2.2). An instance whose params move out of the catalog file adopts the new catalog params instead of running with the empty placeholder (section 2.2). A `default` instance disabled when an account registers is still copied to it (section 2.3). A late answer no longer closes an open breaker (section 4.4). Protocol change: one optional field |
+| 35 | 2026-11-17 | Red-team fixes. A P2IDE note names a reclaimer, chosen freely by its creator, that can consume it once its reclaim height is reached; `OutputNote.reclaimer` now carries it, and `recipient-policy` judges it like the target unless it is the paying account, closing a payment to a blocked account through an allowed target (section 3.2). A deny with a reason code outside the rule is now a deny reported as `policy_denied`, not a protocol error under `on_error`, which let a fail-open instance sign what its module refused (section 4.1). A registration by a key the account does not list is vouched for before `before_account_registered` runs (section 2.3). `HookRequest.account_id` is now always lowercase, as section 3.1 states. `seeded_params` stores the catalog value as written, so a module that normalizes it no longer reports drift. Operator writes accept an optional expected version (section 2.2). The stateful (M2b) parts of the protocol are removed from version 1 as first published (the `Notify` and `NotifyGap` RPCs, `CommitEvent`, `Gap`, `NotifyAck`, `TransactionSubject.pending`, the `after_transaction_committed` hook, and the `notify` trait methods); M2b adds them back as a capability (section 3). An instance whose params move out of the catalog file adopts the new catalog params instead of running with the empty placeholder (section 2.2). A `default` instance disabled when an account registers is still copied to it (section 2.3). A late answer no longer closes an open breaker (section 4.4). Protocol change: one optional field |
 | 34 | 2026-11-12 | M2b deferred past the first release (section 7); the windowed-history alternative recorded as open question 1 (section 9). Fixed: an unfinished claim an operator had already configured (a layer, an emptied assignment) was judged by the `default` instances, which were then not copied, so they never ran for it; it is now judged as configured, by the same rule as the copy (section 2.3). No protocol change: the M2b messages stay in the proto and may still change until a stateful design is implemented |
 | 33 | 2026-11-12 | M2c implemented (section 7): `ServerBuilder::from_env()` holds the environment wiring the official binary used to inline, so its `main.rs` and every custom build share it; `build` and `from_env` return `BuildError`, a `std::error::Error`. `examples/custom-guardian` replaces the server's `custom_module_server` example and is the source of the per-release template, which a release workflow builds, checks with a `--locked` Docker build and attaches as `custom-guardian-<tag>.tar.gz` (section 2.5). No protocol change |
 | 32 | 2026-11-10 | review of the M2a implementation. Protocol version 1 reopened (section 7): `Decision.allow` and the `decision.effect` capability removed, a decision without an effect is a module failure (section 3.5); `MidenTransaction.reference_block` and `expiration_block` replaced by `bound_block`, `expiration_delta` and `approval_expiration_block`, and `nonce_delta` made unsigned (section 3.1); `network_id` is the Guardian's configured network, not the account's registered one (section 3.1); `RegistrationSubject.initial_state` is sent; `tx_fee` is set only while the fee note carries no more of the fee asset than a transaction can owe, 64 times the chain's verification base fee, and for no note on a chain that charges nothing (section 3.1). Breaker: requests a module rejects do not count, a module whose timeout is the whole budget can open it, half-open sends one trial at a time, dry-run checks neither probe nor close it (section 4.4). Fail-open skips at proposal creation and registration, where no delta is signed, are recorded as `modules.failed_open` audit events; operator writes are audited with the params version they committed as (section 2.2). A health probe that finds a module incompatible opens its breaker at once and one that gets no answer counts as a failed call (section 4.4). Startup: a known instance whose module does not answer starts unavailable instead of stopping the server, and an instance the catalog declares enabled and not operator-disableable is enabled even when stored as disabled (section 2.2). `basic-policy`: per-field id lengths, and `deny_unknown_recipients` defaults to on once the denylist names anyone (section 3.1). The conformance suite checks stated outcomes and needs a request the module must deny. `basic-policy` is split into four kinds with short param names: `spending-limit` (`max_per_transaction`, `allowed_assets`), `recipient-policy` (`allowlist`, `denylist`, `deny_unknown`), `signer-policy` (`allowlist`, `denylist`, `check`) and `code-policy` (`allowed`, `check`), each supporting only the hooks where its rule can refuse (section 3.1). SDKs: a check and a creation send the same unsigned draft, and Rust checks custom proposals (section 2.7). Requests the Guardian cannot build or that exceed the size cap are refused whatever `on_error` says, so a requester cannot switch fail-open instances off (section 4.2); per-(instance, hook) breakers and an early execution check were considered and not adopted (section 4.4, Guardian execution). Module inputs: the views and the projection come from the decode that verifies and applies the delta, or, at registration, from one decode of each state, all inside the reconstruction task; the per-replica view cache is removed, and the ack reads the plan first so no inputs are built when no module applies (sections 3.2, 4.3). Per-account params versions: a write to one account's layers or assignment, including the default copy at registration, moves only that account's version and locks only its row, so it neither waits for other accounts nor invalidates the replicas' instance cache; each signed delta records `params_version` (instances) and `account_params_version`, and the params history pages by entry id (section 2.2). Body corrected to the implementation: metric names, the fixed 1000 ms timeout cap, params encoding, the `circuit_open` failure kind |

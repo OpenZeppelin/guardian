@@ -2,7 +2,7 @@
 
 **Feature**: [spec.md](./spec.md) | **Plan**: [plan.md](./plan.md)
 
-Wire messages are defined in [contracts/guardian_module_v1.proto](./contracts/guardian_module_v1.proto). This file covers what the Guardian loads, stores and keeps in memory. Column and type names are indicative until the prototype gates close ([research.md](./research.md)).
+Wire messages are defined in [`crates/guardian-module-sdk/proto/guardian_module_v1.proto`](../../../crates/guardian-module-sdk/proto/guardian_module_v1.proto). This file covers what the Guardian loads, stores and keeps in memory. Column and type names are indicative until the prototype gates close ([research.md](./research.md)).
 
 ## Configuration (loaded at startup, not stored)
 

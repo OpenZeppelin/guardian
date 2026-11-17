@@ -2,7 +2,7 @@
 
 **Branch**: M2a on `251-modules-m2a`, one branch that can be split into the layers of "M2a delivery" for review; prototype on `251-modules-prototype` (draft PR #554); RFC and speckit merged with PR #544 | **Date**: 2026-10-13, M2a revision 2026-11-09 | **Spec**: [spec.md](./spec.md)
 **Input**: Feature specification from `speckit/features/251-guardian-modules/spec.md`; design source [RFC 0002](../../../docs/rfcs/0002-guardian-modules.md), written against revision 19; M2a follows revision 26
-**Status**: Prototype built (2026-10-13), gates G1 to G5 closed at component level ([research.md](./research.md#prototype-findings-2026-10-13)); RFC revisions 20 (prototype findings) and 21 (layered parameters, decision D11) applied. M2a implemented on `251-modules-m2a` (2026-11-09) against RFC revisions 26 to 30: [tasks.md](./tasks.md), all tasks done except the walk-through against a local node and the manual smokes (T058 to T060); the prototype record is [tasks-p0.md](./tasks-p0.md). The latency A/B is in [research.md](./research.md), "M2a end to end".
+**Status**: Prototype built (2026-10-13), gates G1 to G5 closed at component level ([research.md](./research.md#prototype-findings-2026-10-13)); RFC revisions 20 (prototype findings) and 21 (layered parameters, decision D11) applied. M2a implemented on `251-modules-m2a` (2026-11-09) against RFC revisions 26 to 30: [tasks.md](./tasks.md), all tasks done except the walk-through against a local node and the manual smokes (T058 to T060); the prototype task record is in the git history. The latency A/B is in [research.md](./research.md), "M2a end to end".
 
 ## Summary
 
@@ -54,12 +54,10 @@ speckit/features/251-guardian-modules/
 ├── data-model.md
 ├── quickstart.md
 ├── contracts/
-│   ├── guardian_module_v1.proto    # extracted from RFC section 3
 │   ├── catalog-config.md
 │   ├── operator-modules-api.md
 │   └── client-errors.md
 ├── checklists/requirements.md
-├── tasks-p0.md                     # P0 prototype tasks and the follow-on phases (record)
 └── tasks.md                        # M2a implementation tasks
 ```
 
@@ -147,7 +145,7 @@ The prototype (#554) is one draft of about 13,000 lines and is not merged as it 
 | 2. Server core | `251-m2a-server-core` | `crates/server/src/modules/`, `network/miden/module_views.rs`, the modules migration, the `GUARDIAN_MODULE_*` errors, permissions and audit kinds, the `/dashboard/modules` routes, `AppState` wiring and the `modules` field in test initializers; the guide's example catalogs (`docs/guides/policy-modules/*.toml`, parsed by the registry tests) and the TypeScript error-code vocabulary (`packages/guardian-client/src/error-codes.ts`, held to `error.rs` by a drift test); OpenAPI regenerated. No hook calls the pipeline |
 | 3. Hooks | `251-m2a-hooks` | The three gate hooks (`ack_delta_internal.rs`, `push_delta_proposal.rs`, `configure_account.rs`), the execution worker, the discovery routes on both transports, the `guardian-shared` failure codes with the TypeScript execution vocabulary and the browser example that switches over it, and the compile fixes the non-`Copy` failure code needs (qualification driver, demo, one multisig test); OpenAPI regenerated |
 | 4. Clients | `251-m2a-clients` | `crates/client`, `crates/miden-multisig-client`, `packages/guardian-client` (`http.ts` and its types), `packages/miden-multisig-client` |
-| 5. Docs | `251-m2a-docs` | `docs/` (guides, configuration, dashboard, troubleshooting, RFC), `spec/`, the speckit feature, the `verify-module-counting` skill |
+| 5. Docs | `251-m2a-docs` | `docs/` (guides, configuration, dashboard, troubleshooting, RFC), `spec/`, the speckit feature |
 
 Each layer builds the workspace with `--all-targets`, passes `gen-openapi --check`, the server, client and multisig test suites, and the TypeScript client tests; the top of the stack equals the prototype tree. Rule found while splitting: a TypeScript vocabulary held to a Rust source by a drift test lands in the same layer as that source. `251-modules-m2a` is the integration branch at the top of the stack; M2a tasks land on the layer they belong to. The operator client (US5) joins layer 2 or its own PR when it is built.
 

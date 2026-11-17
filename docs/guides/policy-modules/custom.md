@@ -46,7 +46,6 @@ any gRPC stack; the Rust trait above is a thin layer over it.
 | `Describe` | At startup, before enabling an instance, and every `GUARDIAN_MODULE_PROBE_INTERVAL_MS` (5 s) as a health probe |
 | `ValidateParams` | At startup for the stored global params, and on every params write through the operator API |
 | `Evaluate` | Once per gate hook invocation the instance applies to, and again for an account's layer |
-| `Notify`, `NotifyGap` | Not called yet; commit notifications arrive with the M2b slice. The SDK answers them with success |
 
 Every call carries `authorization: Bearer <token>` in its gRPC metadata, with
 the token of the instance it is for, and `instance_id` in the message
@@ -227,8 +226,9 @@ What the Guardian expects on the wire:
   streams, or they close the connection with `too_many_pings`.
 - **Size.** Requests can be up to `GUARDIAN_MODULE_REQUEST_MAX_BYTES` (2 MiB by
   default): raise your server's receive limit if it is lower.
-- **`Notify` and `NotifyGap`** are not called in this release; answer them
-  with `UNIMPLEMENTED`.
+- **Stateful modules** (commit notifications, counting across transactions)
+  are not part of this protocol version yet; they arrive as a named
+  capability, so a module written now keeps working.
 
 The Rust conformance suite runs in process only, so port its cases (listed in
 [Test it](#test-it)) to your language's test framework.
