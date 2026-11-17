@@ -472,6 +472,7 @@ enabled = ENABLED
             include_str!("../../../../docs/guides/policy-modules/remote.toml"),
             include_str!("../../../../docs/guides/policy-modules/custom.toml"),
             include_str!("../../../../docs/guides/policy-modules/custom-in-process.toml"),
+            include_str!("../../../../docs/guides/policy-modules/compliance.toml"),
         ] {
             Catalog::parse(text, None).expect("guide catalog parses");
         }

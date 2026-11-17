@@ -3510,6 +3510,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "guardian-compliance-module"
+version = "0.1.0"
+dependencies = [
+ "guardian-module-sdk",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonic",
+]
+
+[[package]]
 name = "guardian-demo"
 version = "0.1.0"
 dependencies = [

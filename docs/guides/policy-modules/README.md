@@ -25,6 +25,11 @@ operator endpoints and permissions.
 | [Remote](./remote.md) | As its own service over gRPC | A module operated, scaled or upgraded apart from the Guardian, or by another team |
 | [Custom](./custom.md) | Your code, written with `guardian-module-sdk`, served over gRPC or compiled into your own server build | Rules the built-in policies cannot express |
 
+For a complete worked example of a custom remote module, see
+[KYC and sanctions screening](./compliance.md): signers must be KYC-verified
+and payments are screened against a blocklist or an allowlist read from your
+own data.
+
 ## How evaluation works
 
 - **Catalog.** A TOML file (`GUARDIAN_MODULES_CONFIG`) declares every module

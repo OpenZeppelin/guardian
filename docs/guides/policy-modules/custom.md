@@ -174,6 +174,9 @@ in its catalog entry, and the check then reports `complete: false`.
 
 ## Run it over gRPC
 
+For a complete example with data of its own (KYC on signers, sanctions or
+allowlists on recipients), see [KYC and sanctions screening](./compliance.md).
+
 The [remote](./remote.md) page explains the transport.
 
 ```sh
