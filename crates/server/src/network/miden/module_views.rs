@@ -208,6 +208,16 @@ fn p2id_target(note: &Note) -> Option<String> {
     }
 }
 
+fn p2ide_reclaimer(note: &Note) -> Option<String> {
+    match StandardNote::from_script(note.script())? {
+        StandardNote::P2IDE => P2ideNoteStorage::try_from(note.storage().items())
+            .ok()
+            .filter(|storage| storage.reclaim_height().is_some())
+            .map(|storage| storage.reclaimer().to_hex()),
+        _ => None,
+    }
+}
+
 /// How long a chain fee read is used before it is read again.
 pub const CHAIN_FEE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -290,6 +300,7 @@ fn output_note(raw: &RawOutputNote, fee_note: Option<NoteId>) -> OutputNote {
             script_root: word_hex(&Word::from(note.script().root())),
             p2id_target: p2id_target(note),
             tx_fee: fee_note == Some(note.id()),
+            reclaimer: p2ide_reclaimer(note),
         },
         RawOutputNote::Partial(partial) => OutputNote {
             note_id: partial.id().to_hex(),
@@ -300,6 +311,7 @@ fn output_note(raw: &RawOutputNote, fee_note: Option<NoteId>) -> OutputNote {
             script_root: String::new(),
             p2id_target: None,
             tx_fee: false,
+            reclaimer: None,
         },
     }
 }
@@ -735,6 +747,41 @@ mod tests {
             0,
             Default::default(),
         )
+    }
+
+    fn p2ide(reclaimer: Option<AccountId>, reclaim_height: Option<u32>) -> RawOutputNote {
+        let note = miden_standards::note::P2ideNote::builder()
+            .sender(dummy_id(3))
+            .target(dummy_id(4))
+            .maybe_reclaimer(reclaimer)
+            .maybe_reclaim_height(reclaim_height.map(miden_protocol::block::BlockNumber::from))
+            .serial_number(canonical_serial())
+            .assets(vec![fungible(9, 5)])
+            .build()
+            .unwrap();
+        RawOutputNote::Full(note.into())
+    }
+
+    #[test]
+    fn a_reclaimable_p2ide_note_names_its_reclaimer_beside_its_target() {
+        let summary = summary_with(vec![
+            p2ide(Some(dummy_id(5)), Some(1)),
+            p2ide(Some(dummy_id(5)), None),
+            p2ide(None, Some(1)),
+        ]);
+        let notes = projection_from_summary(&summary, None)
+            .unwrap()
+            .output_notes;
+        let target = Some(dummy_id(4).to_hex());
+        assert!(notes.iter().all(|note| note.p2id_target == target));
+        assert_eq!(
+            notes
+                .iter()
+                .map(|note| note.reclaimer.clone())
+                .collect::<Vec<_>>(),
+            vec![Some(dummy_id(5).to_hex()), None, Some(dummy_id(3).to_hex()),],
+            "a reclaimer is named only when a reclaim height enables it; it defaults to the sender"
+        );
     }
 
     fn fee_flags(notes: Vec<RawOutputNote>, fee: Option<ChainFee>) -> Vec<bool> {

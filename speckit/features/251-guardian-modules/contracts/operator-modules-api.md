@@ -73,16 +73,18 @@ All errors use the `{ code, message, meta }` envelope.
 | Condition | HTTP | `code` | `meta` |
 |---|---|---|---|
 | Operator lacks a required permission | 403 | `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` (existing) | `{ missing_permissions: string[] }` |
-| No catalog configured (`GUARDIAN_MODULES_CONFIG` unset) | 400 | `invalid_input` (existing) | none |
-| Missing or empty `reason` | 400 | `invalid_input` (existing) | none |
-| Account layer on an instance that is not `scope = all` | 400 | `invalid_input` | none |
-| Global params change on an instance whose catalog params hold secret references | 400 | `invalid_input` | none |
-| `PUT` entry names an `all` instance, repeats a module, or params contain `$secret` | 400 | `invalid_input` | none |
-| `PUT` params fail `validate_params` | 400 | `invalid_input` | none; `message` names the module |
-| `PUT` effective set exceeds the evaluation budget on any hook | 400 | `invalid_input` | none |
+| No catalog configured (`GUARDIAN_MODULES_CONFIG` unset) | 400 | `invalid_input` (existing) | `{ detail }` |
+| Missing or empty `reason` | 400 | `invalid_input` (existing) | `{ detail }` |
+| Account layer on an instance that is not `scope = all` | 400 | `invalid_input` | `{ detail }` |
+| Global params change on an instance whose catalog params hold secret references | 400 | `invalid_input` | `{ detail }` |
+| `PUT` entry names an `all` instance, repeats a module, or params contain `$secret` | 400 | `invalid_input` | `{ detail }` |
+| `PUT` params fail `validate_params` | 400 | `invalid_input` | `{ detail }`: the module and the rule its params broke (every module write refusal carries it) |
+| `PUT` effective set exceeds the evaluation budget on any hook | 400 | `invalid_input` | `{ detail }` |
+| Body that is not JSON, cannot be read, or names a key twice in one object | 400 | `invalid_input` | `{ detail }` |
 | `module_id` not declared and not stored | 404 | `GUARDIAN_MODULE_NOT_FOUND` (new) | `{ module }` |
 | Unknown account | 404 | `account_not_found` (existing) | none |
 | Disable of an instance without `operator_can_disable` | 409 | `GUARDIAN_MODULE_NOT_DISABLEABLE` (new) | `{ module }` |
+| Params write whose optional `expected_version` (instance `params_version` for global params, `account_params_version` for a layer or assignment) is no longer current | 409 | `GUARDIAN_MODULE_PARAMS_STALE` (new) | none |
 | Enable of an instance whose startup checks fail (unreachable, unsupported hook or protocol, invalid params) | 503 | `GUARDIAN_MODULE_UNAVAILABLE` | `{ module }` |
 | Resync of a pair not in `resync_required` | 200 | none; the pair is omitted from `ResyncResult.account_ids` | |
 

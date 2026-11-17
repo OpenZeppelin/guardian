@@ -34,6 +34,7 @@ If a behavior changes in a lower layer, verify and propagate impact upward acros
 - `crates/miden-multisig-client`: Rust multisig SDK on top of Miden + GUARDIAN
 - `packages/miden-multisig-client`: TS multisig SDK on top of Miden + GUARDIAN
 - `crates/shared`: shared Rust primitives/utilities
+- `crates/guardian-module-sdk`: policy module SDK (published): the `guardian.module.v1` protocol, the `Module` trait, the `serve` gRPC harness, the conformance kit and the first-party policy kinds
 - `crates/qualification-driver`: Rust driver for the black-box qualification suite (not published; also the scenario-manifest validator both drivers read)
 - `qualification/`: scenario manifest, Compose stack and shell harness for the qualification suite (see `docs/QUALIFICATION.md`)
 - `spec/`: system and protocol-level behavior docs

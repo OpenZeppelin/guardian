@@ -91,9 +91,15 @@ impl Breakers {
         }
     }
 
-    /// The module answered, allow or deny: a deny is an answer, not a failure.
+    /// The module answered, allow or deny: a deny is an answer, not a failure. A closed breaker's failure count resets and a half-open one closes
+    /// (its trial answered). An open breaker stays open: the answer is to a call admitted before
+    /// it opened, or before a probe found the module unusable, and says nothing a probe has not
+    /// decided since, so only a passing probe and its trial close it.
     pub fn answered(&self, instance: &str) {
-        self.update(instance, |breaker| *breaker = Breaker::default());
+        self.update(instance, |breaker| match breaker.state {
+            CircuitState::Closed | CircuitState::HalfOpen => *breaker = Breaker::default(),
+            CircuitState::Open => {}
+        });
     }
 
     /// The module timed out, failed to respond or returned a malformed decision.
@@ -134,16 +140,16 @@ impl Breakers {
         });
     }
 
+    /// Applies `change` and reports a transition while still holding the lock, so concurrent
+    /// transitions reach the gauge and the log in the order they happened.
     fn update(&self, instance: &str, change: impl FnOnce(&mut Breaker)) {
-        let previous = self.state(instance);
-        let current = match self.by_instance.lock() {
-            Ok(mut breakers) => {
-                let breaker = breakers.entry(instance.to_string()).or_default();
-                change(breaker);
-                breaker.state
-            }
-            Err(_) => return,
+        let Ok(mut breakers) = self.by_instance.lock() else {
+            return;
         };
+        let breaker = breakers.entry(instance.to_string()).or_default();
+        let previous = breaker.state;
+        change(breaker);
+        let current = breaker.state;
         if previous != current {
             super::metrics::circuit_open(instance, current == CircuitState::Open);
             tracing::warn!(
@@ -175,6 +181,27 @@ mod tests {
         breakers.failed("m");
         assert_eq!(breakers.state("m"), CircuitState::Open);
         assert!(!breakers.admit("m", Caller::Request));
+    }
+
+    #[test]
+    fn a_late_answer_does_not_close_an_open_breaker() {
+        let breakers = Breakers::new(5);
+        assert!(breakers.admit("m", Caller::Request));
+        breakers.hold_open("m");
+        breakers.answered("m");
+        assert_eq!(
+            breakers.state("m"),
+            CircuitState::Open,
+            "an answer to a call admitted before the breaker opened"
+        );
+        breakers.probe_succeeded("m");
+        assert!(breakers.admit("m", Caller::Request));
+        breakers.answered("m");
+        assert_eq!(
+            breakers.state("m"),
+            CircuitState::Closed,
+            "the trial answered"
+        );
     }
 
     #[test]

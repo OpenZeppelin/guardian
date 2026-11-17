@@ -84,8 +84,8 @@ Every id is written in `0x` hex form (case-insensitive) at its kind's length (30
 |---|---|---|---|
 | `spending-limit` (proposal, transaction) | `max_per_transaction` | map faucet id to decimal string | For each listed faucet, deny if the gross amount the transaction's payment notes send exceeds it; the fee note (`tx_fee`) is not a payment |
 | | `allowed_assets` | list of faucet ids | Deny an unlisted faucet among assets sent in payment notes or received in input notes |
-| `recipient-policy` (proposal, transaction) | `allowlist` | list of account ids | Deny a payment note whose `p2id_target` is not listed; partial or non-P2ID notes deny. Excludes `denylist` |
-| | `denylist` | list of account ids | Deny a payment note whose `p2id_target` is listed. Excludes `allowlist` |
+| `recipient-policy` (proposal, transaction) | `allowlist` | list of account ids | Deny a payment note whose `p2id_target`, or `reclaimer` other than the paying account, is not listed; partial or non-P2ID notes deny. Excludes `denylist` |
+| | `denylist` | list of account ids | Deny a payment note whose `p2id_target` or `reclaimer` is listed. Excludes `allowlist` |
 | | `deny_unknown` | bool; unset, `true` when `denylist` is not empty | With `denylist`, also deny partial and non-P2ID payment notes, whose recipient cannot be checked |
 | `signer-policy` (registration, proposal, transaction) | `allowlist` / `denylist` | list of signer commitments | Check signers per `check`; at most one of the two |
 | | `check` | `added` (default) or `all` | `added`: signers in `after` not in `before`; `all`: every signer in `after` |

@@ -57,6 +57,11 @@ export interface GuardianOperatorHttpErrorData {
    * different guardian and released it.
    */
   releasedAt?: string;
+  /**
+   * Why a policy module write was refused (`invalid_input` from a module route), from
+   * `meta.detail`: the module and the rule it broke. Absent for every other error.
+   */
+  detail?: string;
 }
 
 export interface GuardianOperatorHttpClientOptions {

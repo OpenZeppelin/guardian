@@ -4,8 +4,8 @@ use serde::Serialize;
 
 use super::catalog::{ClientReason, Disclosure, Scope, contains_secret_reference};
 use super::pipeline::ModulePipeline;
-use super::registry::{Instance, validate_params};
-use super::store::{Assigned, Change, HistoryEntry, ParamsKind};
+use super::registry::{Instance, Unhealthy, validate_params};
+use super::store::{Assigned, Change, HistoryEntry, ParamsKind, WriteError};
 use crate::audit::{AuditEvent, AuditOutcome, kinds};
 use crate::dashboard::AuthenticatedOperator;
 use crate::error::{GuardianError, Result};
@@ -103,7 +103,7 @@ fn pipeline(state: &AppState) -> Result<&ModulePipeline> {
     state
         .modules
         .as_deref()
-        .ok_or_else(|| GuardianError::InvalidInput("no policy modules are configured".into()))
+        .ok_or_else(|| GuardianError::ModuleWriteRefused("no policy modules are configured".into()))
 }
 
 fn instance<'a>(pipeline: &'a ModulePipeline, module_id: &str) -> Result<&'a Instance> {
@@ -118,10 +118,12 @@ const MAX_REASON_CHARS: usize = 512;
 
 fn require_reason(reason: &str) -> Result<()> {
     if reason.trim().is_empty() {
-        return Err(GuardianError::InvalidInput("reason is required".into()));
+        return Err(GuardianError::ModuleWriteRefused(
+            "reason is required".into(),
+        ));
     }
     if reason.chars().count() > MAX_REASON_CHARS {
-        return Err(GuardianError::InvalidInput(format!(
+        return Err(GuardianError::ModuleWriteRefused(format!(
             "reason exceeds {MAX_REASON_CHARS} character limit"
         )));
     }
@@ -136,25 +138,34 @@ async fn validated(
     params: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     if !params.is_object() {
-        return Err(GuardianError::InvalidInput(
+        return Err(GuardianError::ModuleWriteRefused(
             "params must be a JSON object".into(),
         ));
     }
-    pipeline
-        .limits()
-        .check_params_size(params)
-        .map_err(|e| GuardianError::InvalidInput(format!("module {}: {e}", instance.config.id)))?;
+    pipeline.limits().check_params_size(params).map_err(|e| {
+        GuardianError::ModuleWriteRefused(format!("module {}: {e}", instance.config.id))
+    })?;
     if contains_secret_reference(params) {
-        return Err(GuardianError::InvalidInput(
+        return Err(GuardianError::ModuleWriteRefused(
             "secret references cannot be set through the operator API".into(),
         ));
     }
     let stored = validate_params(&instance.module, params, instance.config.timeout)
         .await
-        .map_err(|e| GuardianError::InvalidInput(format!("module {}: {e}", instance.config.id)))?;
-    pipeline
-        .storable_normalization(&stored)
-        .map_err(|e| GuardianError::InvalidInput(format!("module {}: {e}", instance.config.id)))?;
+        .map_err(|e| match e {
+            Unhealthy::InvalidParams(_) => {
+                GuardianError::ModuleWriteRefused(format!("module {}: {e}", instance.config.id))
+            }
+            Unhealthy::Unreachable(_) | Unhealthy::Incompatible(_) => {
+                tracing::warn!(module = %instance.config.id, error = %e, "Policy module could not validate operator params");
+                GuardianError::ModuleUnavailable {
+                    module: Some(instance.config.id.clone()),
+                }
+            }
+        })?;
+    pipeline.storable_normalization(&stored).map_err(|e| {
+        GuardianError::ModuleWriteRefused(format!("module {}: {e}", instance.config.id))
+    })?;
     Ok(stored)
 }
 
@@ -213,6 +224,49 @@ fn change<'a>(
         operator: &operator.operator_id,
         reason,
         at: state.clock.now_rfc3339(),
+        expected_version: None,
+    }
+}
+
+/// An operator's params write: its reason and, optionally, the params version it was made
+/// against (the instance params version for a global write, the account's for a layer or an
+/// assignment), so a write from a stale read is refused instead of dropping a newer change.
+#[derive(Debug, Clone, Copy)]
+pub struct Write<'a> {
+    pub reason: &'a str,
+    pub expected_version: Option<u64>,
+}
+
+impl<'a> From<&'a str> for Write<'a> {
+    fn from(reason: &'a str) -> Self {
+        Write {
+            reason,
+            expected_version: None,
+        }
+    }
+}
+
+impl<'a> From<&'a String> for Write<'a> {
+    fn from(reason: &'a String) -> Self {
+        Write::from(reason.as_str())
+    }
+}
+
+fn change_for<'a>(
+    state: &AppState,
+    operator: &'a AuthenticatedOperator,
+    write: Write<'a>,
+) -> Change<'a> {
+    Change {
+        expected_version: write.expected_version,
+        ..change(state, operator, write.reason)
+    }
+}
+
+fn write_error(error: WriteError) -> GuardianError {
+    match error {
+        WriteError::Stale { .. } => GuardianError::ModuleParamsStale,
+        WriteError::Storage(message) => GuardianError::StorageError(message),
     }
 }
 
@@ -317,13 +371,14 @@ async fn view_of(state: &AppState, account_id: &str) -> Result<AccountModulesVie
             params: None,
         });
     }
-    for row in rows
-        .iter()
-        .filter(|row| row.kind == ParamsKind::Layer && pipeline.instance(&row.module_id).is_none())
-    {
+    for row in rows.iter().filter(|row| {
+        row.kind == ParamsKind::Layer && !pipeline.row_applies(&row.module_id, row.kind)
+    }) {
         modules.push(AccountModuleEntry {
             module_id: row.module_id.clone(),
-            scope: "all",
+            scope: pipeline
+                .instance(&row.module_id)
+                .map_or("all", |instance| scope_name(instance.config.scope)),
             enabled: false,
             orphaned: true,
             global_params: None,
@@ -342,7 +397,7 @@ async fn view_of(state: &AppState, account_id: &str) -> Result<AccountModulesVie
                 Some(instance) => ModulePipeline::enabled_in(&instance_rows, instance),
                 None => false,
             },
-            orphaned: instance.is_none(),
+            orphaned: !pipeline.row_applies(&row.module_id, ParamsKind::Assignment),
             module_id: row.module_id,
             global_params: None,
             account_layer: None,
@@ -371,7 +426,7 @@ pub async fn history(
     instance(pipeline, module_id)?;
     let limit = limit.unwrap_or(HISTORY_PAGE_DEFAULT);
     if limit == 0 || limit > HISTORY_PAGE_MAX {
-        return Err(GuardianError::InvalidInput(format!(
+        return Err(GuardianError::ModuleWriteRefused(format!(
             "limit must be between 1 and {HISTORY_PAGE_MAX}"
         )));
     }
@@ -430,6 +485,7 @@ pub async fn enable(
                         operator: &migrator,
                         reason: "params migrated by the module",
                         at: state.clock.now_rfc3339(),
+                        expected_version: None,
                     },
                 )
                 .await
@@ -498,28 +554,30 @@ pub async fn disable(
     instance_view(pipeline, instance).await
 }
 
-pub async fn set_global(
+pub async fn set_global<'a>(
     state: &AppState,
-    operator: &AuthenticatedOperator,
+    operator: &'a AuthenticatedOperator,
     module_id: &str,
     params: serde_json::Value,
-    reason: &str,
+    write: impl Into<Write<'a>>,
     client_ip: Option<String>,
 ) -> Result<ModuleInstanceView> {
+    let write = write.into();
+    let reason = write.reason;
     require_reason(reason)?;
     let pipeline = pipeline(state)?;
     let instance = instance(pipeline, module_id)?;
     if instance.config.file_managed_params {
-        return Err(GuardianError::InvalidInput(format!(
+        return Err(GuardianError::ModuleWriteRefused(format!(
             "module {module_id}: params with secret references are managed in the catalog file"
         )));
     }
     let params = validated(pipeline, instance, &params).await?;
     let committed = pipeline
         .store()
-        .set_global(module_id, params, &change(state, operator, reason))
+        .set_global(module_id, params, &change_for(state, operator, write))
         .await
-        .map_err(GuardianError::StorageError)?;
+        .map_err(write_error)?;
     let payload = serde_json::json!({ "module_id": module_id, "reason": reason, "params_version": committed });
     audit(
         state,
@@ -532,21 +590,23 @@ pub async fn set_global(
     instance_view(pipeline, instance).await
 }
 
-pub async fn set_layer(
+pub async fn set_layer<'a>(
     state: &AppState,
-    operator: &AuthenticatedOperator,
+    operator: &'a AuthenticatedOperator,
     account_id: &str,
     module_id: &str,
     params: Option<serde_json::Value>,
-    reason: &str,
+    write: impl Into<Write<'a>>,
     client_ip: Option<String>,
 ) -> Result<AccountModulesView> {
+    let write = write.into();
+    let reason = write.reason;
     require_reason(reason)?;
     let pipeline = pipeline(state)?;
     let account_id = existing_account(state, account_id).await?;
     let instance = instance(pipeline, module_id)?;
     if params.is_some() && instance.config.scope != Scope::All {
-        return Err(GuardianError::InvalidInput(format!(
+        return Err(GuardianError::ModuleWriteRefused(format!(
             "module {module_id}: account layers apply only to scope = \"all\" instances; assign it instead"
         )));
     }
@@ -564,7 +624,7 @@ pub async fn set_layer(
             .iter()
             .any(|row| row.kind == ParamsKind::Assignment && row.module_id == module_id)
     {
-        return Err(GuardianError::InvalidInput(format!(
+        return Err(GuardianError::ModuleWriteRefused(format!(
             "module {module_id}: the account still has it assigned from when it applied only to assigned accounts; remove it from the account's assignment first"
         )));
     }
@@ -585,10 +645,10 @@ pub async fn set_layer(
             &account_id,
             module_id,
             params,
-            &change(state, operator, reason),
+            &change_for(state, operator, write),
         )
         .await
-        .map_err(GuardianError::StorageError)?;
+        .map_err(write_error)?;
     let payload = serde_json::json!({ "module_id": module_id, "reason": reason, "account_params_version": committed });
     audit(
         state,
@@ -619,22 +679,29 @@ fn proposed_row(
     }
 }
 
-pub async fn set_assignment(
+pub async fn set_assignment<'a>(
     state: &AppState,
-    operator: &AuthenticatedOperator,
+    operator: &'a AuthenticatedOperator,
     account_id: &str,
     modules: Vec<Assigned>,
-    reason: &str,
+    write: impl Into<Write<'a>>,
     client_ip: Option<String>,
 ) -> Result<AccountModulesView> {
+    let write = write.into();
+    let reason = write.reason;
     require_reason(reason)?;
     let pipeline = pipeline(state)?;
     let account_id = existing_account(state, account_id).await?;
+    let current = pipeline
+        .store()
+        .account_params(&account_id)
+        .await
+        .map_err(GuardianError::StorageError)?;
     let mut to_store = Vec::with_capacity(modules.len());
     for (index, assigned) in modules.iter().enumerate() {
         let instance = instance(pipeline, &assigned.module_id)?;
         if instance.config.scope == Scope::All {
-            return Err(GuardianError::InvalidInput(format!(
+            return Err(GuardianError::ModuleWriteRefused(format!(
                 "module {}: scope = \"all\" applies to every account; set an account layer instead",
                 assigned.module_id
             )));
@@ -643,28 +710,33 @@ pub async fn set_assignment(
             .iter()
             .any(|earlier| earlier.module_id == assigned.module_id)
         {
-            return Err(GuardianError::InvalidInput(format!(
+            return Err(GuardianError::ModuleWriteRefused(format!(
                 "module {} listed twice",
                 assigned.module_id
             )));
         }
+        let kept = current.iter().any(|row| {
+            row.kind == ParamsKind::Assignment
+                && row.module_id == assigned.module_id
+                && row.params == assigned.params
+        });
+        let params = if kept {
+            assigned.params.clone()
+        } else {
+            validated(pipeline, instance, &assigned.params).await?
+        };
         to_store.push(Assigned {
             module_id: assigned.module_id.clone(),
-            params: validated(pipeline, instance, &assigned.params).await?,
+            params,
         });
     }
-    let current = pipeline
-        .store()
-        .account_params(&account_id)
-        .await
-        .map_err(GuardianError::StorageError)?;
     if let Some(layer) = current.iter().find(|row| {
         row.kind == ParamsKind::Layer
             && to_store
                 .iter()
                 .any(|assigned| assigned.module_id == row.module_id)
     }) {
-        return Err(GuardianError::InvalidInput(format!(
+        return Err(GuardianError::ModuleWriteRefused(format!(
             "module {}: the account still has a layer on it from when it applied to every account; delete the layer first",
             layer.module_id
         )));
@@ -699,9 +771,9 @@ pub async fn set_assignment(
         .collect();
     let committed = pipeline
         .store()
-        .set_assignment(&account_id, to_store, &change(state, operator, reason))
+        .set_assignment(&account_id, to_store, &change_for(state, operator, write))
         .await
-        .map_err(GuardianError::StorageError)?;
+        .map_err(write_error)?;
     let payload = serde_json::json!({ "reason": reason, "modules": assigned, "account_params_version": committed });
     audit(
         state,
@@ -778,6 +850,114 @@ mod tests {
         state
     }
 
+    /// A catalog that changes an instance's `scope` leaves rows evaluation no longer reads: they
+    /// show as orphaned in the account view and count in the orphaned-rows report.
+    #[tokio::test]
+    async fn rows_left_by_a_scope_change_are_reported_as_orphaned() {
+        let store: Arc<dyn super::super::store::ModuleStore> =
+            Arc::new(super::super::store::FsModuleStore::in_memory());
+        let hooks = [HookName::BeforeTransactionApproved];
+        let mut state = state();
+        state.modules = Some(Arc::new(ModulePipeline::from_instances_with_store(
+            vec![instance(
+                "caps",
+                &hooks,
+                OnError::Deny,
+                Arc::new(RecipientPolicy),
+            )],
+            store.clone(),
+        )));
+        set_layer(
+            &state,
+            &operator(),
+            ACCOUNT,
+            "caps",
+            Some(json!({ "denylist": ["0x000000000000000000000000000aaa"] })),
+            "OP-1",
+            None,
+        )
+        .await
+        .unwrap();
+
+        let mut now_assigned = instance("caps", &hooks, OnError::Deny, Arc::new(RecipientPolicy));
+        now_assigned.config.scope = Scope::Assigned;
+        let pipeline = Arc::new(ModulePipeline::from_instances_with_store(
+            vec![now_assigned],
+            store,
+        ));
+        state.modules = Some(pipeline.clone());
+        let view = account_view(&state, ACCOUNT).await.unwrap();
+        let layer = view
+            .modules
+            .iter()
+            .find(|entry| entry.module_id == "caps")
+            .expect("the left-over layer is shown");
+        assert!(layer.orphaned, "{layer:?}");
+        assert_eq!(layer.scope, "assigned");
+        assert_eq!(pipeline.report_stored_assignments().await.unwrap().1, 1);
+    }
+
+    /// One module being down must not freeze every assignment that keeps it: an entry stored
+    /// unchanged is not sent to the module again, and a change it cannot validate is refused
+    /// as unavailable, not as invalid params.
+    #[tokio::test]
+    async fn an_assignment_keeping_a_down_module_unchanged_can_still_be_edited() {
+        let vendor = crate::modules::testing::Outage::new(false);
+        let mut down = instance(
+            "vendor-assigned",
+            &[HookName::BeforeTransactionApproved],
+            OnError::Deny,
+            vendor.clone(),
+        );
+        down.config.scope = Scope::Assigned;
+        let mut optional = instance(
+            "optional",
+            &[HookName::BeforeTransactionApproved],
+            OnError::Deny,
+            Arc::new(RecipientPolicy),
+        );
+        optional.config.scope = Scope::Assigned;
+        let mut state = state();
+        state.modules = Some(pipeline(vec![down, optional]));
+        let operator = operator();
+        let kept = Assigned {
+            module_id: "vendor-assigned".into(),
+            params: json!({ "tier": 1 }),
+        };
+        set_assignment(&state, &operator, ACCOUNT, vec![kept.clone()], "OP-1", None)
+            .await
+            .unwrap();
+        vendor.set_down(true);
+
+        let added = Assigned {
+            module_id: "optional".into(),
+            params: json!({}),
+        };
+        let edited = set_assignment(
+            &state,
+            &operator,
+            ACCOUNT,
+            vec![kept.clone(), added],
+            "OP-2",
+            None,
+        )
+        .await;
+        assert!(edited.is_ok(), "{edited:?}");
+
+        let changed = Assigned {
+            module_id: "vendor-assigned".into(),
+            params: json!({ "tier": 2 }),
+        };
+        let refused = set_assignment(&state, &operator, ACCOUNT, vec![changed], "OP-3", None).await;
+        assert!(
+            matches!(
+                refused,
+                Err(GuardianError::ModuleUnavailable { module: Some(ref module) }) if module == "vendor-assigned"
+            ),
+            "{refused:?}"
+        );
+    }
+
     #[tokio::test]
     async fn operator_writes_store_the_shape_the_module_normalized() {
         let mut stub = crate::modules::testing::ProtocolStub::new();
@@ -843,7 +1023,13 @@ mod tests {
         screening.config.scope = Scope::Default;
         instances.push(screening);
         store
-            .seed_instance("retired", true, &json!({ "old": true }), "t0")
+            .seed_instance(
+                "retired",
+                true,
+                &json!({ "old": true }),
+                &json!({ "old": true }),
+                "t0",
+            )
             .await
             .unwrap();
         store
@@ -863,6 +1049,7 @@ mod tests {
                     operator: "0xop",
                     reason: "setup",
                     at: "t1".into(),
+                    expected_version: None,
                 },
             )
             .await
@@ -935,7 +1122,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&layer, Err(GuardianError::InvalidInput(message)) if message.contains("budget")),
+            matches!(&layer, Err(GuardianError::ModuleWriteRefused(message)) if message.contains("budget")),
             "{layer:?}"
         );
         let assignment = set_assignment(
@@ -950,7 +1137,10 @@ mod tests {
             None,
         )
         .await;
-        assert!(matches!(assignment, Err(GuardianError::InvalidInput(_))));
+        assert!(matches!(
+            assignment,
+            Err(GuardianError::ModuleWriteRefused(_))
+        ));
         let pipeline = state.modules.as_ref().unwrap();
         assert!(
             pipeline
@@ -1076,6 +1266,7 @@ mod tests {
                     operator: "0xop",
                     reason: "written while optional applied to every account",
                     at: "t0".into(),
+                    expected_version: None,
                 },
             )
             .await
@@ -1095,7 +1286,7 @@ mod tests {
             )
         };
         assert!(
-            matches!(assign().await, Err(GuardianError::InvalidInput(message)) if message.contains("delete the layer first"))
+            matches!(assign().await, Err(GuardianError::ModuleWriteRefused(message)) if message.contains("delete the layer first"))
         );
         set_layer(&state, &operator, ACCOUNT, "optional", None, "OP-2", None)
             .await
@@ -1142,7 +1333,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(layer, Err(GuardianError::InvalidInput(message)) if message.contains("remove it from the account's assignment first")),
+            matches!(layer, Err(GuardianError::ModuleWriteRefused(message)) if message.contains("remove it from the account's assignment first")),
             "the scope change left an assignment row for the module"
         );
     }
@@ -1161,7 +1352,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(refused, Err(GuardianError::InvalidInput(message)) if message.contains("character limit"))
+            matches!(refused, Err(GuardianError::ModuleWriteRefused(message)) if message.contains("character limit"))
         );
     }
 
@@ -1199,7 +1390,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&more, Err(GuardianError::InvalidInput(message)) if message.contains("budget")),
+            matches!(&more, Err(GuardianError::ModuleWriteRefused(message)) if message.contains("budget")),
             "a write that adds cost to an account over the budget: {more:?}"
         );
         set_assignment(&state, &operator(), ACCOUNT, optional(), "OP-3", None)
@@ -1261,6 +1452,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_write_made_against_a_version_that_moved_is_refused() {
+        let state = state();
+        let operator = operator();
+        set_global(&state, &operator, "blocklist", json!({}), "OP-1", None)
+            .await
+            .unwrap();
+        let read = state
+            .modules
+            .as_ref()
+            .unwrap()
+            .store()
+            .instance_version()
+            .await
+            .unwrap();
+        let against = |reason| Write {
+            reason,
+            expected_version: Some(read),
+        };
+        set_global(
+            &state,
+            &operator,
+            "blocklist",
+            json!({ "denylist": ["0x000000000000000000000000000aaa"] }),
+            against("first editor"),
+            None,
+        )
+        .await
+        .expect("the version it read is current");
+        let second = set_global(
+            &state,
+            &operator,
+            "blocklist",
+            json!({ "denylist": ["0x000000000000000000000000000bbb"] }),
+            against("second editor, same read"),
+            None,
+        )
+        .await;
+        assert!(
+            matches!(second, Err(GuardianError::ModuleParamsStale)),
+            "{second:?}"
+        );
+
+        let account_read = set_layer(
+            &state,
+            &operator,
+            ACCOUNT,
+            "blocklist",
+            Some(json!({})),
+            "OP-2",
+            None,
+        )
+        .await
+        .unwrap()
+        .account_params_version;
+        let stale_removal = set_layer(
+            &state,
+            &operator,
+            ACCOUNT,
+            "blocklist",
+            None,
+            Write {
+                reason: "removal from an older read",
+                expected_version: Some(account_read - 1),
+            },
+            None,
+        )
+        .await;
+        assert!(matches!(
+            stale_removal,
+            Err(GuardianError::ModuleParamsStale)
+        ));
+        let removal = set_layer(
+            &state,
+            &operator,
+            ACCOUNT,
+            "blocklist",
+            None,
+            Write {
+                reason: "removal from the current read",
+                expected_version: Some(account_read),
+            },
+            None,
+        )
+        .await;
+        assert!(removal.is_ok(), "{removal:?}");
+
+        let history = history(&state, "blocklist", None, None)
+            .await
+            .unwrap()
+            .entries;
+        assert!(
+            history
+                .iter()
+                .all(|entry| !entry.reason.starts_with("second editor")
+                    && entry.reason != "removal from an older read"),
+            "a refused write leaves no history"
+        );
+    }
+
+    #[tokio::test]
     async fn history_pages_newest_first_by_version() {
         let state = state();
         for n in 0..3 {
@@ -1305,7 +1596,7 @@ mod tests {
         let huge = json!({ "denylist": vec!["0x".repeat(40); 4_000] });
         let refused = set_global(&state, &operator(), "blocklist", huge, "OP-9", None).await;
         assert!(
-            matches!(&refused, Err(GuardianError::InvalidInput(message)) if message.contains("GUARDIAN_MODULE_PARAMS_MAX_BYTES")),
+            matches!(&refused, Err(GuardianError::ModuleWriteRefused(message)) if message.contains("GUARDIAN_MODULE_PARAMS_MAX_BYTES")),
             "{refused:?}"
         );
     }
@@ -1396,6 +1687,7 @@ mod tests {
             .seed_instance(
                 "blocklist",
                 true,
+                &json!({ "denylist": ["0x000000000000000000000000000aaa"] }),
                 &json!({ "denylist": ["0x000000000000000000000000000aaa"] }),
                 "t0",
             )

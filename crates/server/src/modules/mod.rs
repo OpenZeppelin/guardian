@@ -50,8 +50,15 @@ pub async fn from_env(
     execution_lease: std::time::Duration,
     network: crate::network::NetworkType,
 ) -> Result<Option<Arc<ModulePipeline>>, String> {
+    let unconfigured = Unconfigured {
+        prod: crate::config::stage::Stage::from_env()
+            .map_err(|e| e.to_string())?
+            .is_prod(),
+        disabled_on_purpose: disabled_on_purpose()?,
+    };
     load(
         std::env::var_os(CONFIG_ENV),
+        unconfigured,
         now,
         store,
         registry,
@@ -61,11 +68,41 @@ pub async fn from_env(
     .await
 }
 
+/// What decides whether a Guardian may start without a catalog while its database holds module
+/// state: refused in the prod stage unless [`DISABLED_ENV`] says it is on purpose.
+#[derive(Clone, Copy, Debug)]
+struct Unconfigured {
+    prod: bool,
+    disabled_on_purpose: bool,
+}
+
+/// Set to `true` to start a prod-stage Guardian without a catalog although its database holds
+/// module state; without it, a lost `GUARDIAN_MODULES_CONFIG` refuses startup instead of
+/// silently running every account without its policies.
+pub const DISABLED_ENV: &str = "GUARDIAN_MODULES_DISABLED";
+
+fn disabled_on_purpose() -> Result<bool, String> {
+    match std::env::var(DISABLED_ENV) {
+        Err(std::env::VarError::NotPresent) => Ok(false),
+        Ok(value) => match value.trim() {
+            "true" => Ok(true),
+            "false" | "" => Ok(false),
+            other => Err(format!(
+                "{DISABLED_ENV} must be true or false, not {other:?}"
+            )),
+        },
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err(format!("{DISABLED_ENV} must be true or false"))
+        }
+    }
+}
+
 /// [`from_env`] for `config`, the value of `GUARDIAN_MODULES_CONFIG`. Only an unset variable
 /// means "no modules": an empty value or a catalog that declares none is a mistake that would
 /// otherwise start the server without any policy.
 async fn load(
     config: Option<std::ffi::OsString>,
+    unconfigured: Unconfigured,
     now: String,
     store: Option<Arc<dyn store::ModuleStore>>,
     registry: &Registry,
@@ -77,6 +114,11 @@ async fn load(
             Some(store) => store.instances().await?.len(),
             None => 0,
         };
+        if stored > 0 && unconfigured.prod && !unconfigured.disabled_on_purpose {
+            return Err(format!(
+                "{CONFIG_ENV} is not set, but this Guardian's database holds state for {stored} policy module instance(s): starting would run every account without its policies. Set {CONFIG_ENV} to the catalog, or set {DISABLED_ENV}=true to run without policy modules on purpose"
+            ));
+        }
         if stored > 0 {
             tracing::warn!(
                 stored_instances = stored,
@@ -143,11 +185,25 @@ async fn load(
 mod tests {
     use super::*;
 
+    const DEV: Unconfigured = Unconfigured {
+        prod: false,
+        disabled_on_purpose: false,
+    };
+
     async fn loaded(config: Option<&str>) -> Result<Option<Arc<ModulePipeline>>, String> {
+        loaded_with(config, DEV, Arc::new(store::FsModuleStore::in_memory())).await
+    }
+
+    async fn loaded_with(
+        config: Option<&str>,
+        unconfigured: Unconfigured,
+        store: Arc<dyn store::ModuleStore>,
+    ) -> Result<Option<Arc<ModulePipeline>>, String> {
         load(
             config.map(Into::into),
+            unconfigured,
             "2026-11-10T00:00:00Z".into(),
-            Some(Arc::new(store::FsModuleStore::in_memory())),
+            Some(store),
             &Registry::first_party(),
             std::time::Duration::from_secs(60),
             crate::network::NetworkType::MidenLocal,
@@ -181,6 +237,54 @@ mod tests {
                 .expect("a catalog without modules is refused");
             assert!(no_module.contains("declares no module"), "{no_module}");
         }
+    }
+
+    /// A prod Guardian whose catalog variable went missing in a deploy would otherwise run
+    /// every account without its policies, with only a warning.
+    #[tokio::test]
+    async fn a_prod_guardian_with_module_state_needs_its_catalog_or_an_explicit_opt_out() {
+        let store: Arc<dyn store::ModuleStore> = Arc::new(store::FsModuleStore::in_memory());
+        store
+            .seed_instance(
+                "caps",
+                true,
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                "t0",
+            )
+            .await
+            .unwrap();
+        let prod = Unconfigured {
+            prod: true,
+            disabled_on_purpose: false,
+        };
+        let refused = loaded_with(None, prod, store.clone())
+            .await
+            .err()
+            .expect("refused");
+        assert!(refused.contains(DISABLED_ENV), "{refused}");
+
+        let on_purpose = Unconfigured {
+            disabled_on_purpose: true,
+            ..prod
+        };
+        assert!(
+            loaded_with(None, on_purpose, store.clone())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            loaded_with(None, DEV, store).await.unwrap().is_none(),
+            "outside prod it only warns"
+        );
+        assert!(
+            loaded_with(None, prod, Arc::new(store::FsModuleStore::in_memory()))
+                .await
+                .unwrap()
+                .is_none(),
+            "a database without module state needs nothing"
+        );
     }
 
     #[tokio::test]

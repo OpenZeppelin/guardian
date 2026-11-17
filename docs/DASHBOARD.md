@@ -399,10 +399,10 @@ catalog hash this replica loaded as `backend.module_catalog_hash`.
 | `GET /dashboard/modules` | `dashboard:read` | |
 | `GET /dashboard/modules/{module_id}/params/history?before=<id>&limit=<n>` | `dashboard:read` | |
 | `GET /dashboard/accounts/{account_id}/modules` | `dashboard:read` | |
-| `PUT /dashboard/modules/{module_id}/params` | `policies:write_global` | `{"params": {...}, "reason": "..."}` |
-| `PUT /dashboard/accounts/{account_id}/modules/{module_id}/params` | `policies:write` | `{"params": {...}, "reason": "..."}` |
-| `DELETE /dashboard/accounts/{account_id}/modules/{module_id}/params` | `policies:write` | `{"reason": "..."}` |
-| `PUT /dashboard/accounts/{account_id}/modules` | `policies:write` | `{"modules": [{"module_id": "...", "params": {...}}], "reason": "..."}` |
+| `PUT /dashboard/modules/{module_id}/params` | `policies:write_global` | `{"params": {...}, "reason": "...", "expected_version": n}` (`expected_version` optional) |
+| `PUT /dashboard/accounts/{account_id}/modules/{module_id}/params` | `policies:write` | `{"params": {...}, "reason": "...", "expected_version": n}` (`expected_version` optional) |
+| `DELETE /dashboard/accounts/{account_id}/modules/{module_id}/params` | `policies:write` | `{"reason": "...", "expected_version": n}` (`expected_version` optional) |
+| `PUT /dashboard/accounts/{account_id}/modules` | `policies:write` | `{"modules": [{"module_id": "...", "params": {...}}], "reason": "...", "expected_version": n}` (`expected_version` optional) |
 | `POST /dashboard/modules/{module_id}/enable` | `policies:write` | `{"reason": "..."}` |
 | `POST /dashboard/modules/{module_id}/disable` | `policies:write` or `modules:disable` | `{"reason": "..."}` |
 
@@ -414,7 +414,20 @@ account's other assignments; a `scope = assigned` one applies only where it
 is assigned. Disabling an instance the catalog does not mark
 `operator_can_disable` returns `409 GUARDIAN_MODULE_NOT_DISABLEABLE`.
 
-Writes are refused with `400 invalid_input` when the `reason` is longer than
+The four params writes (global params, account layer set or removed, assignment)
+accept an optional `expected_version`: the catalog-wide `params_version` from
+`GET /dashboard/modules` for a global write (any instance's global write or
+enable/disable moves it, so re-read the catalog after a 409), the account's `account_params_version` for the others. Set, a
+write made after another change to the same rows is refused with
+`409 GUARDIAN_MODULE_PARAMS_STALE` and nothing is written; read the params
+again and reapply your change. Unset, the write replaces whatever is there, so
+two operators editing from the same read can drop each other's change.
+
+A refused write returns `400 invalid_input` with the reason in `meta.detail`
+(the module and the rule it broke; the `message` stays generic, as for every
+error), and a body that names a JSON key twice in one object is refused the
+same way rather than keeping the last value. Writes are refused when the
+`reason` is longer than
 512 characters, when the params exceed
 `GUARDIAN_MODULE_PARAMS_MAX_BYTES`, when a layer is written for a module the
 account still has in its assignment (left from before a catalog change made it
@@ -422,12 +435,18 @@ account still has in its assignment (left from before a catalog change made it
 over the evaluation budget at a hook where they are not already that far over
 (each `all` instance, again for its layer, plus each assigned one). A write that
 keeps or lowers the cost always passes, so an account a deploy pushed over the
-budget can be brought back under it. `GET /dashboard/modules` reports each instance's
+budget can be brought back under it. Params a module cannot validate because it
+does not answer are refused with `503 GUARDIAN_MODULE_UNAVAILABLE`; an assignment
+entry sent exactly as stored is not validated again, so an account keeping a down
+module can still have its other entries changed. `GET /dashboard/modules` reports each instance's
 `circuit` on the answering replica, `params_drift` against the params seeded
 from the catalog file, and under `undeclared` the stored instances the catalog
 no longer declares. An account's entries naming such an instance are marked
-`orphaned` and skipped. The history is newest first, at most 100 entries per
-page by default (1,000 at most), and `before` pages backwards by version.
+`orphaned` and skipped, and so are entries a `scope` change left behind: a
+layer on an instance that is no longer `all`, or an assignment entry on one
+that now is. Delete such a layer, or write the account's assignment again
+(which drops entries on `all` instances). The history is newest first, at most 100 entries per
+page by default (1,000 at most), and `before` pages backwards by entry `id` (not `version`, which is counted per instance or per account).
 
 ## Account pausing
 

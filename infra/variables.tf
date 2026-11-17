@@ -795,6 +795,17 @@ variable "alarm_memory_threshold_percent" {
   }
 }
 
+variable "alarm_module_fail_open_threshold" {
+  description = "Requests approved without a policy module's judgement (fail-open instances whose module failed) per 5-minute period above which the module-fail-open alarm fires. 0 fires on any. Only created when guardian_modules_config is set."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.alarm_module_fail_open_threshold >= 0
+    error_message = "alarm_module_fail_open_threshold must be zero or positive."
+  }
+}
+
 variable "alarm_execution_failures_threshold" {
   description = "Operator-side Guardian execution failures (PROVING_FAILED, NODE_UNAVAILABLE, CHAIN_INCONSISTENT, SEALING_FAILED, ACKNOWLEDGEMENT_FAILED) per 5-minute period above which the execution-failures alarm fires. 0 fires on any such failure."
   type        = number
@@ -1016,13 +1027,19 @@ variable "guardian_tx_prover_timeout_secs" {
 }
 
 variable "guardian_modules_config" {
-  description = "Path of the policy module catalog inside the server image, injected as GUARDIAN_MODULES_CONFIG. Empty runs without policy modules. The published image carries no catalog: build an image FROM it that copies yours in, and deploy that image. The catalog is deploy configuration, so a change to it is a new image and a new task definition."
+  description = "Path of the policy module catalog inside the server image, injected as GUARDIAN_MODULES_CONFIG. Empty runs without policy modules, except that a prod-stage server whose database holds module state then refuses to start unless guardian_modules_disabled is true. The published image carries no catalog: build an image FROM it that copies yours in, and deploy that image. The catalog is deploy configuration, so a change to it is a new image and a new task definition."
   type        = string
   default     = ""
   validation {
     condition     = var.guardian_modules_config == "" || startswith(var.guardian_modules_config, "/")
     error_message = "guardian_modules_config must be an absolute path inside the image."
   }
+}
+
+variable "guardian_modules_disabled" {
+  description = "Sets GUARDIAN_MODULES_DISABLED=true: lets a prod-stage server start without guardian_modules_config although its database holds policy module state, running no module on purpose (retiring modules). Without it that start is refused, so a lost catalog setting cannot silently run every account without its policies."
+  type        = bool
+  default     = false
 }
 
 variable "guardian_module_secret_names" {

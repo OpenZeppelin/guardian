@@ -11,7 +11,8 @@ The crate has:
   compiled into a Guardian build.
 - The `guardian.module.v1` protocol types (`HookRequest`, `Decision`,
   `ModuleInfo`, the Miden transaction and account projections). Protocol
-  version 1 is frozen: new features arrive as named capabilities.
+  version 1 is not frozen yet: it freezes with the first published release of
+  this crate, and after that new features arrive as named capabilities.
 - `serve`, a gRPC harness that exposes any `Module` as a remote service with a
   bearer token per instance.
 - `policies`, the Guardian's built-in policy kinds, one concern each, as a
@@ -53,7 +54,7 @@ impl Module for NoPrivateNotes {
 
     async fn evaluate(&self, request: &HookRequest) -> Result<Decision, ModuleError> {
         let Some(hook_request::Subject::Transaction(subject)) = &request.subject else {
-            return Ok(Decision::allow());
+            return Err(ModuleError::InvalidRequest("judges transactions only".into()));
         };
         let miden = subject
             .miden()
@@ -100,7 +101,11 @@ serve(NoPrivateNotes)
 ```
 
 Each instance the Guardian calls (its catalog `id`) has its own token; a call
-for an unknown instance, or with another instance's token, is refused. For TLS
+for an unknown instance, or with another instance's token, is refused. A server
+with no instance registered refuses every call. For a test or a local experiment
+on a loopback address, `serve(module).allow_unauthenticated()` answers without
+credentials; never expose such a server, since anyone who reaches it can query
+the module. For TLS
 add `serve(...).into_service()` to a tonic server configured for TLS, as
 [`examples/policy-module`](https://github.com/OpenZeppelin/guardian/tree/main/examples/policy-module)
 does. Raise the server's receive limit if you lower it: the Guardian sends

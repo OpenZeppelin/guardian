@@ -19,6 +19,19 @@ pub struct ParamsBody {
     #[schema(value_type = Object)]
     pub params: serde_json::Value,
     pub reason: String,
+    /// The params version the change was made against: `params_version` for a global write,
+    /// `account_params_version` for an account layer. Set, a write after another change is
+    /// refused with 409 `GUARDIAN_MODULE_PARAMS_STALE`.
+    #[serde(default)]
+    pub expected_version: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct LayerRemovalBody {
+    pub reason: String,
+    /// The `account_params_version` the removal was made against; see [`ParamsBody`].
+    #[serde(default)]
+    pub expected_version: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -30,6 +43,9 @@ pub struct ReasonBody {
 pub struct AssignmentBody {
     pub modules: Vec<Assigned>,
     pub reason: String,
+    /// The `account_params_version` the assignment was made against; see [`ParamsBody`].
+    #[serde(default)]
+    pub expected_version: Option<u64>,
 }
 
 async fn body<T: serde::de::DeserializeOwned>(
@@ -37,12 +53,93 @@ async fn body<T: serde::de::DeserializeOwned>(
 ) -> Result<(T, Option<String>)> {
     let client_ip = crate::middleware::client_ip::extract_client_ip(&request);
     let (_parts, body) = request.into_parts();
-    let bytes = axum::body::to_bytes(body, BODY_LIMIT)
-        .await
-        .map_err(|_| GuardianError::InvalidInput("failed to read request body".into()))?;
-    let parsed = serde_json::from_slice(&bytes)
-        .map_err(|e| GuardianError::InvalidInput(format!("malformed request body: {e}")))?;
+    let bytes = axum::body::to_bytes(body, BODY_LIMIT).await.map_err(|_| {
+        GuardianError::ModuleWriteRefused(format!(
+            "the request body could not be read or is over {BODY_LIMIT} bytes"
+        ))
+    })?;
+    let malformed = |e: serde_json::Error| {
+        GuardianError::ModuleWriteRefused(format!("malformed request body: {e}"))
+    };
+    serde::de::DeserializeSeed::deserialize(
+        UniqueKeys,
+        &mut serde_json::Deserializer::from_slice(&bytes),
+    )
+    .map_err(malformed)?;
+    let parsed = serde_json::from_slice(&bytes).map_err(malformed)?;
     Ok((parsed, client_ip))
+}
+
+/// Walks a JSON document and fails on the first object that names a key twice. `serde_json`
+/// keeps the last of two equal keys without a word, so `{"cap": "5", "cap": "50"}` would store
+/// a cap of 50 that the operator may not have meant; params are refused instead.
+struct UniqueKeys;
+
+impl<'de> serde::de::DeserializeSeed<'de> for UniqueKeys {
+    type Value = ();
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> std::result::Result<(), D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for UniqueKeys {
+    type Value = ();
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, _: bool) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_i64<E>(self, _: i64) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_u64<E>(self, _: u64) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_f64<E>(self, _: f64) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_str<E>(self, _: &str) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_unit<E>(self) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+        self,
+        mut seq: A,
+    ) -> std::result::Result<(), A::Error> {
+        while seq.next_element_seed(UniqueKeys)?.is_some() {}
+        Ok(())
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(
+        self,
+        mut map: A,
+    ) -> std::result::Result<(), A::Error> {
+        let mut seen = std::collections::HashSet::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if !seen.insert(key.clone()) {
+                return Err(serde::de::Error::custom(format!(
+                    "key {key:?} appears twice in one object"
+                )));
+            }
+            map.next_value_seed(UniqueKeys)?;
+        }
+        Ok(())
+    }
 }
 
 #[utoipa::path(
@@ -129,6 +226,7 @@ pub async fn params_history(
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing policies:write_global permission", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "expected_version is set and the params changed since (GUARDIAN_MODULE_PARAMS_STALE)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn set_global_params(
@@ -143,7 +241,10 @@ pub async fn set_global_params(
         &operator,
         &module_id,
         body.params,
-        &body.reason,
+        admin::Write {
+            reason: &body.reason,
+            expected_version: body.expected_version,
+        },
         client_ip,
     )
     .await
@@ -219,6 +320,7 @@ pub async fn disable_module(
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing policies:write permission", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "expected_version is set and the params changed since (GUARDIAN_MODULE_PARAMS_STALE)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn set_account_layer(
@@ -234,7 +336,10 @@ pub async fn set_account_layer(
         &account_id,
         &module_id,
         Some(body.params),
-        &body.reason,
+        admin::Write {
+            reason: &body.reason,
+            expected_version: body.expected_version,
+        },
         client_ip,
     )
     .await
@@ -247,13 +352,14 @@ pub async fn set_account_layer(
     tag = "dashboard",
     security(("operator_session" = [])),
     params(("account_id" = String, Path, description = "Account identifier"), ("module_id" = String, Path, description = "Module instance id")),
-    request_body = ReasonBody,
+    request_body = LayerRemovalBody,
     responses(
         (status = 200, description = "Account layer removed", body = AccountModulesView),
         (status = 400, description = "Invalid params, reason or assignment, or no policy modules are configured", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing policies:write permission", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "expected_version is set and the params changed since (GUARDIAN_MODULE_PARAMS_STALE)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn remove_account_layer(
@@ -262,14 +368,17 @@ pub async fn remove_account_layer(
     Path((account_id, module_id)): Path<(String, String)>,
     request: axum::extract::Request,
 ) -> Result<Json<AccountModulesView>> {
-    let (body, client_ip): (ReasonBody, _) = body(request).await?;
+    let (body, client_ip): (LayerRemovalBody, _) = body(request).await?;
     admin::set_layer(
         &state,
         &operator,
         &account_id,
         &module_id,
         None,
-        &body.reason,
+        admin::Write {
+            reason: &body.reason,
+            expected_version: body.expected_version,
+        },
         client_ip,
     )
     .await
@@ -289,6 +398,7 @@ pub async fn remove_account_layer(
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing policies:write permission", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "expected_version is set and the params changed since (GUARDIAN_MODULE_PARAMS_STALE)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn set_assignment(
@@ -303,7 +413,10 @@ pub async fn set_assignment(
         &operator,
         &account_id,
         body.modules,
-        &body.reason,
+        admin::Write {
+            reason: &body.reason,
+            expected_version: body.expected_version,
+        },
         client_ip,
     )
     .await
@@ -330,6 +443,36 @@ mod tests {
     use crate::testing::helpers::{TestSigner, create_router, create_test_app_state};
 
     use super::*;
+
+    fn unique_keys(text: &str) -> std::result::Result<(), serde_json::Error> {
+        serde::de::DeserializeSeed::deserialize(
+            UniqueKeys,
+            &mut serde_json::Deserializer::from_str(text),
+        )
+    }
+
+    #[test]
+    fn a_body_naming_a_key_twice_is_refused_at_any_depth() {
+        assert!(unique_keys(r#"{"params":{"cap":"5"},"reason":"r"}"#).is_ok());
+        assert!(
+            unique_keys(
+                r#"{"params":{"max_per_transaction":{"0xa":"5","0xa":"50"}},"reason":"r"}"#
+            )
+            .unwrap_err()
+            .to_string()
+            .contains(r#"key "0xa" appears twice"#)
+        );
+        assert!(unique_keys(r#"{"modules":[{"module_id":"a","module_id":"b"}]}"#).is_err());
+        assert!(unique_keys(r#"{"reason":"r","reason":"s"}"#).is_err());
+        assert!(
+            unique_keys(r#"{"params":{"cap":"5","\u0063ap":"50"}}"#).is_err(),
+            "an escaped spelling of the same key is the same key"
+        );
+        assert!(
+            unique_keys(r#"{"a":{"k":1},"b":{"k":2}}"#).is_ok(),
+            "the same key in two objects is fine"
+        );
+    }
 
     fn operator(signer: &TestSigner, permissions: &[Permission]) -> AuthenticatedOperator {
         AuthenticatedOperator {
@@ -503,7 +646,13 @@ mod tests {
             .as_deref()
             .unwrap()
             .store()
-            .seed_instance("risk-scorer", true, &json!({}), "2026-10-15T00:00:00Z")
+            .seed_instance(
+                "risk-scorer",
+                true,
+                &json!({}),
+                &json!({}),
+                "2026-10-15T00:00:00Z",
+            )
             .await
             .unwrap();
         let app = create_router(state);

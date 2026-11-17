@@ -1553,8 +1553,28 @@
               }
             }
           },
+          "400": {
+            "description": "The account is not a Miden account (unsupported_for_network)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Authentication failed or replay rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not found",
             "content": {
               "application/json": {
                 "schema": {

@@ -61,7 +61,9 @@ impl Module for NotePolicy {
     async fn evaluate(&self, request: &HookRequest) -> Result<Decision, ModuleError> {
         let params = parse(&request.params).map_err(ModuleError::InvalidRequest)?;
         let Some(hook_request::Subject::Transaction(subject)) = &request.subject else {
-            return Ok(Decision::allow());
+            return Err(ModuleError::InvalidRequest(
+                "this module judges transactions only".into(),
+            ));
         };
         let Some(projection) = subject.miden() else {
             return Err(ModuleError::InvalidRequest(

@@ -187,6 +187,15 @@ pub enum GuardianError {
     ModuleNotDisableable {
         module: String,
     },
+    /// An operator params write named the params version it was made against, and the params
+    /// have changed since. Stable code `GUARDIAN_MODULE_PARAMS_STALE`, HTTP 409. Read them
+    /// again and reapply the change.
+    ModuleParamsStale,
+    /// An operator's policy module write was refused: invalid params, a reason too long, a
+    /// module the write cannot apply to, the evaluation budget. Stable code `invalid_input`,
+    /// HTTP 400. Only operators reach it, so unlike other errors the reason goes back to them,
+    /// in `meta.detail`.
+    ModuleWriteRefused(String),
     /// A new account asked to register with a signature scheme this Guardian
     /// does not accept (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`). Stable code
     /// `signature_scheme_not_allowed`, HTTP 403 Forbidden, gRPC
@@ -339,6 +348,8 @@ impl GuardianError {
             GuardianError::ModuleUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
             GuardianError::ModuleNotFound { .. } => StatusCode::NOT_FOUND,
             GuardianError::ModuleNotDisableable { .. } => StatusCode::CONFLICT,
+            GuardianError::ModuleParamsStale => StatusCode::CONFLICT,
+            GuardianError::ModuleWriteRefused(_) => StatusCode::BAD_REQUEST,
             GuardianError::AccountReleased { .. } => StatusCode::CONFLICT,
             GuardianError::CandidateLanded { .. } => StatusCode::CONFLICT,
             GuardianError::ProvingUnavailable => StatusCode::CONFLICT,
@@ -410,6 +421,8 @@ impl GuardianError {
             GuardianError::ModuleUnavailable { .. } => tonic::Code::Unavailable,
             GuardianError::ModuleNotFound { .. } => tonic::Code::NotFound,
             GuardianError::ModuleNotDisableable { .. } => tonic::Code::FailedPrecondition,
+            GuardianError::ModuleParamsStale => tonic::Code::Aborted,
+            GuardianError::ModuleWriteRefused(_) => tonic::Code::InvalidArgument,
             GuardianError::AccountReleased { .. } => tonic::Code::FailedPrecondition,
             GuardianError::CandidateLanded { .. } => tonic::Code::FailedPrecondition,
             GuardianError::ProvingUnavailable => tonic::Code::FailedPrecondition,
@@ -480,6 +493,8 @@ impl GuardianError {
             GuardianError::ModuleUnavailable { .. } => "GUARDIAN_MODULE_UNAVAILABLE",
             GuardianError::ModuleNotFound { .. } => "GUARDIAN_MODULE_NOT_FOUND",
             GuardianError::ModuleNotDisableable { .. } => "GUARDIAN_MODULE_NOT_DISABLEABLE",
+            GuardianError::ModuleParamsStale => "GUARDIAN_MODULE_PARAMS_STALE",
+            GuardianError::ModuleWriteRefused(_) => "invalid_input",
             GuardianError::AccountReleased { .. } => "GUARDIAN_ACCOUNT_RELEASED",
             GuardianError::CandidateLanded { .. } => "GUARDIAN_CANDIDATE_LANDED",
             GuardianError::ProvingUnavailable => refusal_codes::PROVING_UNAVAILABLE,
@@ -601,6 +616,12 @@ impl GuardianError {
             GuardianError::ModuleNotFound { .. } => "That policy module doesn't exist.",
             GuardianError::ModuleNotDisableable { .. } => {
                 "That policy module can't be switched off from the dashboard."
+            }
+            GuardianError::ModuleParamsStale => {
+                "Those policy settings changed since you loaded them. Reload and apply your change again."
+            }
+            GuardianError::ModuleWriteRefused(_) => {
+                "Guardian refused that policy module request; the details say why."
             }
             GuardianError::SignatureSchemeNotAllowed { .. } => {
                 "This Guardian doesn't accept new accounts with that signature scheme."
@@ -834,6 +855,13 @@ impl fmt::Display for GuardianError {
             GuardianError::ModuleNotFound { module } => {
                 write!(f, "Policy module '{module}' not found")
             }
+            GuardianError::ModuleWriteRefused(detail) => {
+                write!(f, "Policy module write refused: {detail}")
+            }
+            GuardianError::ModuleParamsStale => write!(
+                f,
+                "Module params changed since the version this write was made against"
+            ),
             GuardianError::ModuleNotDisableable { module } => {
                 write!(
                     f,
@@ -994,7 +1022,15 @@ struct ErrorMeta {
     /// `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`. Absent for every other error.
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'static str>,
+    /// Why an operator's policy module write was refused. Populated only for that refusal
+    /// (`invalid_input` from a module route).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
 }
+
+/// Longest `meta.detail` a module write refusal carries. The reason can include a module's own
+/// validation message, which a third-party module controls.
+const MODULE_WRITE_DETAIL_MAX_CHARS: usize = 1000;
 
 /// The single error object on the wire: `{ code, message, meta }`. Identical
 /// shape on the HTTP error body and the gRPC `Status.details` (feature
@@ -1103,6 +1139,12 @@ impl GuardianError {
             blocking_proposal_id,
             proposal_type,
             reason,
+            detail: match self {
+                GuardianError::ModuleWriteRefused(detail) => {
+                    Some(detail.chars().take(MODULE_WRITE_DETAIL_MAX_CHARS).collect())
+                }
+                _ => None,
+            },
         }
     }
 
@@ -1122,7 +1164,9 @@ impl IntoResponse for GuardianError {
     fn into_response(self) -> Response {
         let status = self.http_status();
         // FR-003: the diagnostic Display string is logged for operators, never
-        // returned on the wire (removes the disclosure risk by construction).
+        // returned on the wire (removes the disclosure risk by construction). The one
+        // exception is `ModuleWriteRefused`, which only operators reach: its reason goes
+        // out in `meta.detail`, capped, never through Display.
         if status.is_server_error() {
             tracing::error!(code = self.code(), detail = %self, "guardian error (HTTP 5xx)");
         } else {
@@ -1668,6 +1712,29 @@ mod tests {
     }
 
     // --- IntoResponse / tonic::Status ---
+
+    #[test]
+    fn a_module_write_refusal_tells_the_operator_why_in_meta_only() {
+        let refusal = GuardianError::ModuleWriteRefused("module caps: cap is not a number".into());
+        let body = serde_json::to_value(refusal.error_body()).unwrap();
+        assert_eq!(body["code"], "invalid_input");
+        assert_eq!(body["meta"]["detail"], "module caps: cap is not a number");
+        assert!(!body["message"].as_str().unwrap().contains("caps"));
+        let other =
+            serde_json::to_value(GuardianError::InvalidInput("/var/secret".into()).error_body())
+                .unwrap();
+        assert!(
+            other["meta"].get("detail").is_none(),
+            "no other error carries a detail"
+        );
+        let long = GuardianError::ModuleWriteRefused("x".repeat(5_000));
+        let body = serde_json::to_value(long.error_body()).unwrap();
+        assert_eq!(
+            body["meta"]["detail"].as_str().unwrap().chars().count(),
+            MODULE_WRITE_DETAIL_MAX_CHARS,
+            "a module's message cannot make the response arbitrarily large"
+        );
+    }
 
     #[test]
     fn into_response_returns_correct_status() {

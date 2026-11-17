@@ -10,7 +10,7 @@ use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
 use super::store::{
     AccountModule, AccountParamsRow, Assigned, Change, HistoryEntry, InstanceRow, ModuleSnapshot,
-    ModuleStore, ParamsKind, assignment_changes,
+    ModuleStore, ParamsKind, WriteError, assignment_changes,
 };
 
 pub struct PgModuleStore {
@@ -104,6 +104,22 @@ struct VersionSql {
 struct ParamsSql {
     #[diesel(sql_type = Jsonb)]
     params: serde_json::Value,
+}
+
+impl From<diesel::result::Error> for WriteError {
+    fn from(error: diesel::result::Error) -> Self {
+        WriteError::Storage(error.to_string())
+    }
+}
+
+/// Refuses an operator write made against `expected` once the rows it locked have moved past
+/// it: `version` is the version this write commits as, so the rows were at `version - 1`.
+fn check(version: i64, expected: Option<u64>) -> Result<(), WriteError> {
+    let current = (version - 1) as u64;
+    match expected {
+        Some(expected) if expected != current => Err(WriteError::Stale { current }),
+        _ => Ok(()),
+    }
 }
 
 /// Takes the instance write lock and returns the instance params version this write commits
@@ -209,13 +225,18 @@ impl ModuleStore for PgModuleStore {
         module_id: &str,
         enabled: bool,
         params: &serde_json::Value,
+        catalog_params: &serde_json::Value,
         at_text: &str,
     ) -> Result<(), String> {
         let changed_at = DateTime::parse_from_rfc3339(at_text)
             .map(|at| at.with_timezone(&Utc))
             .map_err(|e| format!("invalid seed time: {e}"))?;
         let mut conn = self.conn().await?;
-        let (module_id, params) = (module_id.to_string(), params.clone());
+        let (module_id, params, catalog_params) = (
+            module_id.to_string(),
+            params.clone(),
+            catalog_params.clone(),
+        );
         let seeded = conn
             .transaction::<(), diesel::result::Error, _>(|conn| {
                 async move {
@@ -223,11 +244,12 @@ impl ModuleStore for PgModuleStore {
                     let inserted = diesel::sql_query(
                         "INSERT INTO module_instances \
                      (module_id, enabled, global_params, seeded_params, updated_at, updated_by) \
-                     VALUES ($1, $2, $3, $3, $4, 'catalog') ON CONFLICT (module_id) DO NOTHING",
+                     VALUES ($1, $2, $3, $4, $5, 'catalog') ON CONFLICT (module_id) DO NOTHING",
                     )
                     .bind::<Text, _>(&module_id)
                     .bind::<Bool, _>(enabled)
                     .bind::<Jsonb, _>(&params)
+                    .bind::<Jsonb, _>(&catalog_params)
                     .bind::<Timestamptz, _>(changed_at)
                     .execute(conn)
                     .await?;
@@ -238,6 +260,7 @@ impl ModuleStore for PgModuleStore {
                         operator: "catalog",
                         reason: "seeded from the catalog file",
                         at: String::new(),
+                        expected_version: None,
                     };
                     append(
                         conn,
@@ -346,13 +369,14 @@ impl ModuleStore for PgModuleStore {
         module_id: &str,
         params: serde_json::Value,
         change: &Change<'_>,
-    ) -> Result<u64, String> {
+    ) -> Result<u64, WriteError> {
         let changed_at = at(change)?;
         let mut conn = self.conn().await?;
         let module_id = module_id.to_string();
-        conn.transaction::<i64, diesel::result::Error, _>(|conn| {
+        conn.transaction::<i64, WriteError, _>(|conn| {
             async move {
                 let version = bump(conn).await?;
+                check(version, change.expected_version)?;
                 let previous: Vec<ParamsSql> = diesel::sql_query(
                     "SELECT global_params AS params FROM module_instances \
                      WHERE module_id = $1 FOR UPDATE",
@@ -388,7 +412,7 @@ impl ModuleStore for PgModuleStore {
         })
         .await
         .map(|version| version as u64)
-        .map_err(|e| format!("set global params: {e}"))
+        .map_err(|e| e.context("set global params"))
     }
 
     async fn set_global_if(
@@ -522,13 +546,14 @@ impl ModuleStore for PgModuleStore {
         module_id: &str,
         params: Option<serde_json::Value>,
         change: &Change<'_>,
-    ) -> Result<u64, String> {
+    ) -> Result<u64, WriteError> {
         let changed_at = at(change)?;
         let mut conn = self.conn().await?;
         let (account_id, module_id) = (account_id.to_string(), module_id.to_string());
-        conn.transaction::<i64, diesel::result::Error, _>(|conn| {
+        conn.transaction::<i64, WriteError, _>(|conn| {
             async move {
                 let version = bump_account(conn, &account_id).await?;
+                check(version, change.expected_version)?;
                 let previous: Vec<ParamsSql> = diesel::sql_query(
                     "DELETE FROM module_account_params WHERE account_id = $1 AND module_id = $2 \
                      AND kind = 'layer' RETURNING params",
@@ -574,7 +599,7 @@ impl ModuleStore for PgModuleStore {
         })
         .await
         .map(|version| version as u64)
-        .map_err(|e| format!("set account layer: {e}"))
+        .map_err(|e| e.context("set account layer"))
     }
 
     async fn set_assignment(
@@ -582,13 +607,14 @@ impl ModuleStore for PgModuleStore {
         account_id: &str,
         modules: Vec<Assigned>,
         change: &Change<'_>,
-    ) -> Result<u64, String> {
+    ) -> Result<u64, WriteError> {
         let changed_at = at(change)?;
         let mut conn = self.conn().await?;
         let account_id = account_id.to_string();
-        conn.transaction::<i64, diesel::result::Error, _>(|conn| {
+        conn.transaction::<i64, WriteError, _>(|conn| {
             async move {
                 let version = bump_account(conn, &account_id).await?;
+                check(version, change.expected_version)?;
                 let removed: Vec<AccountParamsSql> = diesel::sql_query(
                     "DELETE FROM module_account_params WHERE account_id = $1 \
                      AND kind = 'assignment' RETURNING account_id, module_id, kind, position, \
@@ -643,7 +669,7 @@ impl ModuleStore for PgModuleStore {
         })
         .await
         .map(|version| version as u64)
-        .map_err(|e| format!("set assignment: {e}"))
+        .map_err(|e| e.context("set assignment"))
     }
 
     async fn seed_assignment(
@@ -735,6 +761,7 @@ mod tests {
             operator: "0xop",
             reason: "ticket",
             at: at.to_string(),
+            expected_version: None,
         }
     }
 
@@ -751,7 +778,13 @@ mod tests {
         let module = format!("caps-{}", rand::random::<u32>());
         let account = format!("0xacc{}", rand::random::<u32>());
         store
-            .seed_instance(&module, true, &json!({ "cap": 1000 }), t0)
+            .seed_instance(
+                &module,
+                true,
+                &json!({ "cap": 1000 }),
+                &json!({ "cap": 1000 }),
+                t0,
+            )
             .await
             .unwrap();
         let instance_version = store.instance_version().await.unwrap();
@@ -820,11 +853,23 @@ mod tests {
         let start = store.instance_version().await.unwrap();
 
         store
-            .seed_instance(&module, true, &json!({ "denylist": ["0xaaa"] }), t0)
+            .seed_instance(
+                &module,
+                true,
+                &json!({ "denylist": ["0xaaa"] }),
+                &json!({ "denylist": ["0xaaa"] }),
+                t0,
+            )
             .await
             .unwrap();
         store
-            .seed_instance(&module, true, &json!({ "ignored": true }), t0)
+            .seed_instance(
+                &module,
+                true,
+                &json!({ "ignored": true }),
+                &json!({ "ignored": true }),
+                t0,
+            )
             .await
             .unwrap();
         store
@@ -1185,7 +1230,13 @@ mod tests {
         let module = format!("cas-{}", rand::random::<u32>());
         let t0 = "2026-10-16T00:00:00Z";
         store
-            .seed_instance(&module, true, &json!({ "old_name": 1000 }), t0)
+            .seed_instance(
+                &module,
+                true,
+                &json!({ "old_name": 1000 }),
+                &json!({ "old_name": 1000 }),
+                t0,
+            )
             .await
             .unwrap();
         store

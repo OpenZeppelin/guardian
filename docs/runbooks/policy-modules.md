@@ -40,7 +40,13 @@ For every instance in the catalog, know which path stops it:
 - Watch `guardian_module_up`, `guardian_module_circuit_open`,
   `guardian_module_fail_open_total` and the p99 of
   `guardian_module_evaluate_duration_seconds` per `module` (see
-  [`spec/api.md`](../../spec/api.md) for the full list).
+  [`spec/api.md`](../../spec/api.md) for the full list). On AWS the stack
+  alarms on two of them once `guardian_modules_config` is set:
+  `<stack>-module-circuit-open` (any circuit open for 10 minutes) and
+  `<stack>-module-fail-open` (any request approved without a module's
+  judgement, threshold `alarm_module_fail_open_threshold`). Elsewhere, alert on
+  `max(guardian_module_circuit_open) > 0` for 10 minutes and on any increase of
+  `guardian_module_fail_open_total`.
 
 Every API change requires a `reason` and is recorded in the instance's params
 history (`GET /dashboard/modules/{id}/params/history`), with the operator and
@@ -95,7 +101,11 @@ module is skipped without waiting for its timeout.
    stored as disabled, with a params history entry by `catalog`, so making an
    instance non-disableable in the catalog also ends an earlier disable.
    Removing an instance leaves its account assignments in place, marked
-   `orphaned` and skipped, so adding it back restores them.
+   `orphaned` and skipped, so adding it back restores them. Changing an
+   instance's `scope` does the same to the rows the new scope does not read
+   (layers once it is no longer `all`, assignment entries once it is):
+   startup logs how many, and `guardian_module_orphaned_assignments` counts
+   them. Changing the scope back restores them.
 
 The breaker closes by itself: a successful health probe
 (`GUARDIAN_MODULE_PROBE_INTERVAL_MS`, 5 s) lets the next real call through, and
@@ -178,6 +188,26 @@ could not read at the time, say), enabling the instance through another replica
 does not repair it there, and its calls on that replica fail and follow
 `on_error`. `guardian_module_up` is 0 for the instance on that replica; restart
 it after enabling.
+
+## Rolling back to a build without modules
+
+A server build from before policy modules does not know the module
+permissions, so it refuses to load an operator allowlist that grants
+`policies:write`, `policies:write_global` or `modules:disable`. Before
+deploying such a build:
+
+1. Remove those permissions from the allowlist (the entries keep their other
+   permissions).
+2. Unset `GUARDIAN_MODULES_CONFIG`. The older build ignores it, but leaving it
+   set means the next upgrade starts with the catalog again, which is what you
+   want only if you roll forward.
+
+The module tables stay in the database and are ignored by the older build;
+rolling forward again picks them up, with the operator params, layers and
+assignments as they were. On a prod-stage build with modules, starting without
+the catalog while those tables hold state is refused unless
+`GUARDIAN_MODULES_DISABLED=true` (see
+[CONFIGURATION](../CONFIGURATION.md)).
 
 ## After an incident
 

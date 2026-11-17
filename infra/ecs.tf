@@ -318,6 +318,12 @@ resource "aws_ecs_task_definition" "server" {
               value = var.guardian_modules_config
             }
           ] : [],
+          var.guardian_modules_disabled ? [
+            {
+              name  = "GUARDIAN_MODULES_DISABLED"
+              value = "true"
+            }
+          ] : [],
           length(var.guardian_module_secret_names) > 0 ? [
             {
               name  = "GUARDIAN_MODULE_SECRET_PROVIDER"

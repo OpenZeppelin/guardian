@@ -871,7 +871,10 @@ Guardian execution ends `failed` with `GUARDIAN_EXECUTION_MODULE_DENIED` or
 2. **A failure, not a decision.** `Policy module failed; refusing` (or
    `continuing (fail-open)` for `on_error = "allow"`) is logged at `warn` with
    `module`, `account_id` and the failure: the module's error, `timed out`,
-   an invalid reason code or unknown effect, or an open circuit. A request the
+   an unknown or unset effect, or an open circuit. A deny whose reason code
+   breaks the rule is still a deny: it reaches clients as `policy_denied` and
+   logs `Policy module denied with a reason code that breaks the reason code
+   rule`. A request the
    Guardian could not build, or one over `GUARDIAN_MODULE_REQUEST_MAX_BYTES`,
    is logged as `Policy module request could not be judged; refusing whatever
    on_error says`, counted in `guardian_module_request_refused_total{module,
@@ -885,8 +888,8 @@ Guardian execution ends `failed` with `GUARDIAN_EXECUTION_MODULE_DENIED` or
    `guardian_module_circuit_open` is 1 while this replica skips the module
    after `GUARDIAN_MODULE_BREAKER_FAILURES` consecutive failures (failed
    calls and unanswered probes both count); the next successful probe lets a
-   call through again. `Policy module is incompatible with this Guardian` at
-   `warn` means the module answered `Describe` with a protocol version,
+   call through again. `Policy module cannot be used by this Guardian; its
+   circuit is open until a probe passes` at `warn` means the module answered `Describe` with a protocol version,
    capability or hook set the Guardian cannot use, usually after the module
    was redeployed: its circuit opens at once and stays open until the module
    is fixed or the instance is reconfigured. A module that is up but slow
@@ -1076,6 +1079,7 @@ Only on servers started with a module catalog. See
 | `GUARDIAN_MODULE_DENIED` | 403 (gRPC `PermissionDenied`) | `module`, `reason_code`, `layer` (`global` or `account`), and `client_message` when the module set one; only `reason_code: "policy_denied"` for an instance with `client_reason = "generic"` | A policy refused the request: proposal creation, delta push, account registration or the dry-run check. Not retryable while the policy holds. The server log line `Policy module denied the request` has the module's own `message`. |
 | `GUARDIAN_MODULE_UNAVAILABLE` | 503 (gRPC `Unavailable`) | `module`, unless the instance has `client_reason = "generic"` (then the `Policy module failed; refusing` log line names it) | A fail-closed module timed out, errored, sent an invalid decision or was skipped by an open circuit, or the Guardian could not build the module's request (an account view or the projection could not be extracted, a proposal or state read failed), whatever the instance's `on_error`. Retryable. A request over the size cap is a `GUARDIAN_MODULE_DENIED` with `reason_code = request_too_large` instead. On the operator API, enabling an instance that fails its startup checks returns it too. |
 | `GUARDIAN_MODULE_NOT_FOUND` | 404 | `module` | Operator API: no catalog instance with this id. Instances come only from the catalog file. |
+| `GUARDIAN_MODULE_PARAMS_STALE` | 409 (gRPC `Aborted`) | none | Operator API: a params write sent `expected_version`, and the params changed since that version was read (another operator, or a module migrating its params). Nothing was written. Read the params again and reapply the change. |
 | `GUARDIAN_MODULE_NOT_DISABLEABLE` | 409 (gRPC `FailedPrecondition`) | `module` | Operator API: the instance's catalog entry has `operator_can_disable = false`. Changing that is a deploy (edit the catalog and restart). |
 
 ### Validation

@@ -124,7 +124,7 @@ pub fn transaction_request(input: TransactionInput<'_>) -> Result<HookRequest, S
     Ok(HookRequest {
         network: "miden".into(),
         network_id: input.network_id.into(),
-        account_id: input.account_id.to_string(),
+        account_id: input.account_id.to_ascii_lowercase(),
         accounting_time: Some(timestamp(input.accounting_time)),
         submitter: input.submitter.to_string(),
         submitter_session: input.submitter_session,
@@ -165,7 +165,7 @@ pub fn registration_request(input: RegistrationInput<'_>) -> Result<HookRequest,
     Ok(HookRequest {
         network: "miden".into(),
         network_id: input.network_id.into(),
-        account_id: input.account_id.to_string(),
+        account_id: input.account_id.to_ascii_lowercase(),
         accounting_time: Some(timestamp(input.accounting_time)),
         submitter: input.submitter.to_string(),
         submitter_session: input.submitter_session,
@@ -312,6 +312,26 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn modules_receive_the_account_id_in_lowercase_whatever_spelling_registered_it() {
+        let auth = Auth::MidenFalconRpo {
+            cosigner_commitments: vec!["0xa".into()],
+        };
+        let request = registration_request(RegistrationInput {
+            network_id: "mainnet",
+            account_id: "0xAcC",
+            submitter: "0xa",
+            submitter_session: false,
+            auth: &auth,
+            network_config: &NetworkConfig::miden_default(),
+            stored: None,
+            initial: decoded(multisig_view(&[("0xa", "falcon")])),
+            accounting_time: Utc::now(),
+        })
+        .unwrap();
+        assert_eq!(request.account_id, "0xacc");
     }
 
     #[test]

@@ -88,9 +88,13 @@ would show cosigners the secret's name.
 Such an instance's global params stay in the catalog file: the operator API
 refuses to change them, and the database keeps only an empty placeholder. If a
 later catalog drops the secret references, the instance becomes
-operator-managed and starts from that empty placeholder, not from the new
-catalog params (the catalog only seeds params on first start). Set its params
-through the API right after that deploy.
+operator-managed: on that start the new catalog params apply and are stored, a
+warning is logged, and from then on operators change them through the API like
+any other instance's. The other way round, adding secret references to an
+instance operators managed, makes the catalog params apply and logs that the
+stored operator params no longer do. (An instance first stored before this
+release keeps the old behaviour on that first switch: it starts from the empty
+placeholder, so set its params through the API right after that deploy.)
 
 In
 [`built-in.toml`](./built-in.toml), `caps` discloses its params and
@@ -172,7 +176,39 @@ module and reason code:
 cargo run -p guardian-demo
 ```
 
+At its prompts, pick the network the guide's `.env` names
+(`GUARDIAN_NETWORK_TYPE`, devnet by default; the demo's own default is local),
+and use an account funded with the asset whose faucet id you put in the
+catalog, or the cap has nothing to apply to.
+
 Any client works; refusals are plain Guardian errors.
+
+## Catalog fields
+
+One `[[module]]` table per instance. A field the table does not list, or a
+value outside these rules, stops startup with `invalid module catalog`.
+
+| Field | Required | Values and default |
+|---|---|---|
+| `id` | yes | 1 to 64 characters of `a-z`, `0-9`, `_` and `-`, unique in the catalog. It names the instance in the operator API, logs, metrics and full denials |
+| `kind` | yes | A built-in policy (`spending-limit`, `recipient-policy`, `signer-policy`, `code-policy`), `grpc` for a remote module, or a kind a custom build registers |
+| `endpoint` | `grpc` only | `grpc://host:port` (TLS) or `grpc+insecure://127.0.0.1:port` (loopback only) |
+| `scope` | yes | `all` (every account; an account layer can only add restrictions), `default` (copied to each account when it registers, then replaceable per account) or `assigned` (only where an operator assigns it) |
+| `hooks` | yes | Non-empty list of `before_account_registered`, `before_proposal_created`, `before_transaction_approved`; each must be one the module supports |
+| `timeout_ms` | yes | 1 to 1000 |
+| `on_error` | no | `deny` (default) or `allow`: what happens when the module fails or does not answer |
+| `params` | no | The instance's global params, seeded on first start and changed through the operator API afterwards. Params with `$secret` references stay in this file; they are refused for `grpc` instances and for `scope = "default"` (whose params are copied per account) |
+| `enabled` | no | `true` (default). Read only the first time the instance is seen; the runtime flag applies afterwards |
+| `operator_can_disable` | no | `false` (default). Whether the operator API may switch the instance off |
+| `disclosure` | no | `none` (default), `summary` or `params`: what `get_policies` shows cosigners. `params` is refused when the params reference secrets |
+| `description` | unless `disclosure = "none"` | Up to 500 characters, shown with `disclosure = summary` or `params` |
+| `client_reason` | no | `full` (default: module, reason code and message) or `generic` (`policy_denied` only) |
+| `dry_run` | no | `true` (default). Whether cosigners can check a transaction against the instance without submitting it |
+| `auth` | `grpc` only | `{ token_secret = "<secret name>" }`; required in the prod stage |
+| `tls` | `grpc` only | `ca_file` (relative to the catalog), and `client_cert_secret` with `client_key_secret` for mTLS |
+
+`after_transaction_committed` and `require_fresh_state_ms` belong to stateful
+modules, which are not in this release; a catalog naming them does not start.
 
 ## Operator API at a glance
 
@@ -188,7 +224,10 @@ Any client works; refusals are plain Guardian errors.
 | See which configuration approved a delta | `admin GET /accounts/{account_id}/deltas/{nonce}`, field `modules` |
 
 Every write is validated by the module before it is stored; invalid params
-return `400` and change nothing.
+return `400` and change nothing. A module that is down cannot validate, so a
+change to its params returns `503 GUARDIAN_MODULE_UNAVAILABLE` (not `400`),
+while an assignment that keeps its entry unchanged is still accepted: entries
+stored as they are sent are not validated again.
 
 ## Troubleshooting
 
@@ -201,6 +240,6 @@ For outages, a module that refuses too much, and break-glass steps, see the
 | `module caps: invalid params: …` at startup | The catalog's seed params fail the module's validation on a first start: fix the catalog; nothing is stored until every instance passes. On a later start it is the stored params that fail (the catalog's are no longer read): see the [runbook](../../runbooks/policy-modules.md). |
 | `GUARDIAN_MODULES_CONFIG is set but empty` or `declares no module` at startup | An empty value or an empty catalog would silently run without any policy. Point the variable at a catalog, or unset it to run without modules. |
 | `module caps-remote: …` at startup | An enabled remote module rejected the token or answered incompatibly, or it is new to this Guardian and unreachable. Start the module first, or set `enabled = false` until it runs. A module that has started here before and is merely down does not stop startup: the instance starts unavailable and recovers on a health probe. |
-| `relation "module_state_version" does not exist` | A Postgres database that ran an earlier prototype migration. Drop the `module_*` tables and the `20261015000001` row in `__diesel_schema_migrations`, then restart. |
+| `relation "module_state_version" does not exist` | A Postgres database that ran an earlier prototype migration. Drop the `module_*` tables and the functions `guardian_module_snapshot` and `guardian_module_seed_assignment`, delete the module rows in `__diesel_schema_migrations` (versions `20261015000001`, `20261109000001`, `20261110000001` and `20261110000002`, whichever exist), then restart so every module migration runs again. |
 | `login failed: no session cookie` | The server did not load the key: check `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` and the `public_key` in it. |
 | The client shows a generic error | The server log names the module, reason code and layer for every refusal. |

@@ -25,6 +25,16 @@ hooks = ["before_proposal_created", "before_transaction_approved", "before_accou
 timeout_ms = 20
 on_error = "deny"
 params = { check = "added", allowlist = ["0x<demo signer 1>", "0x<demo signer 2>"] }
+
+[[module]]
+id = "blocklist"
+kind = "recipient-policy"
+scope = "all"
+hooks = ["before_proposal_created", "before_transaction_approved"]
+timeout_ms = 20
+on_error = "deny"
+operator_can_disable = true
+params = { denylist = [] }
 EOF
 
 GUARDIAN_MODULES_CONFIG=/tmp/modules.toml cargo run -p guardian-server --bin server
@@ -50,8 +60,8 @@ With `examples/demo` against the local server:
 ## 3. Remote module and failure modes (M2a)
 
 ```bash
-openssl rand -hex 32 > .guardian/caps.token
-cargo run -p guardian-policy-module -- \
+(umask 077; openssl rand -hex 32 > .guardian/caps.token)
+cargo run -p guardian-policy-module -- --kind spending-limit \
   --listen 127.0.0.1:7443 --instance caps-remote .guardian/caps.token
 ```
 
@@ -74,7 +84,7 @@ Point this second instance of kind `grpc` at it with `on_error = "deny"`, repeat
 cargo run -p guardian-server --example modules_admin -- keygen .guardian/operator.key
 #   paste the printed entry into a JSON array in .guardian/operators.json
 
-GUARDIAN_MODULES_CONFIG=.guardian/modules.toml \
+GUARDIAN_MODULES_CONFIG=/tmp/modules.toml \
 GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=.guardian/operators.json \
   cargo run -p guardian-server --bin server
 

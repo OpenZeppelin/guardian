@@ -903,7 +903,9 @@ Stable error codes include:
   execution reports them as `GUARDIAN_EXECUTION_MODULE_DENIED` and
   `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` (see [ProposalExecution](#proposalexecution)). The
   operator module routes add `GUARDIAN_MODULE_NOT_FOUND` (404, `meta.module`) and
-  `GUARDIAN_MODULE_NOT_DISABLEABLE` (409 / gRPC `FailedPrecondition`, `meta.module`), and
+  `GUARDIAN_MODULE_NOT_DISABLEABLE` (409 / gRPC `FailedPrecondition`, `meta.module`),
+  `GUARDIAN_MODULE_PARAMS_STALE` (409, a params write whose optional `expected_version` no
+  longer matches the params version), and
   return `GUARDIAN_MODULE_UNAVAILABLE` when an instance being enabled fails its startup checks.
 - `data_unavailable`
 
@@ -1036,6 +1038,7 @@ behavior.
 | `guardian_block_watch_block_processing_seconds` | histogram | — |
 | `guardian_module_evaluate_duration_seconds` | histogram | `module` (catalog instance id), `outcome` (`allow`/`deny`/`error`/`skipped`) |
 | `guardian_module_fail_open_total` | counter | `module` |
+| `guardian_module_request_refused_total` | counter | `module`, `reason` (`unavailable`: the request could not be built; `too_large`: over `GUARDIAN_MODULE_REQUEST_MAX_BYTES`); refused whatever `on_error` says |
 | `guardian_module_up` | gauge | `module` (1 when the last health probe succeeded) |
 | `guardian_module_circuit_open` | gauge | `module` (1 while the replica's breaker is open) |
 | `guardian_module_enabled` | gauge | `module` |

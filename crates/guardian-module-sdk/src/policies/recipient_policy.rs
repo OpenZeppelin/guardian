@@ -74,39 +74,49 @@ impl Rules {
             return Ok(Decision::allow());
         }
         let projection = super::transaction(request)?;
+        let payer = request.account_id.to_ascii_lowercase();
         let payments = projection.output_notes.iter().filter(|note| !note.tx_fee);
         for note in payments {
-            let recipient = match (&note.p2id_target, note.partial) {
+            let target = match (&note.p2id_target, note.partial) {
                 (Some(target), false) => Some(target.to_ascii_lowercase()),
                 _ => None,
             };
-            let refused = match (self, recipient) {
-                (Rules::Any, _) => None,
-                (Rules::Allow(_), None) => Some(
-                    Rule::RecipientAllowlist
-                        .deny(format!("note {} has no checkable recipient", note.note_id)),
-                ),
-                (Rules::Allow(allowed), Some(recipient)) => {
-                    (!allowed.contains(&recipient)).then(|| {
-                        Rule::RecipientAllowlist
-                            .deny(format!("recipient {recipient} is not allowed"))
-                    })
-                }
-                (Rules::Deny { deny_unknown, .. }, None) => deny_unknown.then(|| {
-                    Rule::RecipientDenylist
-                        .deny(format!("note {} has no checkable recipient", note.note_id))
-                }),
-                (Rules::Deny { blocked, .. }, Some(recipient)) => {
-                    blocked.contains(&recipient).then(|| {
-                        Rule::RecipientDenylist.deny(format!("recipient {recipient} is blocked"))
-                    })
-                }
-            };
-            if let Some(denial) = refused {
+            let reclaimer = note
+                .reclaimer
+                .as_deref()
+                .map(str::to_ascii_lowercase)
+                .filter(|reclaimer| *reclaimer != payer);
+            let recipients = std::iter::once(target).chain(reclaimer.map(Some));
+            if let Some(denial) = recipients
+                .filter_map(|recipient| self.refusal(&note.note_id, recipient))
+                .next()
+            {
                 return Ok(denial);
             }
         }
         Ok(Decision::allow())
+    }
+
+    /// The denial for one account a payment note can reach (its P2ID target, or the reclaimer of
+    /// a reclaimable P2IDE note), `None` for a note whose recipient cannot be read.
+    fn refusal(&self, note_id: &str, recipient: Option<String>) -> Option<Decision> {
+        match (self, recipient) {
+            (Rules::Any, _) => None,
+            (Rules::Allow(_), None) => Some(
+                Rule::RecipientAllowlist.deny(format!("note {note_id} has no checkable recipient")),
+            ),
+            (Rules::Allow(allowed), Some(recipient)) => {
+                (!allowed.contains(&recipient)).then(|| {
+                    Rule::RecipientAllowlist.deny(format!("recipient {recipient} is not allowed"))
+                })
+            }
+            (Rules::Deny { deny_unknown, .. }, None) => deny_unknown.then(|| {
+                Rule::RecipientDenylist.deny(format!("note {note_id} has no checkable recipient"))
+            }),
+            (Rules::Deny { blocked, .. }, Some(recipient)) => blocked
+                .contains(&recipient)
+                .then(|| Rule::RecipientDenylist.deny(format!("recipient {recipient} is blocked"))),
+        }
     }
 }
 
@@ -260,6 +270,53 @@ mod tests {
             RecipientPolicy.evaluate(&unprojected).await,
             Err(ModuleError::InvalidRequest(_))
         ));
+    }
+
+    const PAYER: &str = "0x0000000000000000000000000000f1";
+
+    fn reclaimable(target: &str, reclaimer: &str) -> crate::OutputNote {
+        crate::OutputNote {
+            reclaimer: Some(reclaimer.into()),
+            ..p2id(target, vec![fungible(USDC, 1)])
+        }
+    }
+
+    async fn decide_for_payer(params: serde_json::Value, note: crate::OutputNote) -> Decision {
+        let mut request = tx_request(params, paying(vec![note]));
+        request.account_id = PAYER.to_uppercase().replace("0X", "0x");
+        decide(&request).await
+    }
+
+    #[tokio::test]
+    async fn the_reclaimer_of_a_reclaimable_note_is_judged_as_a_recipient() {
+        let denied = json!({ "denylist": [BLOCKED] });
+        assert_eq!(
+            decide_for_payer(denied.clone(), reclaimable(RECIPIENT, BLOCKED))
+                .await
+                .reason_code,
+            "recipient_blocked",
+            "a blocked account named as reclaimer can take the note"
+        );
+        assert!(
+            decide_for_payer(denied, reclaimable(RECIPIENT, PAYER))
+                .await
+                .allows(),
+            "the payer reclaiming its own note pays nobody"
+        );
+
+        let allowed = json!({ "allowlist": [RECIPIENT] });
+        assert_eq!(
+            decide_for_payer(allowed.clone(), reclaimable(RECIPIENT, BLOCKED))
+                .await
+                .reason_code,
+            "recipient_not_allowed",
+            "an allowed target does not cover an unlisted reclaimer"
+        );
+        assert!(
+            decide_for_payer(allowed, reclaimable(RECIPIENT, PAYER))
+                .await
+                .allows()
+        );
     }
 
     #[tokio::test]

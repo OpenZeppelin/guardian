@@ -961,6 +961,16 @@
               }
             }
           },
+          "409": {
+            "description": "expected_version is set and the params changed since (GUARDIAN_MODULE_PARAMS_STALE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
           "413": {
             "description": "Request body exceeds the configured size limit",
             "content": {
@@ -1076,6 +1086,16 @@
               }
             }
           },
+          "409": {
+            "description": "expected_version is set and the params changed since (GUARDIAN_MODULE_PARAMS_STALE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
           "413": {
             "description": "Request body exceeds the configured size limit",
             "content": {
@@ -1132,7 +1152,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ReasonBody"
+                "$ref": "#/components/schemas/LayerRemovalBody"
               }
             }
           },
@@ -1181,6 +1201,16 @@
           },
           "404": {
             "description": "Account or module not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "expected_version is set and the params changed since (GUARDIAN_MODULE_PARAMS_STALE)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2197,6 +2227,16 @@
           },
           "404": {
             "description": "Account or module not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "expected_version is set and the params changed since (GUARDIAN_MODULE_PARAMS_STALE)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4853,8 +4893,28 @@
               }
             }
           },
+          "400": {
+            "description": "The account is not a Miden account (unsupported_for_network)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Authentication failed or replay rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -5847,6 +5907,15 @@
           "reason"
         ],
         "properties": {
+          "expected_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The `account_params_version` the assignment was made against; see [`ParamsBody`].",
+            "minimum": 0
+          },
           "modules": {
             "type": "array",
             "items": {
@@ -8400,6 +8469,26 @@
           "canonical"
         ]
       },
+      "LayerRemovalBody": {
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "expected_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The `account_params_version` the removal was made against; see [`ParamsBody`].",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
       "ListProposalsResponse": {
         "type": "object",
         "required": [
@@ -9315,6 +9404,15 @@
           "reason"
         ],
         "properties": {
+          "expected_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The params version the change was made against: `params_version` for a global write,\n`account_params_version` for an account layer. Set, a write after another change is\nrefused with 409 `GUARDIAN_MODULE_PARAMS_STALE`.",
+            "minimum": 0
+          },
           "params": {
             "type": "object"
           },

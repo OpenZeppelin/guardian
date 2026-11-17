@@ -847,7 +847,9 @@ pub async fn check_delta_proposal(
     params(StateQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     responses(
         (status = 200, description = "Disclosed policies", body = PoliciesResponse),
+        (status = 400, description = "The account is not a Miden account (unsupported_for_network)", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account not found", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn get_policies(

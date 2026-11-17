@@ -13,23 +13,48 @@ use crate::{
     ParamsVerdict, ValidateParamsRequest,
 };
 
+/// Serves `module`. Register every instance the Guardian calls with [`Serve::instance`]: a
+/// harness with none refuses every call, unless [`Serve::allow_unauthenticated`] says otherwise.
 pub fn serve<M: Module + 'static>(module: M) -> Serve<M> {
     Serve {
         module: Arc::new(module),
         tokens: HashMap::new(),
+        access: Access::Instances,
     }
+}
+
+/// Who the harness answers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Access {
+    /// Calls for a registered instance, carrying that instance's token.
+    Instances,
+    /// Every call, without credentials: for tests and local experiments only.
+    Anyone,
 }
 
 pub struct Serve<M> {
     module: Arc<M>,
     tokens: HashMap<String, String>,
+    access: Access,
 }
 
 impl<M: Module + 'static> Serve<M> {
     /// Accept requests for `instance_id` only when they carry `token` as a bearer credential.
-    /// With no instance registered, every request is accepted.
     pub fn instance(mut self, instance_id: impl Into<String>, token: impl Into<String>) -> Self {
         self.tokens.insert(instance_id.into(), token.into());
+        self
+    }
+
+    /// Whether any instance is registered.
+    pub fn has_instances(&self) -> bool {
+        !self.tokens.is_empty()
+    }
+
+    /// Answers every call without checking credentials, registered instances or not. Anyone
+    /// who can reach the address can then query the module and read its params; use it only
+    /// for tests and local experiments on a loopback address.
+    pub fn allow_unauthenticated(mut self) -> Self {
+        self.access = Access::Anyone;
         self
     }
 
@@ -37,6 +62,7 @@ impl<M: Module + 'static> Serve<M> {
         GuardianModuleServer::new(Harness {
             module: self.module,
             tokens: Arc::new(self.tokens),
+            access: self.access,
         })
     }
 
@@ -51,12 +77,19 @@ impl<M: Module + 'static> Serve<M> {
 pub struct Harness<M> {
     module: Arc<M>,
     tokens: Arc<HashMap<String, String>>,
+    access: Access,
 }
 
 impl<M> Harness<M> {
     fn authorize<T>(&self, request: &Request<T>, instance_id: Option<&str>) -> Result<(), Status> {
-        if self.tokens.is_empty() {
-            return Ok(());
+        match (self.access, self.tokens.is_empty()) {
+            (Access::Anyone, _) => return Ok(()),
+            (Access::Instances, true) => {
+                return Err(Status::unauthenticated(
+                    "no instance is registered with this module server",
+                ));
+            }
+            (Access::Instances, false) => {}
         }
         let presented = request
             .metadata()
@@ -162,7 +195,31 @@ impl<M: Module + 'static> GuardianModule for Harness<M> {
 
 #[cfg(test)]
 mod tests {
-    use super::same_token;
+    use super::*;
+
+    fn harness(
+        server: Serve<crate::policies::SpendingLimit>,
+    ) -> Harness<crate::policies::SpendingLimit> {
+        Harness {
+            module: server.module,
+            tokens: Arc::new(server.tokens),
+            access: server.access,
+        }
+    }
+
+    #[test]
+    fn a_server_without_instances_answers_nobody_unless_told_to() {
+        let unregistered = harness(serve(crate::policies::SpendingLimit));
+        assert_eq!(
+            unregistered
+                .authorize(&Request::new(()), Some("caps"))
+                .unwrap_err()
+                .code(),
+            tonic::Code::Unauthenticated
+        );
+        let open = harness(serve(crate::policies::SpendingLimit).allow_unauthenticated());
+        assert!(open.authorize(&Request::new(()), Some("caps")).is_ok());
+    }
 
     #[test]
     fn only_the_registered_token_matches() {

@@ -309,11 +309,17 @@ startup, and the published image carries none, so on this stack it travels in
 the image:
 
 1. Build an image from the published one that copies your catalog in, push it
-   to the stack's ECR repository and deploy it as the server image:
+   to the stack's ECR repository and deploy it as the server image. Use a
+   release that includes policy modules: no published image does yet, so until
+   one does, build the base image from the source
+   (`docker build --build-arg GUARDIAN_SERVER_FEATURES=postgres .`). Copy any
+   file the catalog names relative to itself, such as a `tls.ca_file`, next to
+   it:
 
    ```dockerfile
    FROM ghcr.io/openzeppelin/guardian:<version>
    COPY modules.toml /etc/guardian/modules.toml
+   COPY module-ca.pem /etc/guardian/module-ca.pem
    ```
 
 2. Point the server at it and name the secrets the catalog references:
@@ -668,6 +674,8 @@ exposes no knobs for a routable bind address.
 | `<stack>-execution-failures` | More than `alarm_execution_failures_threshold` (default 1) executions in a 5-minute period fail with an operator-side code (`GUARDIAN_EXECUTION_PROVING_FAILED`, `NODE_UNAVAILABLE`, `CHAIN_INCONSISTENT`, `SEALING_FAILED`, `ACKNOWLEDGEMENT_FAILED`): check the prover, the Miden node and the acknowledgement signer. Failures caused by the proposal or its signers are not counted |
 | `<stack>-execution-observation-outage` | Guardian could not observe the chain for a submitted execution for more than `alarm_execution_observation_outage_threshold_seconds` (default 300 s); the account stays reserved meanwhile |
 | `<stack>-execution-reservation-age` | The oldest active execution reservation is older than `alarm_execution_reservation_age_threshold_seconds` (default 1800 s, above 256 blocks plus the lease); the account cannot start another execution until it is released. Raise it with the lease or the expiration horizon |
+| `<stack>-module-circuit-open` | Only with `guardian_modules_config` set. A policy module's circuit has been open for 10 minutes: its accounts follow `on_error` (fail-closed instances refuse, fail-open ones skip the module). See the [policy modules runbook](./runbooks/policy-modules.md) |
+| `<stack>-module-fail-open` | Only with `guardian_modules_config` set. More than `alarm_module_fail_open_threshold` (default 0) requests in 5 minutes were approved without a module's judgement because a fail-open instance failed |
 | `<stack>-metrics-missing` | Application metrics stop arriving — the constant `guardian_build_info` heartbeat disappears (metrics endpoint down, sidecar dead, or scrape failing) |
 | `<stack>-metrics-refresh-failures` | Slow-aggregate refresher attempts are failing; delta/proposal/account gauges are stale |
 | `<stack>-metrics-refresh-stale` | The refresh timestamp stopped advancing for ≥ 10 min (hung or dead refresher — catches what the failures counter cannot) |

@@ -310,8 +310,19 @@ await client.enableModule('risk-scorer', 'recovered'); // policies:write
 const modules = await client.getAccountModules(accountId); // evaluation order; orphaned entries are skipped
 const page = await client.getModuleParamsHistory('blocklist', { limit: 50 }); // newest first
 const older = await client.getModuleParamsHistory('blocklist', {
-  before: page.entries[page.entries.length - 1].version,
+  before: page.entries[page.entries.length - 1].id,
 });
+```
+
+Every params write takes an optional `{ expectedVersion }`: the catalog-wide
+`paramsVersion` from `listModules()` for a global write (any instance's global
+write or enable/disable moves it), the account's `accountParamsVersion` for a layer or
+an assignment. A write made after someone else changed the same params is then
+refused with 409 `GUARDIAN_MODULE_PARAMS_STALE` instead of replacing their change:
+
+```ts
+const { accountParamsVersion } = await client.getAccountModules(accountId);
+await client.setAccountModules(accountId, assignments, 'OP-94', { expectedVersion: accountParamsVersion });
 ```
 
 ### Logout

@@ -236,6 +236,27 @@ pub async fn configure_account(
         (head, signer_commitment)
     };
 
+    // A key the registered account does not list is checked before any module judges its
+    // state (see `vouch_outsider`); its timestamp is consumed first, so a replay is still refused
+    // before any chain read.
+    let outsider = existing
+        .as_ref()
+        .filter(|existing| is_outsider(existing, &signer_commitment));
+    let mut early_vouch = match outsider {
+        Some(_) => {
+            consume_auth_timestamp(
+                state,
+                &params.account_id,
+                &signer_commitment,
+                request_timestamp,
+                crate::metadata::auth::MAX_TIMESTAMP_SKEW_MS,
+            )
+            .await?;
+            Some(vouch_outsider(state, &params, &head).await?)
+        }
+        None => None,
+    };
+
     // A new account, or a claim whose account has no module history yet, is evaluated with the
     // default modules and receives copies of them below. One an operator already configured
     // (a layer, an assignment, even an emptied one) is evaluated as it is configured, since the
@@ -296,7 +317,19 @@ pub async fn configure_account(
         })?;
         // The modules judged this request as a new account; it is now a reconfiguration of the
         // account it lost to, whose modules and stored state differ, so they judge it again
-        // before it consumes anything.
+        // before it consumes anything. A key that account does not list is an outsider to it,
+        // vouched for first like any other.
+        if is_outsider(&claimed, &signer_commitment) {
+            consume_auth_timestamp(
+                state,
+                &params.account_id,
+                &signer_commitment,
+                request_timestamp,
+                crate::metadata::auth::MAX_TIMESTAMP_SKEW_MS,
+            )
+            .await?;
+            early_vouch = Some(vouch_outsider(state, &params, &head).await?);
+        }
         approve_registration(
             state,
             &params,
@@ -327,6 +360,7 @@ pub async fn configure_account(
                     operator: "catalog",
                     reason: "default modules copied at registration",
                     at: now.clone(),
+                    expected_version: None,
                 },
             )
             .await
@@ -341,15 +375,17 @@ pub async fn configure_account(
 
     // The replay-state row has an FK to account metadata, which the claim
     // above guarantees, so every configuration consumes its timestamp
-    // before it writes any state.
-    consume_auth_timestamp(
-        state,
-        &params.account_id,
-        &signer_commitment,
-        request_timestamp,
-        crate::metadata::auth::MAX_TIMESTAMP_SKEW_MS,
-    )
-    .await?;
+    // before it writes any state (an outsider's was consumed above).
+    if early_vouch.is_none() {
+        consume_auth_timestamp(
+            state,
+            &params.account_id,
+            &signer_commitment,
+            request_timestamp,
+            crate::metadata::auth::MAX_TIMESTAMP_SKEW_MS,
+        )
+        .await?;
+    }
 
     // The stored state this re-onboarding replaces, read only once the
     // request is authenticated and fresh. The write below refuses to
@@ -368,6 +404,7 @@ pub async fn configure_account(
     // may have changed since; the requesting key is not one of its stored
     // signers; or the submitted state is not the stored one.
     let vouch = match (&existing, &stored_base) {
+        _ if early_vouch == Some(Vouch::Chain) => Vouch::ChainBeforeModules,
         (_, None) if head.nonce == Some(0) => Vouch::FirstState,
         (Some(existing), _)
             if existing.released_at.is_some()
@@ -400,7 +437,7 @@ pub async fn configure_account(
                 );
                 GuardianError::InvalidInput(format!("Invalid first state in initial_state: {e}"))
             })?,
-        Vouch::StoredState => {}
+        Vouch::StoredState | Vouch::ChainBeforeModules => {}
     }
 
     // A state older than the stored one may replace it only while the stored
@@ -524,7 +561,7 @@ pub async fn configure_account(
     // previous state) is undone only once the submitted state proves to be
     // the account's on-chain state, and stands otherwise.
     let chain_vouched = match vouch {
-        Vouch::Chain => true,
+        Vouch::Chain | Vouch::ChainBeforeModules => true,
         Vouch::StoredState | Vouch::FirstState if created => false,
         Vouch::StoredState | Vouch::FirstState => {
             let current = state.metadata.get(&params.account_id).await.map_err(|e| {
@@ -771,7 +808,10 @@ async fn stored_head(state: &AppState, account_id: &str) -> Result<Option<StateH
 }
 
 /// What vouches for the state a configuration stores.
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Vouch {
+    /// The chain, already asked before the modules ran (an outsider's request).
+    ChainBeforeModules,
     /// The chain: the submitted state must be the account's on-chain state.
     Chain,
     /// The stored state: the submitted state is the one already stored.
@@ -795,6 +835,38 @@ enum Vouch {
 /// submitted state may still land. The refusal names the stored commitment
 /// and tells the stored nonce is above the submitted one, so no other key
 /// gets it.
+/// Whether a request on a registered account comes from a key that is not one of its stored
+/// signers. A stored signer of a released account is not one: the vouch after the claim checks
+/// its state against the chain and can name the stored state it is older than.
+fn is_outsider(existing: &AccountMetadata, signer_commitment: &str) -> bool {
+    existing.auth.signer_scheme(signer_commitment).is_none()
+}
+
+/// Vouches for an outsider's state before any module judges it. Without this, anyone could
+/// submit a made-up state for someone else's account and read that account's module verdicts,
+/// or hand remote modules forged states under its id. A first state is checked on its own, as
+/// the vouch after the claim does; any other state against the chain, which the vouch after the
+/// claim then does not repeat.
+async fn vouch_outsider(
+    state: &AppState,
+    params: &ConfigureAccountParams,
+    head: &StateHead,
+) -> Result<Vouch> {
+    let first_state =
+        head.nonce == Some(0) && stored_head(state, &params.account_id).await?.is_none();
+    if first_state {
+        state
+            .network_client
+            .validate_first_state(&params.initial_state)
+            .map_err(|e| {
+                GuardianError::InvalidInput(format!("Invalid first state in initial_state: {e}"))
+            })?;
+        return Ok(Vouch::FirstState);
+    }
+    ensure_on_chain_state(state, &params.account_id, &head.commitment, None).await?;
+    Ok(Vouch::Chain)
+}
+
 async fn ensure_on_chain_state(
     state: &AppState,
     account_id: &str,
@@ -3577,6 +3649,16 @@ mod tests {
         instances: Vec<crate::modules::registry::Instance>,
         module: Arc<crate::modules::testing::StubModule>,
     ) -> ModuleRun {
+        configure_on_chain(existing, instances, module, StateVerification::Match).await
+    }
+
+    /// As [`configure_with_modules`], with the chain answering every state check with `chain`.
+    async fn configure_on_chain(
+        existing: impl FnOnce(String) -> Option<AccountMetadata>,
+        instances: Vec<crate::modules::registry::Instance>,
+        module: Arc<crate::modules::testing::StubModule>,
+        chain: StateVerification,
+    ) -> ModuleRun {
         use crate::modules::testing::pipeline;
         use crate::testing::helpers::generate_falcon_signature;
 
@@ -3590,6 +3672,8 @@ mod tests {
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
             .with_get_state_head(Ok(head("0x5678", 3)))
+            .with_verify_commitment(Ok(chain.clone()))
+            .with_verify_commitment(Ok(chain))
             .with_module_views(
                 guardian_module_sdk::AccountView {
                     signer_commitments: vec![commitment_hex.clone()],
@@ -3736,6 +3820,36 @@ mod tests {
         assert_nothing_written(&run);
     }
 
+    /// A key the stored account does not list could otherwise submit a made-up state and read
+    /// the account's module verdicts: its state is checked against the chain before any module
+    /// runs, and a stored cosigner's request takes no extra chain read.
+    #[tokio::test]
+    async fn an_outsiders_state_is_vouched_for_before_any_module_judges_it() {
+        let module = StubModule::denying("signer_not_allowed");
+        let outsider = configure_on_chain(
+            |_| existing_account(false, false)("0xother".to_string()),
+            vec![crate::modules::testing::instance(
+                "signers",
+                &[HookName::BeforeAccountRegistered],
+                crate::modules::catalog::OnError::Deny,
+                module.clone(),
+            )],
+            module.clone(),
+            StateVerification::Absent,
+        )
+        .await;
+        assert!(
+            matches!(outsider.result, Err(GuardianError::StateNotOnChain { .. })),
+            "{:?}",
+            outsider.result
+        );
+        assert_eq!(module.calls(), 0, "no module saw the outsider's state");
+
+        let cosigner =
+            configure_with_module(existing_account(false, false), StubModule::allowing()).await;
+        assert!(cosigner.result.is_ok(), "{:?}", cosigner.result);
+    }
+
     #[tokio::test]
     async fn released_account_is_reactivated_only_when_modules_allow() {
         let run =
@@ -3795,6 +3909,19 @@ mod tests {
         MockMetadataStore,
         MockStorageBackend,
     ) {
+        lose_the_claim_to(module, None).await
+    }
+
+    /// As [`lose_the_claim_under`]; with `winner_signer`, the account it loses to lists that
+    /// signer instead of the requester's key, and the chain does not hold the submitted state.
+    async fn lose_the_claim_to(
+        module: Arc<dyn guardian_module_sdk::Module>,
+        winner_signer: Option<&str>,
+    ) -> (
+        Result<ConfigureAccountResult>,
+        MockMetadataStore,
+        MockStorageBackend,
+    ) {
         use crate::modules::catalog::OnError;
         use crate::modules::testing::{instance, pipeline};
         use crate::testing::helpers::generate_falcon_signature;
@@ -3803,7 +3930,7 @@ mod tests {
         let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(account_id);
         let winner = AccountMetadata {
             created_at: "2023-06-01T00:00:00Z".into(),
-            ..claimed_metadata(account_id, &commitment)
+            ..claimed_metadata(account_id, winner_signer.unwrap_or(&commitment))
         };
         let metadata = MockMetadataStore::new()
             .with_get(Ok(Some(winner)))
@@ -3815,6 +3942,10 @@ mod tests {
             MockNetworkClient::new()
                 .with_validate_credential(Ok(()))
                 .with_get_state_head(Ok(head("0x1234", 3)))
+                .with_verify_commitment(Ok(match winner_signer {
+                    Some(_) => StateVerification::Absent,
+                    None => StateVerification::Match,
+                }))
                 .with_module_views(
                     guardian_module_sdk::AccountView {
                         signer_commitments: vec![commitment.clone()],
@@ -3942,7 +4073,27 @@ mod tests {
                 ("screening".to_string(), serde_json::json!({ "limit": 5 })),
                 ("caps".to_string(), serde_json::json!({ "limit": 5 })),
             ],
-            "every enabled default is copied with the params evaluated"
+            "every default is copied with the params evaluated"
+        );
+    }
+
+    /// Disabling a `default` instance during an incident must not leave every account that
+    /// registers meanwhile without it for good: it is copied, and runs once re-enabled.
+    #[tokio::test]
+    async fn a_default_instance_disabled_at_registration_is_still_copied() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let mut disabled = default_instance(
+            "screening",
+            &[HookName::BeforeAccountRegistered],
+            module.clone(),
+        );
+        disabled.config.enabled = false;
+        let run = configure_with_modules(|_| None, vec![disabled], module.clone()).await;
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        assert_eq!(module.calls(), 0, "a disabled instance judges nothing");
+        assert_eq!(
+            assignment_of(&run.modules).await,
+            vec![("screening".to_string(), serde_json::json!({ "limit": 5 }))],
         );
     }
 
@@ -3964,6 +4115,23 @@ mod tests {
             Err(GuardianError::ModuleDenied { .. })
         ));
         assert!(assignment_of(&run.modules).await.is_empty());
+    }
+
+    /// A first registration that loses the claim to an account listing other signers is an
+    /// outsider to that account: its state is vouched for before the modules judge it again.
+    #[tokio::test]
+    async fn losing_the_claim_to_another_signer_set_vouches_before_judging_again() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let (result, _, _) = lose_the_claim_to(module.clone(), Some("0xother")).await;
+        assert!(
+            matches!(result, Err(GuardianError::StateNotOnChain { .. })),
+            "{result:?}"
+        );
+        assert_eq!(
+            module.calls(),
+            1,
+            "judged once as a new account, not again on the unvouched state"
+        );
     }
 
     /// What an operator wrote to an account's modules between its claim and the retry that
@@ -4008,6 +4176,7 @@ mod tests {
             operator: "0xoperator",
             reason: "OPS-1",
             at: "2026-11-12T00:00:00Z".to_string(),
+            expected_version: None,
         };
         match prior {
             Prior::Nothing => {}

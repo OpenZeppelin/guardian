@@ -182,6 +182,11 @@ export interface ParsedErrorBody {
    * different guardian and released it.
    */
   releasedAt?: string;
+  /**
+   * Why a policy module write was refused (`invalid_input` from a module route): the
+   * module and the rule it broke. Absent for every other error.
+   */
+  detail?: string;
 }
 
 /**
@@ -300,6 +305,7 @@ export async function parseErrorBody(
     pausedAt,
     pausedReason,
     releasedAt,
+    detail: typeof meta['detail'] === 'string' ? (meta['detail'] as string) : undefined,
   };
 }
 
@@ -697,11 +703,18 @@ export class GuardianOperatorHttpClient {
   }
 
   /** Replaces an instance's global params, which every account shares. Requires
-   * `policies:write_global`. */
-  async setModuleGlobalParams(moduleId: string, params: ModuleParams, reason: string): Promise<ModuleInstance> {
+   * `policies:write_global`. With `expectedVersion` (the catalog-wide `paramsVersion` from
+   * `listModules`, which any instance's global write or enable/disable moves), the write is
+   * refused with 409 `GUARDIAN_MODULE_PARAMS_STALE` if it changed since. */
+  async setModuleGlobalParams(
+    moduleId: string,
+    params: ModuleParams,
+    reason: string,
+    options: ParamsWriteOptions = {},
+  ): Promise<ModuleInstance> {
     return this.request(
       new URL(`dashboard/modules/${encodeURIComponent(moduleId)}/params`, this.baseUrl),
-      { method: 'PUT', body: JSON.stringify({ params, reason }) },
+      { method: 'PUT', body: JSON.stringify({ params, reason, ...expectedVersion(options) }) },
       (value) => parseModuleInstance(value, 'module instance'),
     );
   }
@@ -726,32 +739,45 @@ export class GuardianOperatorHttpClient {
   }
 
   /** Sets this account's layer on a `scope = all` instance, which can only add restrictions.
-   * Requires `policies:write`. */
+   * Requires `policies:write`. `expectedVersion` is the account's `accountParamsVersion`. */
   async setAccountModuleLayer(
     accountId: string,
     moduleId: string,
     params: ModuleParams,
     reason: string,
+    options: ParamsWriteOptions = {},
   ): Promise<AccountModules> {
     return this.request(
       this.accountModuleParamsUrl(accountId, moduleId),
-      { method: 'PUT', body: JSON.stringify({ params, reason }) },
+      { method: 'PUT', body: JSON.stringify({ params, reason, ...expectedVersion(options) }) },
       parseAccountModules,
     );
   }
 
-  /** Removes this account's layer on a `scope = all` instance. Requires `policies:write`. */
-  async removeAccountModuleLayer(accountId: string, moduleId: string, reason: string): Promise<AccountModules> {
+  /** Removes this account's layer on a `scope = all` instance. Requires `policies:write`.
+   * `expectedVersion` is the account's `accountParamsVersion`. */
+  async removeAccountModuleLayer(
+    accountId: string,
+    moduleId: string,
+    reason: string,
+    options: ParamsWriteOptions = {},
+  ): Promise<AccountModules> {
     return this.request(
       this.accountModuleParamsUrl(accountId, moduleId),
-      { method: 'DELETE', body: JSON.stringify({ reason }) },
+      { method: 'DELETE', body: JSON.stringify({ reason, ...expectedVersion(options) }) },
       parseAccountModules,
     );
   }
 
   /** Replaces the account's `default` and `assigned` modules with `modules`, in evaluation
-   * order. Requires `policies:write`. */
-  async setAccountModules(accountId: string, modules: ModuleAssignment[], reason: string): Promise<AccountModules> {
+   * order. Requires `policies:write`. `expectedVersion` is the account's
+   * `accountParamsVersion`. */
+  async setAccountModules(
+    accountId: string,
+    modules: ModuleAssignment[],
+    reason: string,
+    options: ParamsWriteOptions = {},
+  ): Promise<AccountModules> {
     return this.request(
       new URL(`dashboard/accounts/${encodeURIComponent(accountId)}/modules`, this.baseUrl),
       {
@@ -759,6 +785,7 @@ export class GuardianOperatorHttpClient {
         body: JSON.stringify({
           modules: modules.map((module) => ({ module_id: module.moduleId, params: module.params })),
           reason,
+          ...expectedVersion(options),
         }),
       },
       parseAccountModules,
@@ -1596,6 +1623,7 @@ function parseErrorResponse(value: unknown): GuardianOperatorHttpErrorData {
     pausedAt,
     pausedReason,
     releasedAt,
+    detail: typeof meta['detail'] === 'string' ? (meta['detail'] as string) : undefined,
   };
 }
 
@@ -2657,4 +2685,16 @@ function parseModuleParamsHistory(value: unknown): ModuleParamsHistory {
       };
     }),
   };
+}
+
+/** Options for a module params write. */
+export interface ParamsWriteOptions {
+  /** The params version the change was made against: `paramsVersion` for a global write,
+   * `accountParamsVersion` for an account layer or assignment. Set, a write after another
+   * change is refused with 409 `GUARDIAN_MODULE_PARAMS_STALE`. */
+  expectedVersion?: number;
+}
+
+function expectedVersion(options: ParamsWriteOptions): { expected_version?: number } {
+  return options.expectedVersion === undefined ? {} : { expected_version: options.expectedVersion };
 }

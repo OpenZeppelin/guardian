@@ -138,7 +138,6 @@ enum Failure {
     /// which says nothing about whether the module is up.
     Rejected(String),
     Timeout,
-    InvalidDecision(String),
     /// No `effect`, or a value this Guardian does not know: never read as an allow.
     UnknownEffect(i32),
     /// The request could not be built: an account view or the projection could not be
@@ -156,7 +155,7 @@ impl Failure {
         match self {
             Failure::Error(_) | Failure::Rejected(_) => "error",
             Failure::Timeout => "timeout",
-            Failure::InvalidDecision(_) | Failure::UnknownEffect(_) => "invalid_decision",
+            Failure::UnknownEffect(_) => "invalid_decision",
             Failure::RequestUnavailable(_) | Failure::RequestTooLarge(_) => "request_unavailable",
             Failure::CircuitOpen => "circuit_open",
         }
@@ -194,7 +193,6 @@ impl Failure {
             Failure::Error(_)
             | Failure::Rejected(_)
             | Failure::Timeout
-            | Failure::InvalidDecision(_)
             | Failure::UnknownEffect(_)
             | Failure::CircuitOpen => None,
         }
@@ -212,7 +210,6 @@ impl std::fmt::Display for Failure {
             Failure::Error(message) => write!(f, "{message}"),
             Failure::Rejected(message) => write!(f, "module rejected the request: {message}"),
             Failure::Timeout => write!(f, "timed out"),
-            Failure::InvalidDecision(code) => write!(f, "invalid reason code {code:?}"),
             Failure::UnknownEffect(value) => write!(f, "unknown decision effect {value}"),
             Failure::RequestUnavailable(message) => write!(f, "request unavailable: {message}"),
             Failure::RequestTooLarge(bytes) => {
@@ -287,6 +284,16 @@ impl ModulePipeline {
             .find(|instance| instance.config.id == module_id)
     }
 
+    /// Whether a stored account row is one evaluation applies: its instance is declared, and a
+    /// layer names a `scope = all` instance while an assignment entry names any other. A row
+    /// that fails this is left over from an earlier catalog (the instance was removed, or its
+    /// `scope` changed) and is reported as orphaned.
+    pub fn row_applies(&self, module_id: &str, kind: ParamsKind) -> bool {
+        self.instance(module_id).is_some_and(|instance| {
+            (kind == ParamsKind::Layer) == (instance.config.scope == Scope::All)
+        })
+    }
+
     #[cfg(test)]
     pub fn store_handle(&self) -> Arc<dyn ModuleStore> {
         self.store.clone()
@@ -335,10 +342,6 @@ impl ModulePipeline {
         Ok((version, rows))
     }
 
-    /// The global rows and one account's rows with their two params versions, read in one store
-    /// call. Without it a request could combine a new global rule with an old account layer, a
-    /// combination no operator ever configured. The instance rows come from the cache when it
-    /// holds the instance params version the store reports.
     /// Whether the account has module history: any write to its layers or assignment, an
     /// emptied assignment included. Only an account without any receives the `default`
     /// instances, by the same rule the copy at registration applies.
@@ -354,6 +357,10 @@ impl ModulePipeline {
                 .any(|row| row.kind == ParamsKind::Assignment))
     }
 
+    /// The global rows and one account's rows with their two params versions, read in one store
+    /// call. Without it a request could combine a new global rule with an old account layer, a
+    /// combination no operator ever configured. The instance rows come from the cache when it
+    /// holds the instance params version the store reports.
     pub(super) async fn snapshot(&self, account_id: &str) -> Result<Snapshot, GuardianError> {
         let cached = self
             .cache
@@ -439,8 +446,9 @@ impl ModulePipeline {
     /// The `before_account_registered` plan of an account registering for the first time (no
     /// account yet, or a claim with no assignment history): the `all` instances and every
     /// enabled `default` instance subscribed to the hook, with its current global params. Also
-    /// returns the `default` copies to store for the account, every enabled `default` instance
-    /// with exactly the params evaluated, read in the same snapshot.
+    /// returns the `default` copies to store for the account: every `default` instance, a
+    /// disabled one included so it applies once re-enabled, with its global params as read in
+    /// the same snapshot.
     pub async fn plan_first_registration(
         &self,
         account_id: &str,
@@ -475,9 +483,7 @@ impl ModulePipeline {
         let defaults: Vec<Assigned> = if first_registration {
             self.instances
                 .iter()
-                .filter(|instance| {
-                    instance.config.scope == Scope::Default && Self::enabled_in(&rows, instance)
-                })
+                .filter(|instance| instance.config.scope == Scope::Default)
                 .map(|instance| Assigned {
                     module_id: instance.config.id.clone(),
                     params: Self::global_params_in(&rows, instance),
@@ -714,9 +720,8 @@ impl Plan<'_> {
                     super::metrics::evaluated(id, super::metrics::Outcome::Allow, took);
                     continue;
                 }
-                Ok((Some(Effect::Deny), decision))
-                    if is_valid_reason_code(&decision.reason_code) =>
-                {
+                Ok((Some(Effect::Deny), decision)) => {
+                    let reason_code = denial_reason_code(&instance.config.id, decision.reason_code);
                     if !dry_run {
                         breakers.answered(id);
                     }
@@ -727,7 +732,7 @@ impl Plan<'_> {
                         account_id,
                         ?hook,
                         submitter = %base.submitter,
-                        reason_code = %decision.reason_code,
+                        reason_code = %reason_code,
                         layer = layer.as_str(),
                         message = %decision.message,
                         catalog_hash = %approval.catalog_hash,
@@ -740,14 +745,15 @@ impl Plan<'_> {
                         ClientReason::Generic => GuardianError::ModuleDeniedGeneric,
                         ClientReason::Full => GuardianError::ModuleDenied {
                             module: instance.config.id.clone(),
-                            reason_code: decision.reason_code,
+                            reason_code,
                             layer: layer.as_str().to_string(),
                             client_message: client_message(&decision.client_message),
                         },
                     });
                 }
-                Ok((Some(_), decision)) => Failure::InvalidDecision(decision.reason_code),
-                Ok((None, decision)) => Failure::UnknownEffect(decision.effect),
+                Ok((Some(Effect::Unspecified) | None, decision)) => {
+                    Failure::UnknownEffect(decision.effect)
+                }
                 Err(CallError::Module(guardian_module_sdk::ModuleError::InvalidRequest(
                     message,
                 ))) => Failure::Rejected(message),
@@ -806,6 +812,18 @@ fn client_message(text: &str) -> Option<String> {
         .join(" ");
     let capped: String = plain.chars().take(CLIENT_MESSAGE_MAX_CHARS).collect();
     (!capped.is_empty()).then_some(capped)
+}
+
+/// The reason code a denial is reported with: the module's own, or the generic one when the
+/// module's breaks the reason code rule. An explicit deny stays a deny either way: treating a
+/// malformed code as a module failure would let `on_error = "allow"` sign what the module
+/// refused.
+fn denial_reason_code(module: &str, reason_code: String) -> String {
+    if is_valid_reason_code(&reason_code) {
+        return reason_code;
+    }
+    tracing::warn!(module, %reason_code, "Policy module denied with a reason code that breaks the reason code rule; reported as policy_denied");
+    crate::error::GENERIC_REASON_CODE.to_string()
 }
 
 /// What a decision asks for: `None` for a decision that sets no effect or one this Guardian
@@ -1074,12 +1092,14 @@ mod tests {
             operator: "0xop",
             reason: "setup",
             at: "2026-10-16T00:00:00Z".into(),
+            expected_version: None,
         };
         store
             .inner
             .seed_instance(
                 "caps",
                 true,
+                &serde_json::json!({ "cap": 1000 }),
                 &serde_json::json!({ "cap": 1000 }),
                 "2026-10-16T00:00:00Z",
             )
@@ -1134,17 +1154,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_reason_code_is_a_failure() {
-        let pipeline = pipeline(vec![instance(
-            "bad",
-            &[HOOK],
-            OnError::Deny,
-            StubModule::new(Behaviour::Decide(Decision::deny("Not Valid!", ""))),
-        )]);
-        assert!(matches!(
-            run(&pipeline).await,
-            Err(GuardianError::ModuleUnavailable { .. })
-        ));
+    async fn a_deny_with_a_malformed_reason_code_is_still_a_deny_whatever_on_error_says() {
+        for on_error in [OnError::Deny, OnError::Allow] {
+            let pipeline = pipeline(vec![instance(
+                "bad",
+                &[HOOK],
+                on_error,
+                StubModule::new(Behaviour::Decide(Decision::deny("RECIPIENT-Blocked", ""))),
+            )]);
+            match run(&pipeline).await {
+                Err(GuardianError::ModuleDenied {
+                    module,
+                    reason_code,
+                    ..
+                }) => {
+                    assert_eq!(module, "bad");
+                    assert_eq!(reason_code, crate::error::GENERIC_REASON_CODE);
+                }
+                other => panic!("{on_error:?}: expected a denial, got {other:?}"),
+            }
+        }
     }
 
     #[tokio::test]
@@ -1235,6 +1264,7 @@ mod tests {
                 operator: "0xop",
                 reason: "test",
                 at: "t".into(),
+                expected_version: None,
             }
         }
 
@@ -1317,6 +1347,7 @@ mod tests {
                     "blocklist",
                     true,
                     &json!({ "denylist": ["0x000000000000000000000000000aaa"] }),
+                    &json!({ "denylist": ["0x000000000000000000000000000aaa"] }),
                     "t0",
                 )
                 .await
@@ -1346,6 +1377,7 @@ mod tests {
                 .seed_instance(
                     "blocklist",
                     true,
+                    &json!({ "denylist": ["0x000000000000000000000000000aaa"] }),
                     &json!({ "denylist": ["0x000000000000000000000000000aaa"] }),
                     "t0",
                 )

@@ -46,7 +46,8 @@ What it does **not** back up:
 Policy module state is in the database, so the backups above cover it: which
 instances are enabled, their global params, each account's layers and
 assignments, and the params history (`module_instances`,
-`module_account_params`, `module_params_history`, `module_state_version`).
+`module_account_params`, `module_params_history`, `module_state_version`,
+`module_account_version`).
 A filesystem build keeps the same state in `module_state.json` under
 `GUARDIAN_MODULES_STATE`; back that directory up with the metadata directory.
 

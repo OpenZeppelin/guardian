@@ -291,16 +291,21 @@ impl RacingStore {
             operator: "0xracing-operator",
             reason: "concurrent write",
             at: "2026-10-16T00:00:01Z".into(),
+            expected_version: None,
         };
         for write in writes {
             match write {
                 RacingWrite::Global(module, params) => {
-                    self.inner.set_global(module, params, &change).await?;
+                    self.inner
+                        .set_global(module, params, &change)
+                        .await
+                        .map_err(|e| e.to_string())?;
                 }
                 RacingWrite::Layer(account, module, params) => {
                     self.inner
                         .set_layer(account, module, params, &change)
-                        .await?;
+                        .await
+                        .map_err(|e| e.to_string())?;
                 }
             }
         }
@@ -321,10 +326,11 @@ impl super::store::ModuleStore for RacingStore {
         module_id: &str,
         enabled: bool,
         params: &serde_json::Value,
+        catalog_params: &serde_json::Value,
         at: &str,
     ) -> Result<(), String> {
         self.inner
-            .seed_instance(module_id, enabled, params, at)
+            .seed_instance(module_id, enabled, params, catalog_params, at)
             .await
     }
 
@@ -356,7 +362,7 @@ impl super::store::ModuleStore for RacingStore {
         module_id: &str,
         params: serde_json::Value,
         change: &super::store::Change<'_>,
-    ) -> Result<u64, String> {
+    ) -> Result<u64, super::store::WriteError> {
         self.inner.set_global(module_id, params, change).await
     }
 
@@ -404,7 +410,7 @@ impl super::store::ModuleStore for RacingStore {
         module_id: &str,
         params: Option<serde_json::Value>,
         change: &super::store::Change<'_>,
-    ) -> Result<u64, String> {
+    ) -> Result<u64, super::store::WriteError> {
         self.inner
             .set_layer(account_id, module_id, params, change)
             .await
@@ -415,7 +421,7 @@ impl super::store::ModuleStore for RacingStore {
         account_id: &str,
         modules: Vec<super::store::Assigned>,
         change: &super::store::Change<'_>,
-    ) -> Result<u64, String> {
+    ) -> Result<u64, super::store::WriteError> {
         self.inner.set_assignment(account_id, modules, change).await
     }
 

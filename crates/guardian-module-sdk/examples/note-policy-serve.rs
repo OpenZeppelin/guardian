@@ -29,6 +29,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             other => return Err(format!("unknown argument {other}").into()),
         }
     }
+    if !server.has_instances() {
+        return Err("at least one --instance <id> <token-file> is required".into());
+    }
     println!("note-policy listening on {listen}");
     server.run(listen).await?;
     Ok(())

@@ -100,6 +100,7 @@ mod tests {
             operator: "0xop",
             reason: "test",
             at: "2026-10-16T00:00:00Z".into(),
+            expected_version: None,
         }
     }
 
@@ -126,7 +127,13 @@ mod tests {
         let store = pipeline.store();
         for id in ["caps", "screening", "summary", "paused", "treasury"] {
             store
-                .seed_instance(id, true, &json!({ "cap": id }), "2026-10-16T00:00:00Z")
+                .seed_instance(
+                    id,
+                    true,
+                    &json!({ "cap": id }),
+                    &json!({ "cap": id }),
+                    "2026-10-16T00:00:00Z",
+                )
                 .await
                 .unwrap();
         }

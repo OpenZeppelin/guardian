@@ -61,8 +61,8 @@ least that high (tonic's default is 4 MiB).
 
 | Field | Rule |
 |---|---|
-| `effect` | `ALLOW` or `DENY`, set by `Decision::allow()` and `Decision::deny(..)`. A value the Guardian does not know is a module failure, never an allow. A module that leaves it unspecified is read through `allow` |
-| `reason_code` | Required on a deny: 1 to 64 characters of `a-z`, `0-9` and `_`. Anything else turns the deny into a module failure. Stable codes let operators and clients act on them |
+| `effect` | `ALLOW` or `DENY`, set by `Decision::allow()` and `Decision::deny(..)`. A value the Guardian does not know is a module failure, never an allow. A module that leaves it unspecified has failed: its instance's `on_error` applies |
+| `reason_code` | Required on a deny: 1 to 64 characters of `a-z`, `0-9` and `_`. A deny with any other code is still a deny, but clients get the generic `policy_denied` and the Guardian logs a warning. Stable codes let operators and clients act on them |
 | `message` | For the operator: logged with the decision, never sent to clients |
 | `client_message` | Optional, for the person who sent the request, via `.with_client_message(..)`. Plain text: the Guardian drops control characters, collapses whitespace and keeps at most 256 characters. Shown only for instances with `client_reason = "full"` (the default); with `"generic"` the client sees `reason_code = "policy_denied"` and nothing else |
 
@@ -133,7 +133,7 @@ its script, so not an absolute height), the optional
 lapses; use this one for "valid until"), `vault_changes` (asset and
 direction), `output_notes`
 (`note_type`, assets, `p2id_target` for known P2ID and P2IDE scripts,
-`tx_fee`), `input_notes`, `storage_changes` by slot name, and
+`reclaimer` for a P2IDE note whose reclaim is enabled, `tx_fee`), `input_notes`, `storage_changes` by slot name, and
 `new_code_commitment` when the transaction replaces the account's code.
 Amounts are decimal strings. Skip the fee note (`tx_fee = true`) when counting
 payments: every transaction pays its fee through an output note. The Guardian
@@ -141,6 +141,12 @@ sets `tx_fee` only on the one note the fee payment creates, and only while it
 carries no more of the fee asset than a transaction can owe (64 times the
 chain's base fee), never on another note that merely uses the fee script, so
 treat every other note as a payment.
+
+A rule about who gets paid must judge `reclaimer` as well as `p2id_target`: the
+creator of a P2IDE note picks the reclaimer freely, and once the note's reclaim
+height is reached that account can consume it. A note to an allowed target with a
+blocked reclaimer otherwise pays the blocked account. A reclaimer equal to the
+paying account is the sender taking its own note back.
 
 Projections are tagged by network (`TransactionProjection`, `oneof network`).
 Miden is the only network today; read it with `subject.miden()` and return a
@@ -187,6 +193,42 @@ with the same value. For TLS, mutual TLS and the AWS secrets provider, see
 [remote modules](./remote.md#credentials) and
 [`examples/policy-module`](../../../examples/policy-module/README.md), a
 standalone service you can copy as a starting point.
+
+### Without the Rust SDK
+
+A module in another language implements the `GuardianModule` service from
+[`guardian_module_v1.proto`](../../../crates/guardian-module-sdk/proto/guardian_module_v1.proto).
+What the Guardian expects on the wire:
+
+- **Authentication.** Each call carries `authorization: Bearer <token>`, the
+  instance's token. Check it against the instance the request names
+  (`HookRequest.instance_id`), and refuse an unknown instance.
+- **Status codes.** `INVALID_ARGUMENT` means "I cannot judge this request": the
+  instance's `on_error` applies to that request only, and it does not count
+  toward the circuit breaker. `UNAVAILABLE`, `DEADLINE_EXCEEDED` and `UNKNOWN`
+  mean the module is down: they count toward the breaker, and on `Describe` at
+  startup an already-known instance starts unavailable instead of stopping the
+  server. Any other status (`UNAUTHENTICATED`, `PERMISSION_DENIED`, `INTERNAL`,
+  ...) means the Guardian cannot use the module: on `Describe` it stops startup
+  for a new instance and holds the breaker open until a health probe passes.
+- **Decisions.** Set `effect` to `ALLOW` or `DENY`; an unset or unknown effect
+  is a module failure. A deny needs a `reason_code` of 1 to 64 characters of
+  `a-z`, `0-9` and `_` (another code is still a deny, but clients only see
+  `policy_denied`).
+- **Time.** `timeout_ms` bounds the whole call, including the TCP connect and
+  the TLS handshake after the Guardian reconnects, so leave room for them.
+- **Keepalive.** The Guardian sends HTTP/2 PINGs every 10 seconds on an idle
+  connection and drops it after 5 seconds without an answer. gRPC servers that
+  reject frequent pings by default (for example `grpc-go` and `grpc-java`
+  enforcement policies) must permit pings every 10 seconds without active
+  streams, or they close the connection with `too_many_pings`.
+- **Size.** Requests can be up to `GUARDIAN_MODULE_REQUEST_MAX_BYTES` (2 MiB by
+  default): raise your server's receive limit if it is lower.
+- **`Notify` and `NotifyGap`** are not called in this release; answer them
+  with `UNIMPLEMENTED`.
+
+The Rust conformance suite runs in process only, so port its cases (listed in
+[Test it](#test-it)) to your language's test framework.
 
 ## Run it in process
 

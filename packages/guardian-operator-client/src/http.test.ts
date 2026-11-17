@@ -2368,6 +2368,67 @@ describe('GuardianOperatorHttpClient — account pausing (feature 001)', () => {
     );
   });
 
+  it('sends the version a write was made against only when given', async () => {
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const view = { account_id: 'acc-1', account_params_version: 3, modules: [] };
+
+    mockFetch.mockResolvedValueOnce(okJson(INSTANCE));
+    await client.setModuleGlobalParams('caps', { cap: 1 }, 'OP-7', { expectedVersion: 8 });
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      'https://guardian.example/dashboard/modules/caps/params',
+      expect.objectContaining({ body: JSON.stringify({ params: { cap: 1 }, reason: 'OP-7', expected_version: 8 }) }),
+    );
+
+    mockFetch.mockResolvedValueOnce(okJson(view));
+    await client.setAccountModuleLayer('acc-1', 'caps', { cap: 1 }, 'OP-8', { expectedVersion: 3 });
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      'https://guardian.example/dashboard/accounts/acc-1/modules/caps/params',
+      expect.objectContaining({ body: JSON.stringify({ params: { cap: 1 }, reason: 'OP-8', expected_version: 3 }) }),
+    );
+
+    mockFetch.mockResolvedValueOnce(okJson(view));
+    await client.removeAccountModuleLayer('acc-1', 'caps', 'OP-9', { expectedVersion: 0 });
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      'https://guardian.example/dashboard/accounts/acc-1/modules/caps/params',
+      expect.objectContaining({ body: JSON.stringify({ reason: 'OP-9', expected_version: 0 }) }),
+    );
+
+    mockFetch.mockResolvedValueOnce(okJson(view));
+    await client.setAccountModules('acc-1', [], 'OP-10', { expectedVersion: 3 });
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      'https://guardian.example/dashboard/accounts/acc-1/modules',
+      expect.objectContaining({ body: JSON.stringify({ modules: [], reason: 'OP-10', expected_version: 3 }) }),
+    );
+
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ code: 'GUARDIAN_MODULE_PARAMS_STALE', message: 'stale', meta: { retryable: false } }),
+        { status: 409, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    await expect(
+      client.setModuleGlobalParams('caps', { cap: 2 }, 'OP-11', { expectedVersion: 8 }),
+    ).rejects.toMatchObject({ status: 409, data: { code: 'GUARDIAN_MODULE_PARAMS_STALE' } });
+  });
+
+  it('surfaces why a module write was refused', async () => {
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: 'invalid_input',
+          message: 'Guardian refused that policy module change; the details say why.',
+          meta: { retryable: false, detail: 'module caps: max_per_transaction for 0xa is not a decimal amount' },
+        }),
+        { status: 400, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    await expect(client.setModuleGlobalParams('caps', { max_per_transaction: { '0xa': 'ten' } }, 'OP-12')).rejects.toMatchObject({
+      status: 400,
+      data: { code: 'invalid_input', detail: 'module caps: max_per_transaction for 0xa is not a decimal amount' },
+    });
+  });
+
   it('writes global params, switches instances and pages the history', async () => {
     const client = new GuardianOperatorHttpClient('https://guardian.example');
 

@@ -1059,6 +1059,65 @@ resource "aws_cloudwatch_metric_alarm" "execution_reservation_age" {
   ok_actions          = local.effective_alarm_actions
 }
 
+# Policy modules (issue #251). `module` is a catalog instance id the Terraform
+# does not know, so these alarms aggregate over it with Metrics Insights
+# queries; the alarm says that some instance is affected, and the dashboard's
+# module list (`circuit`, `enabled`) or the metric itself says which.
+locals {
+  modules_alarms_enabled = local.cloudwatch_metrics_enabled && var.guardian_modules_config != ""
+}
+
+# An open circuit means a module stopped answering (or answers in a way this
+# Guardian cannot use): its accounts follow on_error, so a fail-closed
+# instance refuses their transactions and a fail-open one lets them through
+# unjudged, until a health probe passes.
+resource "aws_cloudwatch_metric_alarm" "module_circuit_open" {
+  count = local.modules_alarms_enabled ? 1 : 0
+
+  alarm_name          = "${var.stack_name}-module-circuit-open"
+  alarm_description   = "A Guardian policy module's circuit has been open for 10 minutes: its accounts follow on_error (fail-closed instances refuse their transactions, fail-open ones skip the module). See docs/runbooks/policy-modules.md${local.alarm_description_links}"
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  evaluation_periods  = 2
+  datapoints_to_alarm = 2
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.effective_alarm_actions
+  ok_actions          = local.effective_alarm_actions
+
+  metric_query {
+    id          = "open"
+    expression  = "SELECT MAX(guardian_module_circuit_open) FROM SCHEMA(\"${local.metrics_namespace}\", module)"
+    period      = 300
+    label       = "policy modules with an open circuit"
+    return_data = true
+  }
+}
+
+# Fail-open evaluations sign transactions no module judged. Any of them is
+# worth knowing about; an operator who accepts them for a fail-open instance
+# raises the threshold.
+resource "aws_cloudwatch_metric_alarm" "module_fail_open" {
+  count = local.modules_alarms_enabled ? 1 : 0
+
+  alarm_name          = "${var.stack_name}-module-fail-open"
+  alarm_description   = "Guardian approved more than ${var.alarm_module_fail_open_threshold} requests in a 5-minute period without a policy module's judgement (on_error = allow). See docs/runbooks/policy-modules.md${local.alarm_description_links}"
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = var.alarm_module_fail_open_threshold
+  evaluation_periods  = 1
+  datapoints_to_alarm = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.effective_alarm_actions
+  ok_actions          = local.effective_alarm_actions
+
+  metric_query {
+    id          = "skipped"
+    expression  = "SELECT SUM(guardian_module_fail_open_total) FROM SCHEMA(\"${local.metrics_namespace}\", module)"
+    period      = 300
+    label       = "requests approved without a module's judgement"
+    return_data = true
+  }
+}
+
 # guardian_build_info is a constant-1 gauge emitted from metrics-listener
 # startup, so it produces a datapoint on every scrape regardless of
 # traffic; it disappearing means the pipeline is down. Maximum is never

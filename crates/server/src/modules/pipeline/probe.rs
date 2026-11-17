@@ -63,6 +63,7 @@ impl ModulePipeline {
             operator: &operator,
             reason: "params migrated by the module",
             at: chrono::Utc::now().to_rfc3339(),
+            expected_version: None,
         };
         match self.store.set_global_if(id, read, params, &change).await {
             Ok(Some(_)) => {

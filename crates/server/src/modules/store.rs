@@ -93,6 +93,57 @@ pub struct Change<'a> {
     pub operator: &'a str,
     pub reason: &'a str,
     pub at: String,
+    /// The params version the operator read before this write: the instance params version
+    /// for a global write, the account's for a layer or assignment. Set, the write is refused
+    /// as [`WriteError::Stale`] once that version has moved, so two operators editing from the
+    /// same read cannot silently drop each other's change. Unset, the write is unconditional.
+    pub expected_version: Option<u64>,
+}
+
+/// Why an operator write did not commit.
+#[derive(Debug)]
+pub enum WriteError {
+    /// The write named the version it was made against, and the rows have moved since.
+    Stale {
+        current: u64,
+    },
+    Storage(String),
+}
+
+impl From<String> for WriteError {
+    fn from(message: String) -> Self {
+        WriteError::Storage(message)
+    }
+}
+
+impl From<&str> for WriteError {
+    fn from(message: &str) -> Self {
+        WriteError::Storage(message.to_string())
+    }
+}
+
+impl WriteError {
+    /// Names the write a storage failure happened in; a stale write is left as it is.
+    pub fn context(self, write: &str) -> Self {
+        match self {
+            WriteError::Storage(message) => WriteError::Storage(format!("{write}: {message}")),
+            stale @ WriteError::Stale { .. } => stale,
+        }
+    }
+}
+
+impl std::fmt::Display for WriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WriteError::Stale { current } => {
+                write!(
+                    f,
+                    "the params moved to version {current} since they were read"
+                )
+            }
+            WriteError::Storage(message) => write!(f, "{message}"),
+        }
+    }
 }
 
 /// Module state every replica reads. Each write updates its rows and appends the history in
@@ -103,11 +154,15 @@ pub struct Change<'a> {
 #[async_trait]
 pub trait ModuleStore: Send + Sync {
     /// Inserts the instance row the first time `module_id` is seen; later calls do nothing.
+    /// Stores a new instance with `params` as its global params and `catalog_params`, the
+    /// catalog's value as written, as its seed, so drift compares like with like even when
+    /// the module normalized the params it stores.
     async fn seed_instance(
         &self,
         module_id: &str,
         enabled: bool,
         params: &serde_json::Value,
+        catalog_params: &serde_json::Value,
         at: &str,
     ) -> Result<(), String>;
 
@@ -129,7 +184,7 @@ pub trait ModuleStore: Send + Sync {
         module_id: &str,
         params: serde_json::Value,
         change: &Change<'_>,
-    ) -> Result<u64, String>;
+    ) -> Result<u64, WriteError>;
 
     /// Replaces the global params only while they still equal `expected`, and returns the
     /// version it committed as, or `None` when it did not write. For writes derived from a
@@ -167,7 +222,7 @@ pub trait ModuleStore: Send + Sync {
         module_id: &str,
         params: Option<serde_json::Value>,
         change: &Change<'_>,
-    ) -> Result<u64, String>;
+    ) -> Result<u64, WriteError>;
 
     /// Replaces the account's assignment. Returns the account params version the write
     /// committed as.
@@ -176,7 +231,7 @@ pub trait ModuleStore: Send + Sync {
         account_id: &str,
         modules: Vec<Assigned>,
         change: &Change<'_>,
-    ) -> Result<u64, String>;
+    ) -> Result<u64, WriteError>;
 
     /// Writes `modules` as the account's assignment only when it has no assignment and no
     /// write has touched its rows yet (account params version 0), which is how `default`
@@ -227,6 +282,19 @@ impl Tables {
 
     fn account_version(&self, account_id: &str) -> u64 {
         self.account_versions.get(account_id).copied().unwrap_or(0)
+    }
+
+    /// Refuses a write made against `expected` once the version of its scope (the instance
+    /// rows for `None`, that account's rows for `Some`) has moved past it.
+    fn check(&self, account_id: Option<&str>, expected: Option<u64>) -> Result<(), WriteError> {
+        let current = match account_id {
+            None => self.instance_version,
+            Some(account_id) => self.account_version(account_id),
+        };
+        match expected {
+            Some(expected) if expected != current => Err(WriteError::Stale { current }),
+            _ => Ok(()),
+        }
     }
 
     /// Moves the version a write commits as, once per write however many history entries it
@@ -395,12 +463,18 @@ impl FsModuleStore {
         }
     }
 
-    fn write<T>(&self, apply: impl FnOnce(&mut Tables) -> Result<T, String>) -> Result<T, String> {
-        let mut tables = self.tables.write().map_err(|_| "module store poisoned")?;
+    fn write<T, E: From<String>>(
+        &self,
+        apply: impl FnOnce(&mut Tables) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let mut tables = self
+            .tables
+            .write()
+            .map_err(|_| E::from("module store poisoned".to_string()))?;
         let mut next = tables.clone();
         let out = apply(&mut next)?;
         if let Some(dir) = &self.dir {
-            write_snapshot(dir, &next)?;
+            write_snapshot(dir, &next).map_err(E::from)?;
         }
         *tables = next;
         Ok(out)
@@ -414,6 +488,7 @@ impl ModuleStore for FsModuleStore {
         module_id: &str,
         enabled: bool,
         params: &serde_json::Value,
+        catalog_params: &serde_json::Value,
         at: &str,
     ) -> Result<(), String> {
         if self.read(|tables| tables.instances.contains_key(module_id)) {
@@ -426,7 +501,7 @@ impl ModuleStore for FsModuleStore {
                     module_id: module_id.to_string(),
                     enabled,
                     global_params: params.clone(),
-                    seeded_params: params.clone(),
+                    seeded_params: catalog_params.clone(),
                     updated_at: at.to_string(),
                     updated_by: "catalog".into(),
                 },
@@ -435,6 +510,7 @@ impl ModuleStore for FsModuleStore {
                 operator: "catalog",
                 reason: "seeded from the catalog file",
                 at: at.to_string(),
+                expected_version: None,
             };
             let version = tables.bump(None);
             tables.append(
@@ -485,8 +561,9 @@ impl ModuleStore for FsModuleStore {
         module_id: &str,
         params: serde_json::Value,
         change: &Change<'_>,
-    ) -> Result<u64, String> {
+    ) -> Result<u64, WriteError> {
         self.write(|tables| {
+            tables.check(None, change.expected_version)?;
             let row = tables
                 .instances
                 .entry(module_id.to_string())
@@ -572,8 +649,9 @@ impl ModuleStore for FsModuleStore {
         module_id: &str,
         params: Option<serde_json::Value>,
         change: &Change<'_>,
-    ) -> Result<u64, String> {
+    ) -> Result<u64, WriteError> {
         self.write(|tables| {
+            tables.check(Some(account_id), change.expected_version)?;
             let version = tables.bump(Some(account_id));
             let previous = tables.row_params(account_id, module_id, ParamsKind::Layer);
             tables.account_params.retain(|row| {
@@ -609,8 +687,9 @@ impl ModuleStore for FsModuleStore {
         account_id: &str,
         modules: Vec<Assigned>,
         change: &Change<'_>,
-    ) -> Result<u64, String> {
+    ) -> Result<u64, WriteError> {
         self.write(|tables| {
+            tables.check(Some(account_id), change.expected_version)?;
             let previous: Vec<AccountParamsRow> = tables
                 .account_params
                 .iter()
@@ -734,6 +813,7 @@ mod tests {
             operator: "0xop",
             reason: "ticket",
             at: "2026-10-15T00:00:00Z".into(),
+            expected_version: None,
         }
     }
 
@@ -741,7 +821,7 @@ mod tests {
     async fn seeding_happens_once_and_api_changes_win() {
         let store = FsModuleStore::in_memory();
         store
-            .seed_instance("caps", true, &json!({ "a": 1 }), "t0")
+            .seed_instance("caps", true, &json!({ "a": 1 }), &json!({ "a": 1 }), "t0")
             .await
             .unwrap();
         store
@@ -749,7 +829,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .seed_instance("caps", true, &json!({ "a": 3 }), "t1")
+            .seed_instance("caps", true, &json!({ "a": 3 }), &json!({ "a": 3 }), "t1")
             .await
             .unwrap();
         let rows = store.instances().await.unwrap();
@@ -770,7 +850,7 @@ mod tests {
     async fn each_write_reports_the_version_it_committed_as() {
         let store = FsModuleStore::in_memory();
         store
-            .seed_instance("caps", true, &json!({}), "t0")
+            .seed_instance("caps", true, &json!({}), &json!({}), "t0")
             .await
             .unwrap();
         let assigned = || {
@@ -892,7 +972,7 @@ mod tests {
     async fn an_account_write_moves_only_that_accounts_version() {
         let store = FsModuleStore::in_memory();
         store
-            .seed_instance("caps", true, &json!({}), "t0")
+            .seed_instance("caps", true, &json!({}), &json!({}), "t0")
             .await
             .unwrap();
         let instance_version = store.instance_version().await.unwrap();
@@ -930,7 +1010,7 @@ mod tests {
     async fn the_enabled_switch_is_stored_and_moves_the_version() {
         let store = FsModuleStore::in_memory();
         store
-            .seed_instance("caps", true, &json!({}), "t0")
+            .seed_instance("caps", true, &json!({}), &json!({}), "t0")
             .await
             .unwrap();
         store.set_enabled("caps", false, &change()).await.unwrap();
@@ -1033,6 +1113,7 @@ mod tests {
             operator: "catalog",
             reason: "default",
             at: at.into(),
+            expected_version: None,
         };
         let copy = || {
             vec![Assigned {
@@ -1124,7 +1205,7 @@ mod tests {
         {
             let store = FsModuleStore::open(dir.clone()).unwrap();
             store
-                .seed_instance("caps", true, &json!({ "a": 1 }), "t0")
+                .seed_instance("caps", true, &json!({ "a": 1 }), &json!({ "a": 1 }), "t0")
                 .await
                 .unwrap();
             store

@@ -1,4 +1,4 @@
-// guardian.module.v1, extracted from docs/rfcs/0002-guardian-modules.md section 3 (revision 32).
+// guardian.module.v1, extracted from docs/rfcs/0002-guardian-modules.md section 3 (revision 35).
 // The proto in RFC section 3 is authoritative; regenerate this file when it changes.
 // Protocol version 1 is not frozen yet: it freezes with the first published guardian-module-sdk
 // release, and from then on changes within it are additive only (RFC section 3.5).
@@ -114,7 +114,7 @@ enum Effect {
 
 message Decision {
   Effect effect = 1;                  // unspecified, or a value the Guardian does not know, is a module failure
-  string reason_code = 2;             // required on a deny; ignored on an allow
+  string reason_code = 2;             // required on a deny, [a-z0-9_]{1,64}; a deny with another code is still a deny, reported as policy_denied; ignored on an allow
   string message = 3;                 // logged, never forwarded to clients
   string client_message = 4;          // optional, plain text, at most 256 characters; forwarded only where the instance allows it (section 2.7)
 }
@@ -174,6 +174,7 @@ message OutputNote {
   string script_root = 6;
   optional string p2id_target = 7;    // set only for known P2ID / P2IDE scripts
   bool tx_fee = 8;                    // the fee note pay_fee creates; not a payment (section 3.1: set only for that one note, and only while it carries no more of the fee asset than a transaction can owe)
+  optional string reclaimer = 9;      // P2IDE only, set when its reclaim height is set: the account that can take the note once that height is reached, chosen freely by the note's creator; a recipient rule must judge it as well as p2id_target
 }
 enum NoteType { NOTE_TYPE_UNSPECIFIED = 0; NOTE_TYPE_PUBLIC = 1; NOTE_TYPE_PRIVATE = 2; }
 

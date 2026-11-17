@@ -75,7 +75,7 @@ impl ModulePipeline {
         };
         for ((hook, total), (_, now)) in named(proposed).into_iter().zip(named(current)) {
             if total > self.limits.budget && total > now {
-                return Err(GuardianError::InvalidInput(format!(
+                return Err(GuardianError::ModuleWriteRefused(format!(
                     "the account's modules at {} would take up to {} ms, over the evaluation budget of {} ms",
                     hook.as_str(),
                     total.as_millis(),
@@ -87,13 +87,14 @@ impl ModulePipeline {
     }
 
     /// The accounts whose stored modules exceed the budget, each with its worst hook and that
-    /// hook's time, and the count of stored rows naming an instance the catalog no longer
-    /// declares. One scan of which module each account row names, without params.
+    /// hook's time, and the count of stored rows evaluation no longer applies (their instance
+    /// was removed from the catalog or changed `scope`, see [`ModulePipeline::row_applies`]).
+    /// One scan of which module each account row names, without params.
     async fn scan_assignments(&self) -> Result<(Vec<OverBudget>, usize), String> {
         let rows = self.store.account_modules().await?;
         let orphaned = rows
             .iter()
-            .filter(|row| self.instance(&row.module_id).is_none())
+            .filter(|row| !self.row_applies(&row.module_id, row.kind))
             .count();
         let over = rows
             .chunk_by(|a, b| a.account_id == b.account_id)
@@ -130,9 +131,15 @@ impl ModulePipeline {
 
     /// Logs every account whose stored modules exceed the budget, without refusing to start: a
     /// deploy that raised a timeout must not become an outage. Returns the count of those
-    /// accounts and of stored rows naming an instance the catalog no longer declares.
+    /// accounts and of stored rows evaluation no longer applies.
     pub async fn report_stored_assignments(&self) -> Result<(usize, usize), String> {
         let (over, orphaned) = self.scan_assignments().await?;
+        if orphaned > 0 {
+            tracing::warn!(
+                rows = orphaned,
+                "Stored account module rows no longer apply: their instance was removed from the catalog or its scope changed; GET /dashboard/accounts/{{id}}/modules marks them orphaned"
+            );
+        }
         for account in &over {
             tracing::warn!(
                 account_id = %account.account_id,
