@@ -485,7 +485,7 @@ pub const REGISTRY: &[MetricDef] = &[
         name: EXECUTION_BATCHES_TOTAL,
         kind: MetricKind::Counter,
         labels: &[LABEL_OUTCOME],
-        help: "Groups of two or more Guardian transactions handed to the batcher, by outcome: accepted, unknown or not_processed (the node answered for the batch), refused (the node refused it and each transaction was sent alone), not_built or prover_busy (not sent as a batch; each transaction was sent alone).",
+        help: "Groups of two or more Guardian transactions handed to the batcher, by outcome: accepted or unknown (the node's answer for the batch), refused (the node refused it and each transaction was sent alone), not_built or prover_busy (not sent as a batch; each transaction was sent alone).",
     },
     MetricDef {
         name: EXECUTION_BATCHED_TRANSACTIONS_TOTAL,

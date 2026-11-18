@@ -6,7 +6,7 @@
 | **Feature** | [#254](https://github.com/OpenZeppelin/guardian/issues/254) (parent [#253](https://github.com/OpenZeppelin/guardian/issues/253), "Transaction Orchestration") |
 | **Audience** | Integrators, operators, and upstream reviewers (Miden team or anyone reading publicly) |
 | **Working artifacts** | [`speckit/features/254-guardian-prove-and-commit/`](../../speckit/features/254-guardian-prove-and-commit/) — see appendix |
-| **Revision** | 23 (2026-11-16): batched submission (#239), §3.2. With `GUARDIAN_EXECUTION_MAX_TXS_PER_BATCH` above one, transactions of different accounts that cross their no-retry boundaries within `GUARDIAN_EXECUTION_BATCH_WINDOW_MS` are proved together as one batch and sent through `SubmitProvenTxBatch`. Delivery only: what each boundary commit records, the no-retry rule and per-account outcome resolution are unchanged, a batch the node refuses is followed by single sends of the same proven transactions, and batching is off by default. No wire or SDK change |
+| **Revision** | 23 (2026-11-18): batched submission (#239), §3.2, experimental. With `GUARDIAN_EXECUTION_MAX_TXS_PER_BATCH` above one (at most 4), transactions of different accounts that cross their no-retry boundaries within `GUARDIAN_EXECUTION_BATCH_WINDOW_MS` are proved together as one batch and sent through `SubmitProvenTxBatch`. Delivery only: what each boundary commit records, the no-retry rule and per-account outcome resolution are unchanged, a batch the node refuses is followed by single sends of the same proven transactions with time kept back for them, and batching is off by default. No wire or SDK change |
 | **Revision 22** | 2026-10-28: GUARDIAN executes a transaction that creates a private output note like any other; the `allow_private_note` flag, the `private_note` refusal and the SDKs' `PrivateNote` local-execution reason are removed (proto field 3 of `ExecuteDeltaProposalRequest` is reserved). Revision 21 gave privacy as the reason, but GUARDIAN already holds the note before execution: the stored transaction request carries its recipient (serial number, script, inputs) and the send script its assets. The real gap was delivery, since a client could export only a note its own execution recorded; both SDKs now export the note a P2ID proposal creates from the proposal itself (`export_p2id_note_to_file` / `exportP2idNoteToFile`), checked against the summary the proposal id commits to, whoever executed it, from the cosigner's copy of the proposal (GUARDIAN deletes the proposal once its transaction is canonical). The HTTP execute payload is tagged `guardian.ExecuteDeltaProposal` like the gRPC one, since without the flag its body equals a signed status read. A session may sign the execute request. Earlier revisions follow as history |
 | **Revision 21** | 2026-10-08: GUARDIAN refuses to execute a transaction whose signed summary creates a private output note unless the execute request sets `allow_private_note` (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, `meta.reason` `private_note`; a switch carries `meta.reason` `switch_guardian` and is refused whatever the flag). The flag is part of the signed execute payload, and the gRPC execute payload is domain-separated from a signed status read. Execution failure messages are fixed per cause; raw node, prover and storage errors are log-only. Finished execution records are deleted after `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS` (default 30, `0` keeps them) unless they are the newest attempt of a proposal that still exists; a status read for a pruned proposal returns `GUARDIAN_EXECUTION_NOT_FOUND`. |
 | **Revision 20** | 2026-10-07: GUARDIAN refuses to execute a `switch_guardian` proposal with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, because only the client can finish the GUARDIAN handoff (register the account at the new GUARDIAN and switch its endpoint). A `guardian_executable` client still executes a switch locally, and executes a private-note P2ID locally unless the caller opts in with `allow_private_note`; the private-note P2ID gets no server rule. Earlier revisions follow as history |
@@ -511,12 +511,13 @@ Reading guide for the upstream questions:
 Off by default. With `GUARDIAN_EXECUTION_MAX_TXS_PER_BATCH` above one, an attempt that has
 crossed its no-retry boundary and claimed its send hands its proven transaction and sealed inputs
 to a per-process batcher instead of sending them. The batcher collects transactions of different
-accounts for `GUARDIAN_EXECUTION_BATCH_WINDOW_MS` after the first (a full batch leaves at once, a
-planned stop sends at once), reads a chain view at the tip that tracks every member's reference
+accounts for `GUARDIAN_EXECUTION_BATCH_WINDOW_MS` after the first (a full batch leaves at once),
+reads a chain view at the tip that tracks every member's reference
 block, builds the `ProposedBatch` at the tip (which verifies every member's proof again), runs the
 batch kernel and proves it in process with `LocalBatchProver`, and sends it through
 `SubmitProvenTxBatch` with one sealed input per transaction. The node admits or refuses a batch
-as a whole and commits it in one block.
+as a whole and commits it in one block. Experimental, and capped at 4 transactions, the node's own
+`max_txs_per_batch` by default.
 
 The batch is a delivery mechanism; what this RFC fixes per execution does not change:
 
@@ -524,26 +525,40 @@ The batch is a delivery mechanism; what this RFC fixes per execution does not ch
   only after its own fenced send claim. Nothing is proved again or re-executed.
 - **Outcomes.** An accepted batch makes every member `Accepted`, an unanswered batch every
   member `Unknown`; each account is then resolved from its own chain state, as in §1.2. A batch
-  the node refused definitely (`InvalidArgument`, `Unimplemented`, a rate limit, a batch over the
-  node's `max_txs_per_batch`) was never admitted, so none of its transactions is in flight, and each
-  is sent alone with what is left of its own send window and judged on its own: a refused batch
-  never costs an account its proposal. This is the one case where the same proven transaction
-  reaches the node twice. It is still the transaction the boundary recorded, never a new one,
-  the first copy was refused before admission, and it is sent alone at most once; an ambiguous
-  batch answer is never followed by a second send, so US4's single-submission guarantee holds for
-  every transaction the node may have admitted. A batch refused because its inputs were sealed against a
-  stale key is not resent when every member sealed against the same key, since each alone would
-  carry the same sealing; every member is `NotProcessed` and keeps its proposal. Members sealed
-  against different keys (a rotation between their attempts) are sent alone instead.
+  the node refused definitely (`InvalidArgument`, `FailedPrecondition`, `Unimplemented`, a rate
+  limit, a batch over the node's `max_txs_per_batch`) was never admitted, so none of its
+  transactions is in flight, and each is sent alone and judged on its own answer, whatever the
+  batch was refused for. A member whose sealing is stale is refused again alone (`NotProcessed`)
+  and keeps its proposal; nothing depends on the client telling a stale key apart by its gRPC
+  code alone. This is the one case where the same proven transaction reaches the node twice. It
+  is still the transaction the boundary recorded, never a new one, the first copy was refused
+  before admission, and it is sent alone at most once; an ambiguous batch answer is never
+  followed by a second send, so US4's single-submission guarantee holds for every transaction the
+  node may have admitted.
+- **What a refused batch can cost.** Never the proposal of a member the node would have taken
+  alone, given time to answer: the batch send keeps back 15 s of every member's time
+  (`RESEND_RESERVE`, the least a send needs to cross the boundary), so even a refusal that arrives
+  just before the batch's own deadline leaves each member at least that long to be sent alone.
+  The resend does have less time than an immediate single send would have had (at most what is
+  left of the 60 s an attempt hands over, `SendWindow::MAX_SEND`), so a node slower than that to
+  answer it leaves its outcome `Unknown` for the chain to settle, where without batching the send
+  could have waited longer.
 - **Why a refusal means the batch was not admitted.** Checked against node v0.18.2 (`d3a01153`,
   the devnet node; node paths below are in `0xMiden/node@v0.18.2`) and the `miden-client` 0.18.0
   pin.
-  - Guardian reads a batch answer as it reads a single send (`send_batch` and
-    `classify_submission_error`, `crates/server/src/network/miden/execution/attempt.rs:976-1064`).
-    Only `InvalidArgument`, `NotFound`, `OutOfRange`, `ResourceExhausted`, `Unauthenticated`,
-    `PermissionDenied` and `Unimplemented` are a refusal. `FailedPrecondition` is the stale-key
-    case above. `AlreadyExists` and every other code, `Internal` included, are `Unknown`
+  - Guardian reads a batch answer as it reads a single send (`BatchAnswer::of_error`, `send_batch`
+    and `classify_submission_error`, `crates/server/src/network/miden/execution/attempt.rs:955-1063`).
+    Only `InvalidArgument`, `FailedPrecondition`, `NotFound`, `OutOfRange`, `ResourceExhausted`,
+    `Unauthenticated`, `PermissionDenied` and `Unimplemented` are a refusal. `AlreadyExists` and
+    every other code, `Internal` included, are `Unknown`
     (`miden-client-0.18.0/src/rpc/errors/mod.rs:64-104`) **[READ]**.
+  - The client calls any `FailedPrecondition` on a submission a stale key, on the code alone
+    (`errors/mod.rs:64-73`). The only `FailedPrecondition` node v0.18.2 issues outside tests is the
+    validator's key-id check, before it unseals anything
+    (`bin/validator/src/server/validator_service/submit_proven_transaction.rs:150`); the RPC
+    reaches it per transaction, through each validator's `SubmitProvenTransaction`
+    (`crates/proto/src/clients/mod.rs:735-763`) **[READ]**. Guardian no longer acts on the code:
+    any refusal sends each member alone.
   - The RPC handler issues its own refusals (decoding, account admission, the reference block, the
     network-account gate, the batch proof check) before it calls the validators, and calls the
     block producer only after every validator accepted
@@ -564,25 +579,45 @@ The batch is a delivery mechanism; what this RFC fixes per execution does not ch
   - Neither the handler nor the block producer issues `Unimplemented` or `ResourceExhausted` on
     this path outside tests **[READ]**. Both come from before the handler runs: a server without
     the method, or a rate limit in front of the node **[INFERRED]**.
-  - Whether a validator keeps state from a batch the block producer then refuses is outside the
-    node repository. On devnet, a five-transaction batch was refused at the node's cap
-    (`InvalidArgument`, "the mempool is at capacity", raised in `add_user_batch` after the
-    validators accepted), and each of the five transactions then sent alone was accepted and
-    committed **[RAN]**. The mock-node tests cover `InvalidArgument`, `Unimplemented`,
-    `Unavailable` and `FailedPrecondition` batch answers
+  - A validator does keep state from a batch the block producer then refuses: it records every
+    transaction it validated, and answers a later submission of the same transaction from that
+    record without validating it again
+    (`bin/validator/src/server/validator_service/submit_proven_transaction.rs:46-99`). The record
+    lets a block holding the transaction be signed; it admits nothing to the mempool, so the
+    resend is still decided by the block producer alone **[READ]**.
+  - On devnet, a five-transaction batch was refused at the node's cap (`InvalidArgument`, "the
+    mempool is at capacity", raised in `add_user_batch` after the validators accepted), and each
+    of the five transactions then sent alone was accepted and committed **[RAN]**.
+  - On devnet through a local proxy that damaged one member of a batch in flight: a
+    three-transaction batch with one member's sealed inputs corrupted was refused
+    (`InvalidArgument`, "Failed to unseal the transaction inputs: AEAD authentication failed"),
+    that member, corrupted again alone, was rejected (`SUBMISSION_REJECTED`), and the other two
+    committed in one block; a batch with one member's key id altered was refused
+    (`FailedPrecondition`, "sealed against an unknown encryption key"), and each member then sent
+    alone was committed **[RAN]**. The mock-node
+    tests cover `InvalidArgument`, `Unimplemented`, `Unavailable` and `FailedPrecondition` batch
+    answers, and a refusal just before the batch's deadline
     (`crates/server/src/network/miden/execution/batch.rs`, `mod tests`) **[RAN]**.
-- **Send time.** A transaction joins a batch only with the window plus `SendWindow::MIN_SEND`
-  (15 s) of its send window left, and the batch is built (chain view, assembly, proof) only within
-  the time that still leaves every member 15 s; otherwise each member is sent alone at once with
-  the time it has. The batch is sent with the send time its members have in common.
+- **Send time.** Every send a member makes stays inside the time its attempt handed over, and
+  each of the two sends it may make gets at least `SendWindow::MIN_SEND` (15 s), the least a
+  single send needs to cross the boundary. A transaction joins a batch only with the window plus
+  35 s of its send window left (`AFTER_WINDOW`: at least 5 s for the build, 15 s for the batch
+  send, 15 s for its own send after a refusal); with less it is sent alone at once. When the
+  window ends, a member short of those 35 s is sent alone at once. The build (chain view,
+  assembly, proof) must end while every member still has 30 s; a member too close to its
+  expiration at the tip the batch is built at is sent alone as soon as the tip is read, not after
+  the others' proof. The batch send waits at most the time its members have in common less 15 s,
+  and is cut off there with an `Unknown` outcome.
 - **Failure coupling.** The node reverts an admitted batch when its earliest expiration passes or
   when a transaction it depends on is reverted. A transaction therefore joins a batch only with at
   least 8 blocks left before it expires at the batch's reference block (the mempool itself needs 2; devnet's fee faucet caps a fee-paying transaction at 20), and never when it
   consumes an unauthenticated note. Guardian holds one execution per account, so every account
   appears at most once in a batch.
 - **Fallback.** A group of one, a chain view that cannot be read, a batch that does not assemble,
-  prove or finish within its members' time, or a batch proof already running in the process, sends
-  every member alone, as without batching.
+  prove or finish within its members' time, a batch proof already running in the process, or a
+  planned stop sends every member alone, as without batching. A stop sends the transactions still
+  collecting, or whose batch is still being built, alone at once, since a stop gives sends a few
+  seconds that a build could use up; a batch already sent is left to its answer.
 
 Two departures from the rest of this RFC: the batch proof is computed in the Guardian process (no
 remote batch prover client exists upstream yet; `miden-client` 0.18 has only

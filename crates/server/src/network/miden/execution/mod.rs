@@ -18,6 +18,8 @@ pub use request::StoredRequest;
 pub use store::ExecutionDataStore;
 
 #[cfg(all(test, feature = "e2e"))]
+mod test_node;
+#[cfg(all(test, feature = "e2e"))]
 mod tests;
 
 #[cfg(test)]

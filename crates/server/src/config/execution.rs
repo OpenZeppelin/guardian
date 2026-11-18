@@ -38,13 +38,15 @@ pub const DEFAULT_EXECUTION_MAX_TXS_PER_BATCH: u32 = 1;
 /// waits no longer than the node would have.
 pub const DEFAULT_EXECUTION_BATCH_WINDOW_MS: u32 = 1_000;
 
-/// The most accounts the protocol admits in one batch (`miden_protocol::MAX_ACCOUNTS_PER_BATCH`).
-/// Guardian batches one transaction per account, so no batch can hold more transactions.
-pub const MAX_EXECUTION_TXS_PER_BATCH: u32 = 1_024;
+/// The node's own limit on a submitted batch by default (`DEFAULT_MAX_TXS_PER_BATCH` in the node's
+/// block producer, 4 on node 0.18): the node refuses a larger batch, and every one of its
+/// transactions is then sent alone after a wasted batch send.
+pub const MAX_EXECUTION_TXS_PER_BATCH: u32 = 4;
 
 /// The longest a transaction past the no-retry boundary may wait for others to share its batch.
-/// Crossing the boundary needs 15 s of send window left (`SendWindow::MIN_SEND`), and a planned
-/// stop gives sends 8 s, so the wait stays well inside both.
+/// A transaction joins a batch only with this window plus the build, the batch send and its own
+/// send after a refusal left (`batch::AFTER_WINDOW`, 35 s), all inside the longest a send is given
+/// (`SendWindow::MAX_SEND`, 60 s).
 pub const MAX_EXECUTION_BATCH_WINDOW_MS: u32 = 5_000;
 
 /// Every built-in Guardian-executable proposal signs this relative
@@ -96,9 +98,8 @@ impl ProverConfig {
 /// accounts together as one proven batch (#239).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BatchConfig {
-    /// The most transactions one batch holds; `1` sends every transaction alone. The node refuses a
-    /// batch above its own `max_txs_per_batch` (4 by default on node 0.18), after which Guardian
-    /// sends that batch's transactions one at a time, so set this at or below the node's limit.
+    /// The most transactions one batch holds; `1` sends every transaction alone. At most the
+    /// node's default `max_txs_per_batch` ([`MAX_EXECUTION_TXS_PER_BATCH`]).
     pub max_transactions: u32,
     /// How long the first transaction of a batch waits for others before the batch is sent.
     pub window: Duration,
@@ -352,7 +353,7 @@ impl BatchConfig {
         if max_transactions > MAX_EXECUTION_TXS_PER_BATCH {
             return Err(format!(
                 "{ENV_EXECUTION_MAX_TXS_PER_BATCH} must be at most {MAX_EXECUTION_TXS_PER_BATCH}, \
-                 the most accounts one batch can hold, got {max_transactions}"
+                 the node's own limit on a submitted batch by default, got {max_transactions}"
             ));
         }
         let window_ms = positive_u32(
@@ -549,8 +550,8 @@ mod tests {
                 .batches()
         );
 
-        assert!(batch(&[(ENV_EXECUTION_MAX_TXS_PER_BATCH, "1024")]).is_ok());
-        let error = batch(&[(ENV_EXECUTION_MAX_TXS_PER_BATCH, "1025")]).unwrap_err();
+        assert!(batch(&[(ENV_EXECUTION_MAX_TXS_PER_BATCH, "4")]).is_ok());
+        let error = batch(&[(ENV_EXECUTION_MAX_TXS_PER_BATCH, "5")]).unwrap_err();
         assert!(error.contains(ENV_EXECUTION_MAX_TXS_PER_BATCH), "{error}");
         assert!(batch(&[(ENV_EXECUTION_BATCH_WINDOW_MS, "5000")]).is_ok());
         let error = batch(&[(ENV_EXECUTION_BATCH_WINDOW_MS, "5001")]).unwrap_err();
@@ -565,20 +566,8 @@ mod tests {
     }
 
     #[test]
-    fn the_batch_cap_is_the_protocol_account_cap() {
-        assert_eq!(
-            MAX_EXECUTION_TXS_PER_BATCH as usize,
-            miden_protocol::MAX_ACCOUNTS_PER_BATCH
-        );
-    }
-
-    #[test]
-    fn the_batch_window_ends_well_before_a_send_must_start() {
-        let window = Duration::from_millis(u64::from(MAX_EXECUTION_BATCH_WINDOW_MS));
-        assert!(
-            window * 3 <= crate::services::execute_proposal::SendWindow::MIN_SEND,
-            "a transaction crosses the boundary with MIN_SEND left and may wait one window"
-        );
+    fn the_batch_cap_is_within_the_protocol_account_cap() {
+        assert!(MAX_EXECUTION_TXS_PER_BATCH as usize <= miden_protocol::MAX_ACCOUNTS_PER_BATCH);
     }
 
     #[test]

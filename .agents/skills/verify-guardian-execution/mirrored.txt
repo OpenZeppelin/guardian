@@ -13,6 +13,11 @@ crates/server/src/services/execute_proposal/worker.rs claim_send
 crates/server/src/services/execute_proposal/worker.rs submit
 crates/server/src/services/execute_proposal/worker.rs fail
 crates/server/src/network/miden/execution/attempt.rs classify_submission_error
+crates/server/src/network/miden/execution/attempt.rs send_transaction
+crates/server/src/network/miden/execution/attempt.rs send_batch
+crates/server/src/network/miden/execution/attempt.rs of_error
+crates/server/src/network/miden/execution/batch.rs send_built
+crates/server/src/network/miden/execution/batch.rs send_alone
 crates/shared/src/execution.rs ends_proposal
 crates/server/src/coordination/execution_leases.rs attempt
 crates/server/src/coordination/execution_leases.rs release_quietly

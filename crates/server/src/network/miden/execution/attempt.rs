@@ -953,15 +953,11 @@ pub(super) async fn send_transaction(
 }
 
 /// What the node said about a proven batch.
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum BatchAnswer {
     Accepted,
     /// No definite answer: the batch may still land.
     Unknown {
-        reason: String,
-    },
-    /// Refused before processing because inputs were sealed against a key the validators no
-    /// longer hold. Nothing was admitted.
-    StaleKey {
         reason: String,
     },
     /// Refused definitely, so none of its transactions is in flight. Each can still be sent alone
@@ -969,6 +965,26 @@ pub(super) enum BatchAnswer {
     Refused {
         reason: String,
     },
+}
+
+impl BatchAnswer {
+    /// Reads the node's error for a batch as a single send's error is read. Every definite refusal
+    /// is one, whatever it names: the client tells a stale encryption key apart only by its gRPC
+    /// code (`FailedPrecondition`), so the batcher does not act on that, and each member's own
+    /// send then decides its outcome.
+    fn of_error(outcome: SubmissionOutcome) -> Self {
+        match outcome {
+            SubmissionOutcome::Rejected { reason } | SubmissionOutcome::NotProcessed { reason } => {
+                Self::Refused { reason }
+            }
+            SubmissionOutcome::Unknown { reason } => Self::Unknown { reason },
+            // An error is never an acceptance. Were one read as such, the batch may still have
+            // been admitted, so it is no reason to send again.
+            SubmissionOutcome::Accepted => Self::Unknown {
+                reason: "the node's error for the batch was read as an acceptance".to_string(),
+            },
+        }
+    }
 }
 
 /// Sends one proven batch, waiting at most `deadline` for the node's answer. The node classifies
@@ -980,29 +996,12 @@ pub(super) async fn send_batch(
     sealed: Vec<SealedTransactionInputs>,
     deadline: Duration,
 ) -> BatchAnswer {
-    let error =
-        match tokio::time::timeout(deadline, rpc.submit_proven_batch(proven, proposed, sealed))
-            .await
-        {
-            Ok(Ok(_)) => return BatchAnswer::Accepted,
-            Ok(Err(error)) => error,
-            Err(_) => {
-                return BatchAnswer::Unknown {
-                    reason: format!("the node did not answer within {}s", deadline.as_secs()),
-                };
-            }
-        };
-    match classify_submission_error(&error) {
-        SubmissionOutcome::NotProcessed { reason }
-            if error.is_stale_transaction_encryption_key() =>
-        {
-            BatchAnswer::StaleKey { reason }
-        }
-        SubmissionOutcome::Rejected { reason } | SubmissionOutcome::NotProcessed { reason } => {
-            BatchAnswer::Refused { reason }
-        }
-        SubmissionOutcome::Unknown { reason } => BatchAnswer::Unknown { reason },
-        SubmissionOutcome::Accepted => BatchAnswer::Accepted,
+    match tokio::time::timeout(deadline, rpc.submit_proven_batch(proven, proposed, sealed)).await {
+        Ok(Ok(_)) => BatchAnswer::Accepted,
+        Ok(Err(error)) => BatchAnswer::of_error(classify_submission_error(&error)),
+        Err(_) => BatchAnswer::Unknown {
+            reason: format!("the node did not answer within {}s", deadline.as_secs()),
+        },
     }
 }
 
@@ -1283,5 +1282,54 @@ mod submission_classification_tests {
                 "{label}"
             );
         }
+    }
+
+    /// Every definite refusal of a batch, a stale encryption key included, sends its members again
+    /// one at a time; an error is never read as an admitted batch.
+    #[test]
+    fn a_batch_error_is_a_refusal_or_unknown_never_an_acceptance() {
+        use super::BatchAnswer;
+
+        let batch_error = |kind: GrpcError| {
+            BatchAnswer::of_error(super::classify_submission_error(&RpcError::RequestError {
+                endpoint: RpcEndpoint::SubmitProvenBatch,
+                error_kind: kind,
+                endpoint_error: None,
+                source: None,
+            }))
+        };
+        for kind in [
+            GrpcError::InvalidArgument,
+            GrpcError::FailedPrecondition,
+            GrpcError::NotFound,
+            GrpcError::OutOfRange,
+            GrpcError::ResourceExhausted,
+            GrpcError::Unauthenticated,
+            GrpcError::PermissionDenied,
+            GrpcError::Unimplemented,
+        ] {
+            let label = format!("{kind:?}");
+            assert!(
+                matches!(batch_error(kind), BatchAnswer::Refused { .. }),
+                "{label}"
+            );
+        }
+        for kind in [
+            GrpcError::AlreadyExists,
+            GrpcError::Unavailable,
+            GrpcError::Internal,
+            GrpcError::Cancelled,
+            GrpcError::DeadlineExceeded,
+        ] {
+            let label = format!("{kind:?}");
+            assert!(
+                matches!(batch_error(kind), BatchAnswer::Unknown { .. }),
+                "{label}"
+            );
+        }
+        assert!(matches!(
+            BatchAnswer::of_error(SubmissionOutcome::Accepted),
+            BatchAnswer::Unknown { .. }
+        ));
     }
 }

@@ -1104,16 +1104,16 @@ variable "guardian_tx_prover_max_concurrent" {
 }
 
 variable "guardian_execution_max_txs_per_batch" {
-  description = "Optional override for GUARDIAN_EXECUTION_MAX_TXS_PER_BATCH, the most Guardian-proved transactions of different accounts one submission carries as a proven batch (server default 1, which sends each alone; at most 1024). Keep it at or below the node's max_txs_per_batch (4 by default on node 0.18)."
+  description = "Optional override for GUARDIAN_EXECUTION_MAX_TXS_PER_BATCH, the most Guardian-proved transactions of different accounts one submission carries as a proven batch (server default 1, which sends each alone; at most 4, the node's own max_txs_per_batch by default on node 0.18). Experimental: batching buys no fee or latency on the pinned protocol."
   type        = number
   default     = null
   validation {
     condition = var.guardian_execution_max_txs_per_batch == null ? true : (
       var.guardian_execution_max_txs_per_batch >= 1 &&
-      var.guardian_execution_max_txs_per_batch <= 1024 &&
+      var.guardian_execution_max_txs_per_batch <= 4 &&
       floor(var.guardian_execution_max_txs_per_batch) == var.guardian_execution_max_txs_per_batch
     )
-    error_message = "guardian_execution_max_txs_per_batch must be a whole number from 1 to 1024."
+    error_message = "guardian_execution_max_txs_per_batch must be a whole number from 1 to 4."
   }
 }
 

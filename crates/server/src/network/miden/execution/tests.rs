@@ -1747,36 +1747,20 @@ mod batched {
     use std::time::Duration;
 
     use guardian_shared::{ProposalSignature, SignatureScheme, ToJson};
-    use miden_client::rpc::domain::account::{AccountProof, GetAccountRequest};
-    use miden_client::rpc::domain::account_vault::AccountVaultInfo;
-    use miden_client::rpc::domain::limits::RpcLimits;
-    use miden_client::rpc::domain::note::{FetchedNote, SyncNotesBlock};
-    use miden_client::rpc::domain::nullifier::NullifierUpdate;
-    use miden_client::rpc::domain::storage_map::StorageMapInfo;
-    use miden_client::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
-    use miden_client::rpc::domain::transaction::TransactionRecord;
     use miden_client::rpc::encryption::{
-        AttestedTransactionEncryptionKey, SealedTransactionInputs, ValidatorAttestation,
-        attestation_commitment,
+        AttestedTransactionEncryptionKey, ValidatorAttestation, attestation_commitment,
     };
-    use miden_client::rpc::{NetworkNoteStatusInfo, RpcError, RpcStatusInfo};
     use miden_client::transaction::TransactionRequestBuilder;
     use miden_confidential_contracts::multisig_guardian::{
         MultisigGuardianBuilder, MultisigGuardianConfig,
     };
     use miden_protocol::account::{Account, AccountType};
-    use miden_protocol::address::NetworkId;
-    use miden_protocol::batch::{ProposedBatch, ProvenBatch};
-    use miden_protocol::block::{BlockHeader, SignedBlock};
     use miden_protocol::crypto::SequentialCommit;
     use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey;
     use miden_protocol::crypto::dsa::eddsa_25519_sha512::KeyExchangeKey;
     use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
-    use miden_protocol::crypto::merkle::mmr::MmrProof;
-    use miden_protocol::note::{NoteId, NoteScript, NoteTag};
-    use miden_protocol::transaction::{ProvenTransaction, TransactionSummary};
+    use miden_protocol::transaction::TransactionSummary;
     use miden_protocol::utils::serde::Serializable;
-    use miden_protocol::vm::ExecutionProof;
     use miden_protocol::{Felt, Word};
     use miden_standards::account::auth::{AuthGuardedMultisig, MultisigAuthArgs};
     use miden_standards::code_builder::CodeBuilder;
@@ -1786,180 +1770,15 @@ mod batched {
     use crate::delta_object::CosignerSignature;
     use crate::network::miden::execution::MidenExecutor;
     use crate::network::miden::execution::batch::BatchSettings;
+    use crate::network::miden::execution::test_node::TestNode;
     use crate::services::execute_proposal::{
-        ExecutionAttempt, ExecutionInput, ProposalExecutor, SubmissionOutcome,
+        ExecutionAttempt, ExecutionInput, ProposalExecutor, SendWindow, SubmissionOutcome,
     };
     use crate::services::execution_codec::TransactionRequestEnvelope;
 
     const BOUND: u32 = 3;
     /// The wire value of the one IES scheme the client accepts; the client keeps its enum private.
     const X25519_XCHACHA20_POLY1305: u32 = 1;
-
-    /// A mock node that also serves a transaction encryption key, as a real node does.
-    struct KeyServingNode {
-        inner: Arc<MockRpcApi>,
-        key: AttestedTransactionEncryptionKey,
-    }
-
-    #[async_trait::async_trait]
-    impl NodeRpcClient for KeyServingNode {
-        async fn set_genesis_commitment(&self, commitment: Word) -> Result<(), RpcError> {
-            self.inner.set_genesis_commitment(commitment).await
-        }
-        fn has_genesis_commitment(&self) -> Option<Word> {
-            self.inner.has_genesis_commitment()
-        }
-        async fn get_transaction_encryption_key(
-            &self,
-        ) -> Result<AttestedTransactionEncryptionKey, RpcError> {
-            Ok(self.key.clone())
-        }
-        async fn submit_proven_transaction(
-            &self,
-            proven_transaction: &ProvenTransaction,
-            sealed: SealedTransactionInputs,
-        ) -> Result<BlockNumber, RpcError> {
-            self.inner
-                .submit_proven_transaction(proven_transaction, sealed)
-                .await
-        }
-        async fn submit_proven_batch(
-            &self,
-            proven_batch: &ProvenBatch,
-            proposed_batch: &ProposedBatch,
-            transaction_inputs: Vec<SealedTransactionInputs>,
-        ) -> Result<BlockNumber, RpcError> {
-            self.inner
-                .submit_proven_batch(proven_batch, proposed_batch, transaction_inputs)
-                .await
-        }
-        async fn register_account(
-            &self,
-            invitation_code: &str,
-            account_id: AccountId,
-        ) -> Result<(), RpcError> {
-            self.inner
-                .register_account(invitation_code, account_id)
-                .await
-        }
-        async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, RpcError> {
-            self.inner.is_account_allowed(account_id).await
-        }
-        async fn is_invitation_code_valid(&self, invitation_code: &str) -> Result<bool, RpcError> {
-            self.inner.is_invitation_code_valid(invitation_code).await
-        }
-        async fn get_block_header_by_number(
-            &self,
-            block_num: Option<BlockNumber>,
-            include_mmr_proof: bool,
-        ) -> Result<(BlockHeader, Option<MmrProof>), RpcError> {
-            self.inner
-                .get_block_header_by_number(block_num, include_mmr_proof)
-                .await
-        }
-        async fn get_block_by_number(
-            &self,
-            block_num: BlockNumber,
-            include_proof: bool,
-        ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
-            self.inner
-                .get_block_by_number(block_num, include_proof)
-                .await
-        }
-        async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {
-            self.inner.get_notes_by_id(note_ids).await
-        }
-        async fn sync_chain_mmr(
-            &self,
-            current_block_height: BlockNumber,
-            upper_bound: SyncTarget,
-        ) -> Result<ChainMmrInfo, RpcError> {
-            self.inner
-                .sync_chain_mmr(current_block_height, upper_bound)
-                .await
-        }
-        async fn sync_notes(
-            &self,
-            block_from: BlockNumber,
-            block_to: BlockNumber,
-            note_tags: &std::collections::BTreeSet<NoteTag>,
-        ) -> Result<Vec<SyncNotesBlock>, RpcError> {
-            self.inner.sync_notes(block_from, block_to, note_tags).await
-        }
-        async fn sync_nullifiers(
-            &self,
-            prefix: &[u16],
-            block_from: BlockNumber,
-            block_to: BlockNumber,
-        ) -> Result<Vec<NullifierUpdate>, RpcError> {
-            self.inner
-                .sync_nullifiers(prefix, block_from, block_to)
-                .await
-        }
-        async fn get_account(
-            &self,
-            request: GetAccountRequest,
-        ) -> Result<(BlockNumber, AccountProof), RpcError> {
-            self.inner.get_account(request).await
-        }
-        async fn get_note_script_by_root(
-            &self,
-            root: Word,
-        ) -> Result<Option<NoteScript>, RpcError> {
-            self.inner.get_note_script_by_root(root).await
-        }
-        async fn sync_storage_maps(
-            &self,
-            block_from: BlockNumber,
-            block_to: BlockNumber,
-            account_id: AccountId,
-        ) -> Result<StorageMapInfo, RpcError> {
-            self.inner
-                .sync_storage_maps(block_from, block_to, account_id)
-                .await
-        }
-        async fn sync_account_vault(
-            &self,
-            block_from: BlockNumber,
-            block_to: BlockNumber,
-            account_id: AccountId,
-        ) -> Result<AccountVaultInfo, RpcError> {
-            self.inner
-                .sync_account_vault(block_from, block_to, account_id)
-                .await
-        }
-        async fn sync_transactions(
-            &self,
-            block_from: BlockNumber,
-            block_to: BlockNumber,
-            account_ids: Vec<AccountId>,
-        ) -> Result<Vec<TransactionRecord>, RpcError> {
-            self.inner
-                .sync_transactions(block_from, block_to, account_ids)
-                .await
-        }
-        async fn get_network_id(&self) -> Result<NetworkId, RpcError> {
-            self.inner.get_network_id().await
-        }
-        async fn get_rpc_limits(&self) -> Result<RpcLimits, RpcError> {
-            self.inner.get_rpc_limits().await
-        }
-        fn has_rpc_limits(&self) -> Option<RpcLimits> {
-            self.inner.has_rpc_limits()
-        }
-        async fn set_rpc_limits(&self, limits: RpcLimits) {
-            self.inner.set_rpc_limits(limits).await
-        }
-        async fn get_status_unversioned(&self) -> Result<RpcStatusInfo, RpcError> {
-            self.inner.get_status_unversioned().await
-        }
-        async fn get_network_note_status(
-            &self,
-            note_id: NoteId,
-        ) -> Result<NetworkNoteStatusInfo, RpcError> {
-            self.inner.get_network_note_status(note_id).await
-        }
-    }
 
     /// A guarded 2-of-2 account's guardian-key rotation, signed by both cosigners. The rotation
     /// needs only the cosigners' signatures.
@@ -1970,7 +1789,7 @@ mod batched {
 
     struct Fixture {
         rpc: Arc<MockRpcApi>,
-        node: Arc<KeyServingNode>,
+        node: Arc<TestNode>,
         signed: Vec<Signed>,
     }
 
@@ -2097,9 +1916,9 @@ mod batched {
             &public_key,
             None,
         );
-        let node = Arc::new(KeyServingNode {
-            inner: rpc.clone(),
-            key: AttestedTransactionEncryptionKey {
+        let node = Arc::new(TestNode::serving_key(
+            rpc.clone(),
+            AttestedTransactionEncryptionKey {
                 scheme: X25519_XCHACHA20_POLY1305,
                 key_id,
                 public_key,
@@ -2109,7 +1928,7 @@ mod batched {
                 }],
                 next_key: None,
             },
-        });
+        ));
         let ids: std::collections::BTreeSet<_> =
             signed.iter().map(|signed| signed.account.id()).collect();
         assert_eq!(
@@ -2196,10 +2015,12 @@ mod batched {
             .map(|(signed, (_, commitment))| (signed.account.id().to_hex(), commitment.clone()))
             .collect();
 
+        // The longest send time the worker hands over, enough to wait out the window and keep
+        // the build, the batch send and each transaction's own send after a refusal.
         let (second, first) = ready.split_at_mut(1);
         let (a, b) = tokio::join!(
-            first[0].0.submit(Duration::from_secs(30)),
-            second[0].0.submit(Duration::from_secs(30))
+            first[0].0.submit(SendWindow::MAX_SEND),
+            second[0].0.submit(SendWindow::MAX_SEND)
         );
         assert_eq!(
             (a, b),

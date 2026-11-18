@@ -13,12 +13,29 @@
 //! claim and the batch send (one window and the build, inside the member's send window and far
 //! inside its lease) gives no other owner a transaction to send.
 //!
+//! Every send a member makes stays inside the time its attempt handed over (`Member::send_by`),
+//! and each of the two sends it may make gets at least what a single send needs to cross the
+//! boundary ([`SendWindow::MIN_SEND`]):
+//!
+//! - A transaction joins a batch only with the window plus [`AFTER_WINDOW`] left: at least
+//!   [`MIN_BUILD`] for the build, [`MIN_BATCH_SEND`] for the batch send, and [`RESEND_RESERVE`]
+//!   for its own send should the node refuse the batch. With less it is sent alone at once.
+//! - The build ends while every member still has the batch send and its resend left; a member the
+//!   batch cannot hold is sent alone as soon as that is known, not after the others' build.
+//! - The batch send keeps back [`RESEND_RESERVE`] of every member's time, so a refusal, however
+//!   late, leaves each member that long to be sent alone. A send that has not been answered by
+//!   then is cut off and its outcome is unknown, as a single send's would be.
+//!
+//! What becomes of each member:
+//!
 //! - A transaction without the time to wait for a batch, a group that cannot become a batch (one
 //!   member, no chain view, a batch that does not assemble, prove or finish in its members' time,
-//!   the batch prover busy) is sent one transaction at a time, as without batching.
+//!   the batch prover busy, a planned stop) is sent one transaction at a time, as without batching.
 //! - A batch the node refused definitely was never admitted, so none of its transactions is in
-//!   flight. Each is then sent alone and judged on its own, so a transaction the node refuses
-//!   does not cost the other accounts their proposals.
+//!   flight. Each is then sent alone and judged on its own answer, whatever the batch was refused
+//!   for, so a transaction the node refuses does not cost the other accounts their proposals.
+//!   The resend has less time than an immediate send would have had, though never less than
+//!   [`RESEND_RESERVE`]: a node slower than that to answer it leaves its outcome unknown.
 //! - A batch whose outcome is unknown may have been admitted, so its transactions are left for the
 //!   chain to settle, as an unknown single send is.
 //!
@@ -35,6 +52,7 @@
 //! (protocol #1122, #1706), behind the same calls.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -51,7 +69,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::attempt::{BatchAnswer, send_batch, send_transaction};
-use super::chain::build_chain_view_from;
+use super::chain::{ChainView, build_chain_view_from};
 use crate::metrics::execution::{BatchOutcome, record_batch, record_batch_proving};
 use crate::services::execute_proposal::{SendWindow, SubmissionOutcome};
 
@@ -63,6 +81,25 @@ use crate::services::execute_proposal::{SendWindow, SubmissionOutcome};
 /// small: a fee faucet with a transfer policy (devnet's) caps every fee-paying transaction at its
 /// reference block plus 20, and proving uses several of those blocks before the batch is built.
 pub(super) const MIN_EXPIRATION_HEADROOM_BLOCKS: u32 = 8;
+
+/// The least time a batch's build (the chain view read, assembly and proof) is given once its
+/// window ends. On the pinned protocol a build takes well under a second (about 0.3 s on devnet,
+/// most of it the chain view read); this leaves room for a slow read.
+pub(super) const MIN_BUILD: Duration = Duration::from_secs(5);
+
+/// The least time the batch send waits for the node: the least a single send is given to cross
+/// the boundary.
+pub(super) const MIN_BATCH_SEND: Duration = SendWindow::MIN_SEND;
+
+/// Kept back from the batch send for each member's own send, should the node refuse the batch:
+/// again the least a single send is given to cross the boundary.
+pub(super) const RESEND_RESERVE: Duration = SendWindow::MIN_SEND;
+
+/// What a member must have left of its send window once its batch's window ends to be built into
+/// the batch.
+pub(super) const AFTER_WINDOW: Duration = MIN_BUILD
+    .saturating_add(MIN_BATCH_SEND)
+    .saturating_add(RESEND_RESERVE);
 
 /// How the batcher groups transactions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -201,8 +238,6 @@ pub(crate) struct Batcher {
 enum NotBuilt {
     #[error("the chain view for the batch could not be read: {0}")]
     ChainView(String),
-    #[error("fewer than two transactions can share a batch")]
-    TooFew,
     #[error("another batch is being proved")]
     ProverBusy,
     #[error("the batch does not assemble: {0}")]
@@ -211,15 +246,19 @@ enum NotBuilt {
     Proving(String),
     #[error("the batch was not built within the {0:?} its members could spare")]
     OutOfTime(Duration),
+    #[error("the batch was built, but a member's send window ran out first")]
+    NoTimeToSend,
+    #[error("the process is stopping")]
+    Stopping,
 }
 
-/// A batch proved from some of a group's members.
-struct Proved {
-    proposed: ProposedBatch,
-    proven: ProvenBatch,
-    /// Index-aligned with the group: whether the member is in the batch.
-    included: Vec<bool>,
-    proved_in: Duration,
+/// The least of the send time `waiting` have left at `now`.
+fn least_left(waiting: &[Waiting], now: Instant) -> Duration {
+    waiting
+        .iter()
+        .map(|waiting| waiting.member.left(now))
+        .min()
+        .unwrap_or_default()
 }
 
 impl Batcher {
@@ -255,15 +294,15 @@ impl Batcher {
     /// node said about it. `genesis` is the chain's genesis header, which the batch's chain view
     /// is seeded from.
     ///
-    /// A member joins only with time to wait out a whole window and still have the least time a
-    /// send needs ([`SendWindow::MIN_SEND`]); one handed over with less is sent at once, as without
-    /// batching, rather than held back from a send it can still make.
+    /// A member joins only with time to wait out a whole window and still have [`AFTER_WINDOW`]
+    /// for the build, the batch send and its own send after a refusal; one handed over with less is
+    /// sent at once, as without batching, rather than held back from a send it can still make.
     pub(super) async fn submit(
         self: &Arc<Self>,
         genesis: &BlockHeader,
         member: Member,
     ) -> SubmissionOutcome {
-        let can_wait = member.left(Instant::now()) >= self.settings.window + SendWindow::MIN_SEND;
+        let can_wait = member.left(Instant::now()) >= self.settings.window + AFTER_WINDOW;
         if !can_wait || !member.may_join_a_batch() || self.shutdown.is_cancelled() {
             return member.send_alone(self.submission_rpc.as_ref()).await;
         }
@@ -314,15 +353,16 @@ impl Batcher {
         }
     }
 
-    /// Sends the batch `generation` once its window ends, or at once when the process starts
-    /// shutting down, unless it already left full.
+    /// Sends the batch `generation` once its window ends, unless it already left full. When the
+    /// process starts stopping first, its transactions are sent alone at once: a planned stop
+    /// gives sends a few seconds, which a build could use up before anything is sent.
     fn close_after_window(self: &Arc<Self>, generation: u64) {
         let batcher = self.clone();
         tokio::spawn(async move {
-            tokio::select! {
-                _ = tokio::time::sleep(batcher.settings.window) => {}
-                _ = batcher.shutdown.cancelled() => {}
-            }
+            let stopping = tokio::select! {
+                _ = tokio::time::sleep(batcher.settings.window) => false,
+                _ = batcher.shutdown.cancelled() => true,
+            };
             let open = {
                 let mut collecting = batcher
                     .collecting
@@ -333,15 +373,24 @@ impl Batcher {
                     _ => None,
                 }
             };
-            if let Some(open) = open {
-                batcher.send(open).await;
+            match open {
+                Some(open) if stopping => {
+                    tracing::info!(
+                        accounts = ?accounts(&open.waiting),
+                        "the process is stopping; sending each transaction collected for a batch \
+                         alone"
+                    );
+                    batcher.send_each_alone(open.waiting).await;
+                }
+                Some(open) => batcher.send(open).await,
+                None => {}
             }
         });
     }
 
-    /// Builds and sends the batch of the members that still have [`SendWindow::MIN_SEND`] left,
-    /// sending alone every member it does not hold. A member already short of that is sent alone
-    /// at once, while the others' batch is built rather than after it.
+    /// Builds and sends the batch of the members that still have [`AFTER_WINDOW`] left, sending
+    /// alone every member it does not hold. A member already short of that is sent alone at once,
+    /// while the others' batch is built rather than after it.
     async fn send(&self, open: OpenBatch) {
         let OpenBatch {
             genesis, waiting, ..
@@ -349,7 +398,7 @@ impl Batcher {
         let now = Instant::now();
         let (group, mut late): (Vec<Waiting>, Vec<Waiting>) = waiting
             .into_iter()
-            .partition(|waiting| waiting.member.left(now) >= SendWindow::MIN_SEND);
+            .partition(|waiting| waiting.member.left(now) >= AFTER_WINDOW);
         if group.len() < 2 {
             late.extend(group);
             return self.send_each_alone(late).await;
@@ -360,161 +409,169 @@ impl Batcher {
         );
     }
 
-    /// Builds the batch of `group`, whose members all had at least [`SendWindow::MIN_SEND`] left
-    /// at `now`, within the time they can spare, and sends it, sending alone every member the
-    /// batch does not hold.
+    /// Builds the batch of `group`, whose members all had at least [`AFTER_WINDOW`] left at `now`,
+    /// and sends it. The build may take only what leaves every member the batch send and its own
+    /// send after a refusal. A member too close to its expiration at the tip the batch is built at
+    /// is sent alone as soon as the tip is read, while the others' batch is proved.
     async fn build_and_send(&self, genesis: &BlockHeader, group: Vec<Waiting>, now: Instant) {
-        // Whatever the build takes comes out of every member's send window, so it may take only
-        // what leaves each member the least time a send needs.
-        let budget = group
-            .iter()
-            .map(|waiting| waiting.member.left(now))
-            .min()
-            .unwrap_or_default()
-            .saturating_sub(SendWindow::MIN_SEND);
-        let started = std::time::Instant::now();
-        let proved = tokio::time::timeout(budget, self.prove(genesis, &group))
-            .await
-            .unwrap_or(Err((NotBuilt::OutOfTime(budget), group.len())));
-        match proved {
-            Ok(proved) => {
-                let built_in = started.elapsed();
-                let mut members = Vec::with_capacity(group.len());
-                let mut alone = Vec::new();
-                for (waiting, included) in group.into_iter().zip(proved.included.iter().copied()) {
-                    if included {
-                        members.push(waiting);
-                    } else {
-                        alone.push(waiting);
-                    }
-                }
-                tokio::join!(
-                    self.send_built(proved, members, built_in),
-                    self.send_each_alone(alone)
-                );
-            }
-            Err((reason, eligible)) => {
-                if !matches!(reason, NotBuilt::TooFew) {
-                    let outcome = match reason {
-                        NotBuilt::ProverBusy => BatchOutcome::ProverBusy,
-                        _ => BatchOutcome::NotBuilt,
-                    };
-                    record_batch(outcome, eligible);
-                    tracing::warn!(
-                        transactions = eligible,
-                        accounts = ?accounts(&group),
-                        %reason,
-                        "Guardian did not send these transactions as a batch; sending each alone"
-                    );
-                }
-                self.send_each_alone(group).await;
-            }
-        }
-    }
-
-    /// Reads the chain view at the tip, keeps the members with expiration headroom there, and
-    /// assembles and proves their batch. On failure, returns why and how many members the batch
-    /// would have held.
-    async fn prove(
-        &self,
-        genesis: &BlockHeader,
-        group: &[Waiting],
-    ) -> Result<Proved, (NotBuilt, usize)> {
+        let spare =
+            least_left(&group, now).saturating_sub(MIN_BATCH_SEND.saturating_add(RESEND_RESERVE));
+        let build_by = now + spare;
+        let started = Instant::now();
         let tracked: BTreeSet<BlockNumber> = group
             .iter()
             .map(|waiting| waiting.member.proven.ref_block_num())
             .collect();
-        let view = build_chain_view_from(self.rpc.as_ref(), genesis, &tracked)
+        let view = match self
+            .within(
+                build_by,
+                spare,
+                build_chain_view_from(self.rpc.as_ref(), genesis, &tracked),
+            )
             .await
-            .map_err(|error| (NotBuilt::ChainView(error.to_string()), group.len()))?;
+        {
+            Ok(Ok(view)) => view,
+            Ok(Err(error)) => {
+                return self
+                    .not_built(NotBuilt::ChainView(error.to_string()), group)
+                    .await;
+            }
+            Err(reason) => return self.not_built(reason, group).await,
+        };
         let tip = view.reference_block();
-        let included: Vec<bool> = group
-            .iter()
-            .map(|waiting| waiting.member.has_headroom_at(tip))
-            .collect();
-        let eligible = included.iter().filter(|included| **included).count();
-        if eligible < group.len() {
+        let (eligible, short): (Vec<Waiting>, Vec<Waiting>) = group
+            .into_iter()
+            .partition(|waiting| waiting.member.has_headroom_at(tip));
+        if !short.is_empty() {
             tracing::info!(
                 tip = tip.as_u32(),
                 headroom_blocks = MIN_EXPIRATION_HEADROOM_BLOCKS,
-                excluded = group.len() - eligible,
+                accounts = ?accounts(&short),
                 "transactions too close to their expiration to share a batch are sent alone"
             );
         }
-        if eligible < 2 {
-            return Err((NotBuilt::TooFew, eligible));
+        if eligible.len() < 2 {
+            let mut alone = short;
+            alone.extend(eligible);
+            return self.send_each_alone(alone).await;
         }
+        tokio::join!(
+            self.send_each_alone(short),
+            self.prove_and_send(&view, eligible, build_by, spare, started)
+        );
+    }
+
+    /// Assembles and proves the batch of `group` at the chain view's tip by `build_by`, and sends
+    /// it.
+    async fn prove_and_send(
+        &self,
+        view: &ChainView,
+        group: Vec<Waiting>,
+        build_by: Instant,
+        spare: Duration,
+        started: Instant,
+    ) {
         let Ok(permit) = self.proving.clone().try_acquire_owned() else {
-            return Err((NotBuilt::ProverBusy, eligible));
+            return self.not_built(NotBuilt::ProverBusy, group).await;
         };
         let transactions: Vec<Arc<ProvenTransaction>> = group
             .iter()
-            .zip(&included)
-            .filter(|(_, included)| **included)
-            .map(|(waiting, _)| waiting.member.proven.clone())
+            .map(|waiting| waiting.member.proven.clone())
             .collect();
         let header = view.reference_header().clone();
         let blockchain = view.blockchain().clone();
         #[cfg(test)]
         let before_proving = self.before_proving.get().cloned();
-        let proving = std::time::Instant::now();
-        let (proposed, proven) = tokio::task::spawn_blocking(move || {
-            // A started blocking task runs to the end even when the build runs out of time and
-            // nobody waits for it any more, so the proof keeps the permit until it ends rather
-            // than letting another batch prove beside it.
+        let proving = tokio::task::spawn_blocking(move || {
+            // A started blocking task runs to the end even when the build runs out of time or the
+            // process stops and nobody waits for it any more, so the proof keeps the permit until
+            // it ends rather than letting another batch prove beside it.
             let _permit = permit;
             #[cfg(test)]
             if let Some(before_proving) = before_proving {
                 before_proving();
             }
-            prove_batch(transactions, header, blockchain)
-        })
-        .await
-        .map_err(|error| NotBuilt::Proving(format!("the proving task failed: {error}")))
-        .and_then(|proved| proved)
-        .map_err(|reason| (reason, eligible))?;
-        let proved_in = proving.elapsed();
+            let proving = std::time::Instant::now();
+            prove_batch(transactions, header, blockchain).map(|proved| (proved, proving.elapsed()))
+        });
+        let ((proposed, proven), proved_in) = match self.within(build_by, spare, proving).await {
+            Ok(Ok(Ok(proved))) => proved,
+            Ok(Ok(Err(reason))) => return self.not_built(reason, group).await,
+            Ok(Err(error)) => {
+                let reason = NotBuilt::Proving(format!("the proving task failed: {error}"));
+                return self.not_built(reason, group).await;
+            }
+            Err(reason) => return self.not_built(reason, group).await,
+        };
         record_batch_proving(proved_in);
-        Ok(Proved {
-            proposed,
-            proven,
-            included,
-            proved_in,
-        })
+        self.send_built(proposed, proven, group, started.elapsed(), proved_in)
+            .await;
     }
 
-    /// Sends a built batch with the time its members have in common, and hands each member its
-    /// outcome. A batch the node refused is sent again one transaction at a time.
-    async fn send_built(&self, proved: Proved, members: Vec<Waiting>, built_in: Duration) {
-        let Proved {
-            proposed,
-            proven,
-            proved_in,
-            ..
-        } = proved;
-        let now = Instant::now();
-        let common = members
-            .iter()
-            .map(|waiting| waiting.member.left(now))
-            .min()
-            .unwrap_or_default();
-        let Some(deadline) = SendWindow::deadline_after_boundary(common) else {
-            record_batch(BatchOutcome::NotBuilt, members.len());
-            tracing::warn!(
-                batch_id = %proven.id(),
-                accounts = ?accounts(&members),
-                "a member's send window closed while the batch was built; sending each alone"
+    /// Runs one step of a build that must end by `build_by`, `spare` after the window ended, and
+    /// gives it up when the process starts stopping.
+    async fn within<F: Future>(
+        &self,
+        build_by: Instant,
+        spare: Duration,
+        step: F,
+    ) -> Result<F::Output, NotBuilt> {
+        tokio::select! {
+            biased;
+            () = self.shutdown.cancelled() => Err(NotBuilt::Stopping),
+            output = tokio::time::timeout_at(build_by, step) => {
+                output.map_err(|_| NotBuilt::OutOfTime(spare))
+            }
+        }
+    }
+
+    /// Sends alone each member of a group that did not become a batch, saying why. A planned
+    /// stop is not counted: it is no failure, and a stop during collection is not counted either.
+    async fn not_built(&self, reason: NotBuilt, group: Vec<Waiting>) {
+        if matches!(reason, NotBuilt::Stopping) {
+            tracing::info!(
+                transactions = group.len(),
+                accounts = ?accounts(&group),
+                "the process is stopping; sending each transaction of the batch being built alone"
             );
-            return self.send_each_alone(members).await;
+            return self.send_each_alone(group).await;
+        }
+        let outcome = match reason {
+            NotBuilt::ProverBusy => BatchOutcome::ProverBusy,
+            _ => BatchOutcome::NotBuilt,
+        };
+        record_batch(outcome, group.len());
+        tracing::warn!(
+            transactions = group.len(),
+            accounts = ?accounts(&group),
+            %reason,
+            "Guardian did not send these transactions as a batch; sending each alone"
+        );
+        self.send_each_alone(group).await;
+    }
+
+    /// Sends a built batch and hands each member its outcome. The send keeps back
+    /// [`RESEND_RESERVE`] of the time its members have in common, so that a batch the node refuses
+    /// can still be sent one transaction at a time, each with at least that long.
+    async fn send_built(
+        &self,
+        proposed: ProposedBatch,
+        proven: ProvenBatch,
+        members: Vec<Waiting>,
+        built_in: Duration,
+        proved_in: Duration,
+    ) {
+        // The build ended with at least MIN_BATCH_SEND beyond the reserve left (`build_by`), short
+        // of timer slop, so only a send window that ran out regardless leaves nothing to wait.
+        let wait = least_left(&members, Instant::now()).saturating_sub(RESEND_RESERVE);
+        let Some(deadline) = SendWindow::deadline_after_boundary(wait) else {
+            return self.not_built(NotBuilt::NoTimeToSend, members).await;
         };
         let sealed: Vec<SealedTransactionInputs> = members
             .iter()
             .map(|waiting| waiting.member.sealed.clone())
             .collect();
-        let one_key = sealed
-            .windows(2)
-            .all(|pair| pair[0].key_id() == pair[1].key_id());
-        let sending = std::time::Instant::now();
+        let sending = Instant::now();
         let answer = send_batch(
             self.submission_rpc.as_ref(),
             &proven,
@@ -528,19 +585,16 @@ impl Batcher {
             .iter()
             .map(|waiting| waiting.member.proven.id().to_hex())
             .collect();
-        let shared = match answer {
-            BatchAnswer::Accepted => Some((BatchOutcome::Accepted, SubmissionOutcome::Accepted)),
+        let (recorded, outcome) = match answer {
+            BatchAnswer::Accepted => (BatchOutcome::Accepted, SubmissionOutcome::Accepted),
             BatchAnswer::Unknown { reason } => {
-                Some((BatchOutcome::Unknown, SubmissionOutcome::Unknown { reason }))
+                (BatchOutcome::Unknown, SubmissionOutcome::Unknown { reason })
             }
-            // Every member sealed against the key the node called stale, so each alone would be
-            // refused the same way. Members sealed against different keys are sent alone: only
-            // some of them carry the stale sealing.
-            BatchAnswer::StaleKey { reason } if one_key => Some((
-                BatchOutcome::NotProcessed,
-                SubmissionOutcome::NotProcessed { reason },
-            )),
-            BatchAnswer::StaleKey { reason } | BatchAnswer::Refused { reason } => {
+            // Whatever the node refused the batch for (one member's transaction, the batch's size,
+            // a stale encryption key, a rate limit), each member's own send decides its outcome,
+            // as without batching. A member sealed against a stale key is refused again alone and
+            // keeps its proposal.
+            BatchAnswer::Refused { reason } => {
                 record_batch(BatchOutcome::Refused, members.len());
                 tracing::warn!(
                     batch_id = %proven.id(),
@@ -551,11 +605,8 @@ impl Batcher {
                     "the node refused the batch, so none of its transactions is in flight; \
                      sending each alone"
                 );
-                None
+                return self.send_each_alone(members).await;
             }
-        };
-        let Some((recorded, outcome)) = shared else {
-            return self.send_each_alone(members).await;
         };
         record_batch(recorded, members.len());
         let reason = match &outcome {
@@ -644,6 +695,20 @@ mod outcome_tests {
         assert_eq!(settings.max_transactions, 4);
         assert_eq!(settings.window, std::time::Duration::from_millis(250));
     }
+
+    /// An attempt hands over at most the longest a send is given, so a transaction handed over
+    /// with all of it must be able to wait out the longest window and keep the build, the batch
+    /// send and its own send after a refusal.
+    #[test]
+    fn the_longest_window_and_its_reserves_fit_in_the_longest_send() {
+        use crate::config::execution::MAX_EXECUTION_BATCH_WINDOW_MS;
+        use crate::services::execute_proposal::SendWindow;
+
+        let window = std::time::Duration::from_millis(u64::from(MAX_EXECUTION_BATCH_WINDOW_MS));
+        assert!(window + super::AFTER_WINDOW <= SendWindow::MAX_SEND);
+        assert_eq!(super::MIN_BATCH_SEND, SendWindow::MIN_SEND);
+        assert_eq!(super::RESEND_RESERVE, SendWindow::MIN_SEND);
+    }
 }
 
 /// Real transactions of real accounts on a mock chain, proved locally and sealed against a key the
@@ -675,9 +740,13 @@ mod tests {
     use tokio::time::Instant;
     use tokio_util::sync::CancellationToken;
 
+    use miden_standards::code_builder::CodeBuilder;
+
     use super::{
-        BatchSettings, Batcher, MIN_EXPIRATION_HEADROOM_BLOCKS, Member, OpenBatch, Waiting,
+        AFTER_WINDOW, BatchSettings, Batcher, MIN_BUILD, MIN_EXPIRATION_HEADROOM_BLOCKS, Member,
+        OpenBatch, RESEND_RESERVE, Waiting,
     };
+    use crate::network::miden::execution::test_node::TestNode;
     use crate::services::execute_proposal::SendWindow;
     use crate::services::execute_proposal::SubmissionOutcome;
 
@@ -689,13 +758,14 @@ mod tests {
 
     struct Fixture {
         rpc: Arc<MockRpcApi>,
+        /// The node the batcher reads and sends through: the same mock, with scripted answer
+        /// times.
+        node: Arc<TestNode>,
         wallets: Vec<Account>,
         /// A note no block holds, so a transaction consuming it does so unauthenticated.
         loose_note: Note,
         genesis: BlockHeader,
         key: TransactionEncryptionKey,
-        /// Another key the same validator attests, as after a key rotation.
-        other_key: TransactionEncryptionKey,
         /// The chain as the wallets' transactions see it: the state they execute against.
         chain: MockChain,
     }
@@ -719,16 +789,13 @@ mod tests {
         let key = attested_key(&validator, genesis.commitment(), 7)
             .verify(genesis.commitment(), tip.validator_config())
             .unwrap();
-        let other_key = attested_key(&validator, genesis.commitment(), 8)
-            .verify(genesis.commitment(), tip.validator_config())
-            .unwrap();
         Fixture {
+            node: Arc::new(TestNode::new(rpc.clone())),
             rpc,
             wallets,
             loose_note,
             genesis,
             key,
-            other_key,
             chain,
         }
     }
@@ -768,18 +835,40 @@ mod tests {
         }
 
         async fn member_consuming(&self, index: usize, note: Option<Note>) -> Member {
-            self.member_sealed_with(index, note, &self.key).await
+            self.member_built(index, note, None).await
         }
 
-        async fn member_sealed_with(
+        /// Wallet `index`'s next transaction, expiring `blocks` after its reference block.
+        async fn member_expiring_in(&self, index: usize, blocks: u16) -> Member {
+            let script = CodeBuilder::default()
+                .compile_tx_script(format!(
+                    "
+                    use miden::protocol::tx
+
+                    @transaction_script
+                    pub proc main
+                        push.{blocks}
+                        exec.tx::update_expiration_block_delta
+                    end
+                    "
+                ))
+                .unwrap();
+            self.member_built(index, None, Some(script)).await
+        }
+
+        async fn member_built(
             &self,
             index: usize,
             note: Option<Note>,
-            key: &TransactionEncryptionKey,
+            script: Option<miden_protocol::transaction::TransactionScript>,
         ) -> Member {
+            let key = &self.key;
             let mut transaction = self.chain.build_transaction(self.wallets[index].id());
             if let Some(note) = note {
                 transaction = transaction.unauthenticated_input_note(note);
+            }
+            if let Some(script) = script {
+                transaction = transaction.tx_script(script);
             }
             let executed = transaction.build().unwrap().execute().await.unwrap();
             let proven = LocalTransactionProver::default()
@@ -810,8 +899,8 @@ mod tests {
                     max_transactions,
                     window,
                 },
-                self.rpc.clone(),
-                self.rpc.clone(),
+                self.node.clone(),
+                self.node.clone(),
                 shutdown,
             )
         }
@@ -1065,10 +1154,18 @@ mod tests {
         );
     }
 
+    /// The client tells a stale encryption key apart only by the gRPC code, so a batch refused
+    /// with it is refused like any other: each member's own send decides its outcome. A member
+    /// whose sealing really is stale is refused again alone and keeps its proposal.
     #[tokio::test]
-    async fn a_batch_sealed_against_a_stale_key_is_not_processed_and_not_resent() {
+    async fn a_batch_refused_for_a_stale_key_sends_each_transaction_alone() {
         let f = fixture(2).await;
         let (a, b) = (f.member(0).await, f.member(1).await);
+        assert_eq!(
+            a.sealed.key_id(),
+            b.sealed.key_id(),
+            "the usual case: one key"
+        );
         f.rpc.fail_next_call(
             RpcEndpoint::SubmitProvenBatch,
             refused(GrpcError::FailedPrecondition),
@@ -1076,22 +1173,19 @@ mod tests {
         let batcher = f.batcher(2, Duration::from_secs(5));
         let (first, second) =
             tokio::join!(batcher.submit(&f.genesis, a), batcher.submit(&f.genesis, b));
-        assert!(
-            matches!(first, SubmissionOutcome::NotProcessed { .. }),
-            "{first:?}"
+        assert_eq!(
+            (first, second),
+            (SubmissionOutcome::Accepted, SubmissionOutcome::Accepted)
         );
-        assert!(
-            matches!(second, SubmissionOutcome::NotProcessed { .. }),
-            "{second:?}"
-        );
-        assert!(
-            f.commit_block().await.is_empty(),
-            "each transaction alone carries the same stale sealing"
-        );
+        assert_eq!(f.rpc.submitted_batch_sealed_inputs().len(), 1);
+        assert_eq!(f.node.single_sends().len(), 2, "each was sent alone");
+        assert_eq!(f.commit_block().await.len(), 2);
     }
 
+    /// A planned stop gives sends a few seconds, so transactions still collecting are sent alone
+    /// at once rather than built into a batch first.
     #[tokio::test]
-    async fn a_shutdown_sends_a_collecting_batch_at_once() {
+    async fn a_shutdown_sends_each_collecting_transaction_alone_at_once() {
         let f = fixture(2).await;
         let (a, b) = (f.member(0).await, f.member(1).await);
         let shutdown = CancellationToken::new();
@@ -1115,11 +1209,11 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
-        assert_eq!(
-            f.rpc.submitted_batch_sealed_inputs().len(),
-            1,
-            "the two waiting transactions still left as one batch"
+        assert!(
+            f.rpc.submitted_batch_sealed_inputs().is_empty(),
+            "no batch was built on the way out"
         );
+        assert_eq!(f.node.single_sends().len(), 2);
         assert_eq!(f.commit_block().await.len(), 2);
 
         let c = f.member(0).await;
@@ -1128,7 +1222,40 @@ mod tests {
             SubmissionOutcome::Accepted,
             "after the shutdown a transaction is sent at once"
         );
-        assert_eq!(f.rpc.submitted_batch_sealed_inputs().len(), 1);
+        assert!(f.rpc.submitted_batch_sealed_inputs().is_empty());
+    }
+
+    /// A stop that comes while a batch is being built ends the build: its members are sent alone
+    /// at once instead of after a proof or chain read that could outlast the stop's grace.
+    #[tokio::test]
+    async fn a_shutdown_during_a_build_sends_its_members_alone_at_once() {
+        let f = fixture(2).await;
+        let (a, b) = (f.member(0).await, f.member(1).await);
+        let expected: BTreeSet<_> = [&a, &b].map(final_commitment).into();
+        let shutdown = CancellationToken::new();
+        let batcher = f.batcher_stopping_on(4, Duration::from_millis(100), shutdown.clone());
+        let held = hold_proofs(&batcher);
+        let (open, answers) = open_batch(&f.genesis, vec![a, b]);
+        let sending = tokio::spawn({
+            let batcher = batcher.clone();
+            async move { batcher.send(open).await }
+        });
+        while held.started() == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        shutdown.cancel();
+        for answer in answers {
+            let outcome = tokio::time::timeout(Duration::from_secs(8), answer)
+                .await
+                .expect("the members waited for the held proof")
+                .unwrap();
+            assert_eq!(outcome, SubmissionOutcome::Accepted);
+        }
+        assert!(f.rpc.submitted_batch_sealed_inputs().is_empty());
+        held.release();
+        sending.await.unwrap();
+        let landed: BTreeSet<_> = f.commit_block().await.into_iter().collect();
+        assert_eq!(landed, expected);
     }
 
     /// The second transaction of an account is sent at once rather than joining the batch its
@@ -1207,36 +1334,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stale_key_refusal_of_members_sealed_against_different_keys_sends_each_alone() {
-        let f = fixture(2).await;
-        let a = f.member(0).await;
-        let b = f.member_sealed_with(1, None, &f.other_key).await;
-        assert_ne!(a.sealed.key_id(), b.sealed.key_id());
-        f.rpc.fail_next_call(
-            RpcEndpoint::SubmitProvenBatch,
-            refused(GrpcError::FailedPrecondition),
-        );
-        let batcher = f.batcher(2, Duration::from_secs(5));
-        let (first, second) =
-            tokio::join!(batcher.submit(&f.genesis, a), batcher.submit(&f.genesis, b));
-        assert_eq!(
-            (first, second),
-            (SubmissionOutcome::Accepted, SubmissionOutcome::Accepted)
-        );
-        assert_eq!(f.rpc.submitted_batch_sealed_inputs().len(), 1);
-        assert_eq!(
-            f.commit_block().await.len(),
-            2,
-            "only one of them may carry the stale sealing, so each went alone"
-        );
-    }
-
-    #[tokio::test]
     async fn a_transaction_without_time_to_wait_for_a_batch_is_sent_at_once() {
         let f = fixture(2).await;
         let window = Duration::from_secs(3);
         let mut short = f.member(0).await;
-        short.send_by = Instant::now() + window + SendWindow::MIN_SEND - Duration::from_secs(1);
+        // A second short of the window, the build, the batch send and its own send after a
+        // refusal: it would not have the time it needs, so it does not wait at all.
+        short.send_by = Instant::now() + window + AFTER_WINDOW - Duration::from_secs(1);
         let other = f.member(1).await;
         let batcher = f.batcher(4, window);
         let started = std::time::Instant::now();
@@ -1259,17 +1363,16 @@ mod tests {
         assert!(f.rpc.submitted_batch_sealed_inputs().is_empty());
     }
 
-    /// On a paused clock, members that join with exactly a window and the least send time left
-    /// have nothing to spare once the window ends, so the batch they would share is not built and
-    /// each is sent alone with the send time it still has.
-    #[tokio::test(start_paused = true)]
-    async fn a_batch_not_built_within_its_members_time_sends_each_alone() {
+    /// Whether two members joining with the least wait allowed (the window plus
+    /// [`AFTER_WINDOW`]) are sent as one batch when reading the chain view for their batch takes
+    /// `read`, on a paused clock.
+    async fn batched_after_a_chain_read_of(read: Duration) -> bool {
         let f = fixture(2).await;
         let (mut a, mut b) = (f.member(0).await, f.member(1).await);
         let window = Duration::from_millis(100);
-        let send_by = Instant::now() + window + SendWindow::MIN_SEND;
+        let send_by = Instant::now() + window + AFTER_WINDOW;
         (a.send_by, b.send_by) = (send_by, send_by);
-        let expected: BTreeSet<_> = [final_commitment(&a), final_commitment(&b)].into();
+        f.node.answer_chain_syncs_after(read);
         let batcher = f.batcher(4, window);
         let (first, second) =
             tokio::join!(batcher.submit(&f.genesis, a), batcher.submit(&f.genesis, b));
@@ -1277,23 +1380,155 @@ mod tests {
             (first, second),
             (SubmissionOutcome::Accepted, SubmissionOutcome::Accepted)
         );
+        assert_eq!(f.commit_block().await.len(), 2);
+        let batches = f.rpc.submitted_batch_sealed_inputs().len();
+        let alone = f.node.single_sends().len();
         assert!(
-            f.rpc.submitted_batch_sealed_inputs().is_empty(),
-            "the late batch was never sent"
+            (batches, alone) == (1, 0) || (batches, alone) == (0, 2),
+            "{batches} batches, {alone} sent alone"
         );
+        batches == 1
+    }
+
+    /// Members that join with the least wait allowed still have [`MIN_BUILD`] for their build
+    /// once the window ends, and no more: a build a second shorter is sent as a batch, one a
+    /// second longer sends each member alone with the time it still has.
+    #[tokio::test(start_paused = true)]
+    async fn members_joining_with_the_least_wait_have_exactly_their_build_time() {
+        assert!(batched_after_a_chain_read_of(MIN_BUILD - Duration::from_secs(1)).await);
+        assert!(!batched_after_a_chain_read_of(MIN_BUILD + Duration::from_secs(1)).await);
+    }
+
+    /// A refusal that arrives just before the batch send's deadline still leaves every member
+    /// [`RESEND_RESERVE`] for its own send. Members carry the longest send time an attempt hands
+    /// over ([`SendWindow::MAX_SEND`]).
+    #[tokio::test(start_paused = true)]
+    async fn a_late_batch_refusal_still_leaves_each_member_its_resend_time() {
+        let f = fixture(2).await;
+        let (mut a, mut b) = (f.member(0).await, f.member(1).await);
+        let window = Duration::from_millis(100);
+        let send_by = Instant::now() + SendWindow::MAX_SEND;
+        (a.send_by, b.send_by) = (send_by, send_by);
+        let expected: BTreeSet<_> = [&a, &b].map(final_commitment).into();
+        // The batch send may wait the members' time less their resend: 60 s - 0.1 s - 15 s.
+        let batch_deadline = SendWindow::MAX_SEND - window - RESEND_RESERVE;
+        f.node
+            .answer_batches_after(batch_deadline - Duration::from_secs(1));
+        f.rpc.fail_next_call(
+            RpcEndpoint::SubmitProvenBatch,
+            refused(GrpcError::InvalidArgument),
+        );
+        let batcher = f.batcher(4, window);
+        let (first, second) =
+            tokio::join!(batcher.submit(&f.genesis, a), batcher.submit(&f.genesis, b));
+        assert_eq!(
+            (first, second),
+            (SubmissionOutcome::Accepted, SubmissionOutcome::Accepted)
+        );
+        let sends = f.node.single_sends();
+        assert_eq!(sends.len(), 2, "each was sent alone after the refusal");
+        for sent in sends {
+            let left = send_by.saturating_duration_since(sent);
+            assert!(left >= RESEND_RESERVE, "sent alone with only {left:?} left");
+        }
         let landed: BTreeSet<_> = f.commit_block().await.into_iter().collect();
         assert_eq!(landed, expected);
     }
 
-    /// A member left with less than the least send time when its window ends (a late timer) is
-    /// sent at once, not after the others' batch is built, which may take up to their own spare
-    /// time and so outlast what it has left.
+    /// The batch send is cut off where its members' resend time begins. An answer that has not
+    /// come by then is unknown, like a single send's, and is never followed by single sends.
+    #[tokio::test(start_paused = true)]
+    async fn the_batch_send_never_waits_into_its_members_resend_time() {
+        let f = fixture(2).await;
+        let (mut a, mut b) = (f.member(0).await, f.member(1).await);
+        let window = Duration::from_millis(100);
+        let started = Instant::now();
+        let send_by = started + SendWindow::MAX_SEND;
+        (a.send_by, b.send_by) = (send_by, send_by);
+        // Refused, but only after the resend time began.
+        f.node
+            .answer_batches_after(SendWindow::MAX_SEND - window - RESEND_RESERVE / 2);
+        f.rpc.fail_next_call(
+            RpcEndpoint::SubmitProvenBatch,
+            refused(GrpcError::InvalidArgument),
+        );
+        let batcher = f.batcher(4, window);
+        let (first, second) =
+            tokio::join!(batcher.submit(&f.genesis, a), batcher.submit(&f.genesis, b));
+        assert!(
+            matches!(first, SubmissionOutcome::Unknown { .. }),
+            "{first:?}"
+        );
+        assert!(
+            matches!(second, SubmissionOutcome::Unknown { .. }),
+            "{second:?}"
+        );
+        assert!(f.node.single_sends().is_empty(), "never sent again");
+        let answered = Instant::now();
+        assert!(
+            answered <= send_by - RESEND_RESERVE,
+            "the batch send waited {:?} into the resend time",
+            answered.saturating_duration_since(send_by - RESEND_RESERVE)
+        );
+    }
+
+    /// A member too close to its expiration at the tip the batch is built at is sent alone as soon
+    /// as the tip is read, not after the others' batch is proved.
+    #[tokio::test]
+    async fn a_member_near_its_expiration_is_sent_while_the_others_batch_is_proved() {
+        let f = fixture(3).await;
+        let (a, b) = (f.member(0).await, f.member(1).await);
+        let near = f.member_expiring_in(2, 4).await;
+        let (tip, _) = f.rpc.get_block_header_by_number(None, false).await.unwrap();
+        assert!(!near.has_headroom_at(tip.block_num()));
+        let expected: BTreeSet<_> = [&a, &b, &near].map(final_commitment).into();
+        let batcher = f.batcher(4, Duration::from_millis(100));
+        let held = hold_proofs(&batcher);
+        let (open, answers) = open_batch(&f.genesis, vec![a, b, near]);
+        let [first, second, near_answer]: [_; 3] = answers.try_into().unwrap();
+        let sending = tokio::spawn({
+            let batcher = batcher.clone();
+            async move { batcher.send(open).await }
+        });
+
+        let near_outcome = tokio::time::timeout(Duration::from_secs(8), near_answer)
+            .await
+            .expect("the member near its expiration waited for the others' batch proof")
+            .unwrap();
+        assert_eq!(near_outcome, SubmissionOutcome::Accepted);
+        let proving = async {
+            while held.started() == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(8), proving)
+            .await
+            .expect("the others' batch proof started");
+        assert!(
+            f.rpc.submitted_batch_sealed_inputs().is_empty(),
+            "answered while the others' proof is held"
+        );
+
+        held.release();
+        sending.await.unwrap();
+        assert_eq!(first.await.unwrap(), SubmissionOutcome::Accepted);
+        assert_eq!(second.await.unwrap(), SubmissionOutcome::Accepted);
+        let batches = f.rpc.submitted_batch_sealed_inputs();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].len(), 2, "the other two left as one batch");
+        let landed: BTreeSet<_> = f.commit_block().await.into_iter().collect();
+        assert_eq!(landed, expected);
+    }
+
+    /// A member left with less than [`AFTER_WINDOW`] when its window ends (a late timer) is sent
+    /// at once, not after the others' batch is built, which may take up to their own spare time and
+    /// so outlast what it has left.
     #[tokio::test]
     async fn a_member_short_of_send_time_is_sent_while_the_others_batch_is_built() {
         let f = fixture(3).await;
         let (a, b) = (f.member(0).await, f.member(1).await);
         let mut late = f.member(2).await;
-        late.send_by = Instant::now() + SendWindow::MIN_SEND - Duration::from_secs(5);
+        late.send_by = Instant::now() + AFTER_WINDOW - Duration::from_secs(1);
         let expected: BTreeSet<_> = [&a, &b, &late].map(final_commitment).into();
         let batcher = f.batcher(4, Duration::from_millis(100));
         let held = hold_proofs(&batcher);
@@ -1338,8 +1573,9 @@ mod tests {
         let window = Duration::from_millis(100);
         let batcher = f.batcher(4, window);
         let held = hold_proofs(&batcher);
-        // Two seconds to spare for the build once the window ends; the held proof outlasts them.
-        let send_by = Instant::now() + window + SendWindow::MIN_SEND + Duration::from_secs(2);
+        // About the least build time once the window ends (a second more, so the members still
+        // join after the time building them takes); the held proof outlasts it.
+        let send_by = Instant::now() + window + AFTER_WINDOW + Duration::from_secs(1);
         (a.send_by, b.send_by) = (send_by, send_by);
 
         let (first, second) =

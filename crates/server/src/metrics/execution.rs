@@ -72,13 +72,10 @@ pub enum BatchOutcome {
     Accepted,
     /// The node's answer did not arrive; the chain settles each transaction.
     Unknown,
-    /// The node refused the batch before processing it, and would refuse each transaction alone
-    /// the same way.
-    NotProcessed,
-    /// The node refused the batch; each transaction was then sent alone.
+    /// The node refused the batch, whatever for; each transaction was then sent alone.
     Refused,
-    /// No batch was sent (no chain view, a batch that did not assemble or prove, or a send window
-    /// that closed); each transaction was sent alone.
+    /// No batch was sent (no chain view, a batch that did not assemble or prove in its members'
+    /// time, a planned stop); each transaction was sent alone.
     NotBuilt,
     /// Another batch was being proved; each transaction was sent alone.
     ProverBusy,
@@ -89,7 +86,6 @@ impl BatchOutcome {
         match self {
             BatchOutcome::Accepted => "accepted",
             BatchOutcome::Unknown => "unknown",
-            BatchOutcome::NotProcessed => "not_processed",
             BatchOutcome::Refused => "refused",
             BatchOutcome::NotBuilt => "not_built",
             BatchOutcome::ProverBusy => "prover_busy",
