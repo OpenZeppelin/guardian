@@ -20,8 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
-| 0.19.0-rc.2 | 0.18 (Rust), 0.17 (TypeScript) | `=0.18.0` | `=0.18.0` | `0.17.8` (exact) |
-| 0.19.0-rc.1 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
+| 0.19.0 | 0.18 (Rust), 0.17 (TypeScript) | `=0.18.0` | `=0.18.0` | `0.17.8` (exact) |
 | 0.18.3 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.2 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.1 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
@@ -35,22 +34,14 @@ elsewhere and link here:
 
 0.18.2 and 0.18.3 keep the 0.18.1 pins.
 
-0.19.0-rc.1 keeps the 0.18.1 pins as well; it is the first release candidate of 0.19.0
-and stays on Miden 0.17, so accounts and stores carry over. It changes server and SDK
-contracts (see the 0.19.0 upgrade notes below). The release candidates are published
-to npm under the `rc` dist-tag, so `npm install` without an explicit version still
-resolves the 0.18.x line.
-
-0.19.0-rc.2 replaces 0.19.0-rc.1 and splits the pins: the server and the Rust SDK move
-to Miden 0.18.0, and the TypeScript SDK moves to `@miden-sdk/miden-sdk` 0.17.8 because
-no 0.18 web SDK is published yet. Accounts and server data carry over; see
+0.19.0 splits the pins: the server and the Rust SDK move to Miden 0.18.0, and the
+TypeScript SDK moves to `@miden-sdk/miden-sdk` 0.17.8, because no 0.18 web SDK was
+published when the split was made. Accounts and server data carry over; see
 [Rust on Miden 0.18, TypeScript on Miden 0.17](#rust-on-miden-018-typescript-on-miden-017-0190).
-The 0.19.0 notes below describe it. New since the first candidate are operation-bound session requests
-(session-v2), the delta and proposal nonce check at every queue depth (issue #518),
-block watch, and the TypeScript `signOnCreate` option. For session
-requests 0.19.0-rc.1 counts as an earlier release: an rc.1 SDK and an rc.2 Guardian,
-or the reverse, refuse each other's session requests, so move server and SDKs from
-rc.1 to rc.2 together. Its Postgres migrations are additive and no data reset runs.
+It changes server and SDK contracts (see the 0.19.0 upgrade notes below). Its Postgres
+migrations are additive and no data reset runs. The 0.19.0 release candidates were
+published to npm under the `rc` dist-tag and are not supported: an rc.1 SDK or server
+refuses the session requests of this release, so move off an rc to 0.19.0 on both sides.
 
 0.18.1 moves to the Miden 0.17 patch releases. `@miden-sdk/miden-sdk` 0.17.3 embeds
 `miden-client` 0.17.3 and `miden-protocol` / `miden-standards` 0.17.1, which is why the
@@ -65,8 +56,8 @@ published to npm under the `rc` dist-tag, and are not supported.
 `miden-client` 0.16.0 and `miden-protocol` / `miden-standards` 0.16.1, which is why the
 Rust pins are 0.16.1 for the protocol crates and 0.16.0 for the client crates.
 
-Pins are exact on both lines. Through 0.19.0-rc.1 the Rust and npm pins embed the same
-protocol crates and move together; from 0.19.0-rc.2 they sit on adjacent lines that
+Pins are exact on both lines. Through 0.18.3 the Rust and npm pins embed the same
+protocol crates and move together; from 0.19.0 they sit on adjacent lines that
 share account code. Nothing at build time verifies that the npm SDK's embedded
 `miden-standards` builds the same account as the Rust pin, so the CI parity gates are
 what catch drift. See
@@ -388,13 +379,12 @@ Nothing stored under Miden 0.16 survives:
 
 Guardian 0.19.0 adds server-side execution of Guardian-executable proposals on this line. A
 stored request declaring a protocol line the server does not execute is refused before it is
-decoded: 0.19.0-rc.1 executes `0.17` only, and from 0.19.0-rc.2 the server executes `0.17` and
-`0.18` (see
+decoded: the server executes `0.17` and `0.18` (see
 [Rust on Miden 0.18, TypeScript on Miden 0.17](#rust-on-miden-018-typescript-on-miden-017-0190)).
 `TransactionRequest` serialization carries no version tag and the 0.17 release candidates
 changed it, so the SDK that created a proposal and the server should run clients that write
-the same layout: 0.19.0-rc.1 pins client 0.17.3 in the server and the Rust SDK and web SDK
-0.17.3 in the TypeScript SDK. A request from a different client either fails to decode
+the same layout: 0.19.0 pins client 0.18.0 in the server and the Rust SDK and web SDK
+0.17.8 (client 0.17.5) in the TypeScript SDK, whose layouts differ only as described there. A request from a different client either fails to decode
 (`GUARDIAN_EXECUTION_REQUEST_CODEC`) or reproduces a transaction other than the signed one
 (`GUARDIAN_EXECUTION_BINDING_MISMATCH`); either way nothing is submitted. The live
 scenarios (`live-guardian-execute-*`) passed by hand on devnet (node 0.17.0) on 2026-10-06 with
@@ -740,7 +730,7 @@ only; wallet-signed requests, session grants and logout are unchanged.
 ### Delta and proposal nonces are the account's (0.19.0)
 
 0.19.0 makes the server check the nonce a delta or proposal is labelled with
-at every candidate-queue depth (issue #518). Up to 0.19.0-rc.1 it checked the
+at every candidate-queue depth (issue #518). Up to 0.18.3 it checked the
 label only behind a queued candidate. The nonce is the storage key of deltas
 (`UNIQUE(account_id, nonce)`), the order of the history, `/delta/since` and
 the candidate queue, and the lookup key of `getDelta` and `abandonCandidate`,
@@ -799,10 +789,10 @@ so the check keeps every new row in chain order. It also refuses labels past
 
 ### Rust on Miden 0.18, TypeScript on Miden 0.17 (0.19.0)
 
-From 0.19.0-rc.2 the server and the Rust SDK build on Miden 0.18.0 (`miden-client`
+In 0.19.0 the server and the Rust SDK build on Miden 0.18.0 (`miden-client`
 0.18.0, VM 0.36), while the TypeScript SDK stays on `@miden-sdk/miden-sdk` 0.17.8
-(`miden-client` 0.17.5, protocol crates 0.17.1, VM 0.35), because the web SDK has no
-0.18 release yet. The two lines work together because Miden 0.18.0 changes the VM and
+(`miden-client` 0.17.5, protocol crates 0.17.1, VM 0.35), because no 0.18 web SDK was
+published when the pins split (web SDK 0.18.0 followed on 2026-11-16). The two lines work together because Miden 0.18.0 changes the VM and
 the client, not the contracts:
 
 - **Accounts carry over.** The MASM of `miden-protocol` and `miden-standards` is the
@@ -826,15 +816,13 @@ the client, not the contracts:
   keystore and are unaffected. Browser stores are untouched.
 - **Stored requests.** The Rust SDK seals a Guardian-executable request with
   protocol line `0.18` and the TypeScript SDK with `0.17`; the server executes
-  both. A server up to 0.19.0-rc.1 refuses the `0.18` line
-  (`GUARDIAN_EXECUTION_PROTOCOL_MISMATCH`), so upgrade the server before Rust
-  clients create Guardian-executable proposals. The request layout is the same on
+  both. A server before 0.19.0 does not execute the `0.18` line (0.19.0-rc.1
+  refuses it with `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH`), so upgrade the server
+  before Rust clients create Guardian-executable proposals. The request layout is the same on
   both lines except for a public foreign account declaration, which only a custom
   proposal can carry: such a request written on one line does not decode on the
-  other and is refused with `GUARDIAN_EXECUTION_REQUEST_CODEC`. That includes a
-  proposal created on 0.19.0-rc.1 that is still pending when the server is
-  upgraded: have GUARDIAN execute it first, or execute it afterwards from an SDK
-  on the line that created it.
+  other and is refused with `GUARDIAN_EXECUTION_REQUEST_CODEC`: execute such a
+  proposal from an SDK on the line that created it.
 - **Private note transport.** `miden-client` 0.18 keeps one transport cursor with
   the tags it covers instead of one cursor per tag, and reads every tag up to one
   bound per fetch, so the Rust SDK's backlog drain is one fetch. The Rust store
@@ -927,12 +915,12 @@ newest candidate held (issue #517).
 
 The facts below change independently of this repository. This list is the one
 place that tracks them; other documents point here rather than restating them.
-Last checked 2026-11-11.
+Last checked 2026-11-18.
 
-- **Public networks.** On 2026-11-11 devnet and testnet both ran node 0.18.2
+- **Public networks.** On 2026-11-18 devnet and testnet both ran node 0.18.2
   (protocol 0.18.0), which serves 0.17 and 0.18 clients: its RPC no longer
   refuses a client whose accept header names another version. The npm web SDK
-  has no 0.18 release; its latest is 0.17.8. The dated results that follow are
+  published 0.18.0 on 2026-11-16; this release still pins 0.17.8. The dated results that follow are
   from the 0.17 nodes. Devnet ran node 0.17.0, which the 0.17 pins reach:
   live qualification, including the `live-guardian-execute-*` scenarios, passed
   there on both SDKs on 2026-10-06, and on 2026-10-12 it answered requests whose
@@ -981,13 +969,14 @@ Last checked 2026-11-11.
   When the web SDK fixes it: remove that guidance (`git grep useWorker`).
 - **Pins.** The Rust workspace pins protocol and client crates 0.18.0, and the
   TypeScript SDK pins web SDK 0.17.8, which embeds client 0.17.5 and protocol
-  crates 0.17.1 (see the matrix). Move the TypeScript pin to the 0.18 web SDK
-  when it ships, and rerun the parity gates.
+  crates 0.17.1 (see the matrix). Web SDK 0.18.0 (2026-11-16) embeds client
+  0.18.2 and protocol crates 0.18.0: move the TypeScript pin to it, with the
+  Rust client crates to 0.18.2, and rerun the parity gates.
 
 Data effect of moving from Miden 0.16 to this line: full reset, see above. Client
 stores are recreated, not migrated. Operator steps:
 [`PRODUCTION.md`](./PRODUCTION.md#upgrading-to-miden-017). Releases within the line,
-0.19.0-rc.2 included, reset nothing on the server; 0.19.0-rc.2 does recreate Rust
+0.19.0 included, reset nothing on the server; 0.19.0 does recreate Rust
 client stores (see
 [Rust on Miden 0.18, TypeScript on Miden 0.17](#rust-on-miden-018-typescript-on-miden-017-0190)).
 

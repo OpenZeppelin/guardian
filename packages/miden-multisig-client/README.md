@@ -17,7 +17,7 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client@0.19.0-rc.2 @miden-sdk/miden-sdk@0.17.8
+npm install @openzeppelin/miden-multisig-client@0.19.0 @miden-sdk/miden-sdk@0.17.8
 ```
 
 Miden 0.17 requires a new client database: a store created under 0.16 does not
@@ -324,7 +324,7 @@ accept the same `string | SignerSpec` entries, and
 `signerCommitments`. `Multisig.signers` holds the same list.
 
 Such an account is registered and operated through GUARDIAN like any other
-(issue #576; it needs a GUARDIAN with per-signer schemes, 0.19.0-rc.1 or
+(issue #576; it needs a GUARDIAN with per-signer schemes, 0.19.0 or
 later):
 
 - `registerOnGuardian()` registers the schemes the account stores: the

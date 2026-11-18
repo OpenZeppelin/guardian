@@ -457,7 +457,7 @@ plus:
 ## Upgrading within the Miden 0.17 line
 
 Releases after 0.18.0 on the Miden 0.17 line (0.18.x patches and 0.19.x) keep stored data, the `auth_tx` procedure
-root, and existing accounts; no reset runs. From 0.19.0-rc.2 the server itself
+root, and existing accounts; no reset runs. From 0.19.0 the server itself
 builds on Miden 0.18 and needs a node on 0.18; accounts keep the same contract
 code, which is why that release is listed here. Each one still has operator-visible
 changes. The SDK and Miden-side ones are in
@@ -510,7 +510,7 @@ behavior:
   `abandonCandidate` sends `proposal_id`, which a server up to 0.18.3 refuses
   as unauthenticated, so abandons fail until the server is upgraded. The
   release also brings:
-  - **A Miden 0.18 node, from 0.19.0-rc.2.** The server and the Rust SDK
+  - **A Miden 0.18 node.** The server and the Rust SDK
     build on Miden 0.18.0 and use the node 0.18 RPC, so move the Miden node the
     server reads to 0.18 before deploying this image; the server does not work
     against a 0.17 node. Node 0.18 still serves 0.17 clients, so SDKs from
@@ -522,9 +522,9 @@ behavior:
     account and is still pending at the upgrade can no longer be executed by
     GUARDIAN: have GUARDIAN execute it before upgrading, or execute it
     afterwards from an SDK on the Miden line that created it. And, as a
-    second exception to SDKs-first, a server up to 0.19.0-rc.1 refuses the
-    Guardian-executable proposals Rust clients on this release create, until
-    it is upgraded (see
+    second exception to SDKs-first, a server before 0.19.0 does not execute
+    the Guardian-executable proposals Rust clients on this release create,
+    until it is upgraded (see
     [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#rust-on-miden-018-typescript-on-miden-017-0190)).
   - **Guardian execution, enabled in two deploys.** An older replica still
     running during a rolling update can leave an executing account reserved
