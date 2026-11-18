@@ -247,10 +247,12 @@ sequenceDiagram
 
 The dry-run check (`POST /delta/proposal/check`, gRPC `CheckDeltaProposal`) takes the same
 body and runs the same steps through `verify_delta`, then the account's gate modules with
-`dry_run = true`: those subscribed to `before_proposal_created`, then those subscribed only to
-`before_transaction_approved`. It stores nothing, takes no proposal slot, and answers
-`200 {allowed: true, complete}` (`complete` is false when the catalog has an enabled gate
-instance with `dry_run = false`) or the error creation would return. It is rate limited per
+`dry_run = true`: those subscribed to `before_proposal_created`, then those subscribed to
+`before_transaction_approved` (an instance on both is asked once per hook), then the
+account-wide proposal request byte limit (`GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED`). It
+stores nothing, takes no proposal slot, and answers `200 {allowed: true, complete}`
+(`complete` is false when the catalog has an enabled gate instance with `dry_run = false`) or
+the error creation would return. It is rate limited per
 account and signer before the account state is rebuilt.
 
 #### sign_delta_proposal

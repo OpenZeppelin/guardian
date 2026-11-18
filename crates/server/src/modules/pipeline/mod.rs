@@ -10,7 +10,7 @@ use super::catalog::{ClientReason, HookName, OnError, Scope};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
-use super::breaker::{Breakers, Caller};
+use super::breaker::{Admission, Breakers, Caller};
 use super::limits::Limits;
 use super::registry::{CallError, Instance, isolated};
 use super::store::{AccountParamsRow, Assigned, ModuleStore, ParamsKind};
@@ -551,8 +551,9 @@ impl ModulePipeline {
     }
 
     /// The plans for a dry-run check of a proposal: the `before_proposal_created` instances,
-    /// then those subscribed only to `before_transaction_approved`, so an instance on both runs
-    /// once and rules that must hold at approval are checked too. Instances with
+    /// then the `before_transaction_approved` ones, so rules that must hold at approval are
+    /// checked too. An instance on both hooks is asked once per hook, since it may decide
+    /// differently at each. Instances with
     /// `dry_run = false` are skipped. `complete` is false whenever the catalog has an enabled
     /// transaction gate instance that opts out, whether or not it applies to this account, so
     /// the answer reveals nothing about one account's instances.
@@ -581,14 +582,8 @@ impl ModulePipeline {
             let Some(mut plan) = self.plan(hook, account_id).await? else {
                 continue;
             };
-            plan.modules.retain(|(instance, _, _)| {
-                instance.config.dry_run
-                    && (hook == HookName::BeforeProposalCreated
-                        || !instance
-                            .config
-                            .hooks
-                            .contains(&HookName::BeforeProposalCreated))
-            });
+            plan.modules
+                .retain(|(instance, _, _)| instance.config.dry_run);
             plan.dry_run = true;
             if !plan.modules.is_empty() {
                 plans.push(plan);
@@ -682,26 +677,27 @@ impl Plan<'_> {
 
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let size = prost::Message::encoded_len(&request);
-            let unsent = if size > limits.request_max_bytes {
-                Some(Failure::RequestTooLarge(size))
+            let admitted = if size > limits.request_max_bytes {
+                Err(Failure::RequestTooLarge(size))
             } else if remaining.is_zero() {
-                Some(Failure::Timeout)
-            } else if !breakers.admit(id, caller) {
-                Some(Failure::CircuitOpen)
+                Err(Failure::Timeout)
             } else {
-                None
+                breakers.admit(id, caller).ok_or(Failure::CircuitOpen)
             };
-            if let Some(failure) = unsent {
-                super::metrics::evaluated(
-                    id,
-                    super::metrics::Outcome::Skipped,
-                    std::time::Duration::ZERO,
-                );
-                approval
-                    .failed_open
-                    .extend(fail(instance, layer, account_id, &failure)?);
-                continue;
-            }
+            let admission = match admitted {
+                Ok(admission) => admission,
+                Err(failure) => {
+                    super::metrics::evaluated(
+                        id,
+                        super::metrics::Outcome::Skipped,
+                        std::time::Duration::ZERO,
+                    );
+                    approval
+                        .failed_open
+                        .extend(fail(instance, layer, account_id, &failure)?);
+                    continue;
+                }
+            };
 
             let cut_by_budget = cut_by_budget(called_before, remaining, instance.config.timeout);
             called_before = true;
@@ -715,7 +711,7 @@ impl Plan<'_> {
             let failure = match outcome.map(|decision| (effect(&decision), decision)) {
                 Ok((Some(Effect::Allow), _)) => {
                     if !dry_run {
-                        breakers.answered(id);
+                        breakers.answered(id, admission);
                     }
                     super::metrics::evaluated(id, super::metrics::Outcome::Allow, took);
                     continue;
@@ -723,7 +719,7 @@ impl Plan<'_> {
                 Ok((Some(Effect::Deny), decision)) => {
                     let reason_code = denial_reason_code(&instance.config.id, decision.reason_code);
                     if !dry_run {
-                        breakers.answered(id);
+                        breakers.answered(id, admission);
                     }
                     super::metrics::evaluated(id, super::metrics::Outcome::Deny, took);
                     tracing::info!(
@@ -765,7 +761,7 @@ impl Plan<'_> {
             };
             super::metrics::evaluated(id, super::metrics::Outcome::Error, took);
             if !dry_run {
-                count_toward_breaker(&breakers, id, &failure, cut_by_budget);
+                count_toward_breaker(&breakers, id, admission, &failure, cut_by_budget);
             }
             approval
                 .failed_open
@@ -790,11 +786,17 @@ fn cut_by_budget(
 /// anyone's signature) on the instance's breaker. The breaker stops calls to a module that is
 /// down for every account, so only failures that say so count: a request the module rejected
 /// is an answer, and a timeout the budget caused is not the module's.
-fn count_toward_breaker(breakers: &Breakers, id: &str, failure: &Failure, cut_by_budget: bool) {
+fn count_toward_breaker(
+    breakers: &Breakers,
+    id: &str,
+    admission: Admission,
+    failure: &Failure,
+    cut_by_budget: bool,
+) {
     match failure {
-        Failure::Rejected(_) => breakers.answered(id),
+        Failure::Rejected(_) => breakers.answered(id, admission),
         Failure::Timeout if cut_by_budget => {}
-        _ => breakers.failed(id),
+        _ => breakers.failed(id, admission),
     }
 }
 

@@ -420,8 +420,12 @@ accept an optional `expected_version`: the catalog-wide `params_version` from
 enable/disable moves it, so re-read the catalog after a 409), the account's `account_params_version` for the others. Set, a
 write made after another change to the same rows is refused with
 `409 GUARDIAN_MODULE_PARAMS_STALE` and nothing is written; read the params
-again and reapply your change. Unset, the write replaces whatever is there, so
-two operators editing from the same read can drop each other's change.
+again and reapply your change. Unset, a global write replaces whatever is there,
+so two operators editing from the same read can drop each other's change. An
+account write (layer or assignment) is always checked against the rows it read:
+without `expected_version`, one that loses a race with another write to the same
+account is also refused with `409 GUARDIAN_MODULE_PARAMS_STALE`, so two writes
+can never together exceed the account's evaluation budget. Retry it.
 
 A refused write returns `400 invalid_input` with the reason in `meta.detail`
 (the module and the rule it broke; the `message` stays generic, as for every

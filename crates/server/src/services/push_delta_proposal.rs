@@ -557,6 +557,19 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
         }
     }
     if mode == Mode::DryRun {
+        // Creation counts the request against the bytes the account's viable proposals hold
+        // when it inserts; a check answers as creation would, short of a concurrent write.
+        if !already_pending {
+            let used = resolved
+                .storage
+                .viable_request_bytes(&account_id, &tail.commitment, next_nonce)
+                .await
+                .map_err(GuardianError::StorageError)?;
+            let limit = u64::from(state.execution.config.max_account_request_bytes);
+            if used.saturating_add(request_bytes) > limit {
+                return Err(GuardianError::AccountRequestCapacityExceeded { limit, used });
+            }
+        }
         tracing::info!(
             account_id = %account_id,
             signer = %proposer_id,
@@ -3118,6 +3131,23 @@ mod tests {
         assert!(storage.get_submit_delta_proposal_calls().is_empty());
     }
 
+    /// The bytes the account's viable proposals hold are counted by creation only when it
+    /// inserts; a check reads them so it does not answer "would pass" for an account at its
+    /// limit (here, one whose limit was lowered below what it already holds).
+    #[tokio::test]
+    async fn a_check_refuses_an_account_over_its_request_byte_limit() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let (state, storage, params, _) =
+            module_setup(module, HookName::BeforeProposalCreated, |_| {});
+        let limit = u64::from(state.execution.config.max_account_request_bytes);
+        let storage = storage.with_viable_request_bytes(limit + 1);
+        assert!(matches!(
+            check_proposal(&state, params).await,
+            Err(GuardianError::AccountRequestCapacityExceeded { used, .. }) if used == limit + 1
+        ),);
+        assert!(storage.get_submit_delta_proposal_calls().is_empty());
+    }
+
     #[tokio::test]
     async fn a_check_runs_approval_only_rules_too_and_marks_every_request_as_a_check() {
         let module = crate::modules::testing::StubModule::denying("amount_cap_exceeded");
@@ -3137,7 +3167,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_instance_on_both_transaction_hooks_runs_once_in_a_check() {
+    async fn an_instance_on_both_transaction_hooks_is_asked_at_each_in_a_check() {
         let module = crate::modules::testing::StubModule::allowing();
         let (state, _, params, _) = module_setup(
             module.clone(),
@@ -3149,11 +3179,12 @@ mod tests {
                 ];
             },
         );
-        check_proposal(&state, params).await.unwrap();
-        assert_eq!(module.calls(), 1);
+        let result = check_proposal(&state, params).await.unwrap();
+        assert!(result.complete);
+        assert_eq!(module.calls(), 2, "it may decide differently at approval");
         assert_eq!(
             module.last_request().unwrap().hook,
-            guardian_module_sdk::Hook::BeforeProposalCreated as i32
+            guardian_module_sdk::Hook::BeforeTransactionApproved as i32
         );
     }
 

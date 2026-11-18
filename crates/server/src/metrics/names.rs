@@ -771,7 +771,7 @@ pub const REGISTRY: &[MetricDef] = &[
         name: MODULE_FAIL_OPEN_TOTAL,
         kind: MetricKind::Counter,
         labels: &[LABEL_MODULE],
-        help: "Policy module failures a fail-open instance let through, by instance.",
+        help: "Policy module evaluations skipped under on_error = allow, by instance; counted at the skip, dry-run checks included, whether or not the request is approved.",
     },
     MetricDef {
         name: MODULE_REQUEST_REFUSED_TOTAL,

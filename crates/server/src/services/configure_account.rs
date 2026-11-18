@@ -265,7 +265,7 @@ pub async fn configure_account(
         None => true,
         Some(_) => unfinished_claim && !has_module_history(state, &params.account_id).await?,
     };
-    let default_copies = approve_registration(
+    let (default_copies, mut judged_base) = approve_registration(
         state,
         &params,
         &signer_commitment,
@@ -330,14 +330,15 @@ pub async fn configure_account(
             .await?;
             early_vouch = Some(vouch_outsider(state, &params, &head).await?);
         }
-        approve_registration(
+        judged_base = approve_registration(
             state,
             &params,
             &signer_commitment,
             has_stored_state(state, &params.account_id).await,
             false,
         )
-        .await?;
+        .await?
+        .1;
         Some(claimed)
     } else {
         existing
@@ -394,6 +395,22 @@ pub async fn configure_account(
         Some(_) => stored_head(state, &params.account_id).await?,
         None => None,
     };
+    if !judged_base.is(stored_base.as_ref()) {
+        let current = stored_base
+            .as_ref()
+            .map(|stored| stored.commitment.clone())
+            .unwrap_or_default();
+        tracing::warn!(
+            account_id = %params.account_id,
+            current = %current,
+            judged = ?judged_base,
+            "The stored state moved while the registration modules judged the request; refusing to replace a state they did not see"
+        );
+        return Err(GuardianError::CommitmentMismatch {
+            expected: current,
+            actual: head.commitment.clone(),
+        });
+    }
 
     // Guardian stores a state only once something vouches for it. A first
     // state at nonce 0 vouches for itself: its seed binds its code and
@@ -660,15 +677,38 @@ fn reject_disallowed_scheme(state: &AppState, scheme: SignatureScheme) -> Result
     })
 }
 
+/// The stored state the registration modules judged a request against, so the write replaces
+/// that state and no other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum JudgedBase {
+    /// No module judged the request.
+    Unjudged,
+    /// The modules judged it with this stored commitment as `before`, or with none.
+    Stored(Option<String>),
+}
+
+impl JudgedBase {
+    /// Whether `stored` is the state the modules judged against.
+    fn is(&self, stored: Option<&StateHead>) -> bool {
+        match self {
+            JudgedBase::Unjudged => true,
+            JudgedBase::Stored(judged) => {
+                judged.as_deref() == stored.map(|stored| stored.commitment.as_str())
+            }
+        }
+    }
+}
+
 /// Runs `before_account_registered` for this request: with the stored state as `before` when
 /// `stored`, without one for a first configuration or a claim whose state was never stored.
+/// Returns the default copies to write and the stored state the modules judged against.
 async fn approve_registration(
     state: &AppState,
     params: &ConfigureAccountParams,
     signer_commitment: &str,
     stored: bool,
     first_registration: bool,
-) -> Result<Vec<crate::modules::store::Assigned>> {
+) -> Result<(Vec<crate::modules::store::Assigned>, JudgedBase)> {
     let (plan, default_copies) = match state.modules.as_deref() {
         Some(modules) if first_registration => {
             modules.plan_first_registration(&params.account_id).await?
@@ -693,6 +733,10 @@ async fn approve_registration(
         } else {
             None
         };
+        let judged = JudgedBase::Stored(match &stored_state {
+            Some(Ok(stored)) => Some(stored.commitment.clone()),
+            _ => None,
+        });
         // Both states are decoded once, inside the reconstruction task, so request assembly
         // decodes nothing on the async path.
         let client = state.network_client.clone();
@@ -730,8 +774,9 @@ async fn approve_registration(
             signer_commitment,
             serde_json::Map::new(),
         );
+        return Ok((default_copies, judged));
     }
-    Ok(default_copies)
+    Ok((default_copies, JudgedBase::Unjudged))
 }
 
 /// Whether the account already holds module assignments.
@@ -3659,6 +3704,17 @@ mod tests {
         module: Arc<crate::modules::testing::StubModule>,
         chain: StateVerification,
     ) -> ModuleRun {
+        configure_on_storage(existing, instances, module, chain, |storage| storage).await
+    }
+
+    /// As [`configure_on_chain`], with `adjust` changing the stored state the request meets.
+    async fn configure_on_storage(
+        existing: impl FnOnce(String) -> Option<AccountMetadata>,
+        instances: Vec<crate::modules::registry::Instance>,
+        module: Arc<crate::modules::testing::StubModule>,
+        chain: StateVerification,
+        adjust: impl FnOnce(MockStorageBackend) -> MockStorageBackend,
+    ) -> ModuleRun {
         use crate::modules::testing::pipeline;
         use crate::testing::helpers::generate_falcon_signature;
 
@@ -3692,6 +3748,7 @@ mod tests {
                 updated_at: "2024-01-01T00:00:00Z".into(),
                 auth_scheme: "falcon".into(),
             }));
+        let storage = adjust(storage);
         let metadata = MockMetadataStore::new()
             .with_get(Ok(existing))
             .with_set(Ok(()));
@@ -3811,6 +3868,43 @@ mod tests {
         assert_eq!(set_calls.len(), 1);
         assert!(set_calls[0].paused_at.is_some());
         assert!(run.module.last_request().unwrap().before.is_some());
+    }
+
+    /// The modules judged the stored state they read as `before`; when another write replaced
+    /// it while they ran, the request is refused instead of replacing a state no module saw.
+    #[tokio::test]
+    async fn a_state_stored_while_the_modules_judged_is_not_replaced() {
+        let module = StubModule::allowing();
+        let run = configure_on_storage(
+            existing_account(false, false),
+            vec![crate::modules::testing::instance(
+                "signers",
+                &[HookName::BeforeAccountRegistered],
+                crate::modules::catalog::OnError::Deny,
+                module.clone(),
+            )],
+            module,
+            StateVerification::Match,
+            |storage| {
+                storage.with_pull_state_head(crate::state_object::StateHead {
+                    commitment: "0x9999".into(),
+                    nonce: Some(4),
+                })
+            },
+        )
+        .await;
+        assert!(
+            matches!(
+                &run.result,
+                Err(GuardianError::CommitmentMismatch { expected, .. }) if expected == "0x9999"
+            ),
+            "{:?}",
+            run.result
+        );
+        assert!(run.module.last_request().unwrap().before.is_some());
+        assert!(run.storage.get_replace_state_calls().is_empty());
+        assert!(run.storage.get_submit_state_calls().is_empty());
+        assert!(run.metadata.get_set_calls().is_empty());
     }
 
     #[tokio::test]

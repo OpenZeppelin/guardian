@@ -962,7 +962,7 @@
             }
           },
           "409": {
-            "description": "expected_version is set and the params changed since (GUARDIAN_MODULE_PARAMS_STALE)",
+            "description": "the account params changed since expected_version, or, without it, since this write read them (GUARDIAN_MODULE_PARAMS_STALE)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1087,7 +1087,7 @@
             }
           },
           "409": {
-            "description": "expected_version is set and the params changed since (GUARDIAN_MODULE_PARAMS_STALE)",
+            "description": "the account params changed since expected_version, or, without it, since this write read them (GUARDIAN_MODULE_PARAMS_STALE)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1210,7 +1210,7 @@
             }
           },
           "409": {
-            "description": "expected_version is set and the params changed since (GUARDIAN_MODULE_PARAMS_STALE)",
+            "description": "the account params changed since expected_version, or, without it, since this write read them (GUARDIAN_MODULE_PARAMS_STALE)",
             "content": {
               "application/json": {
                 "schema": {

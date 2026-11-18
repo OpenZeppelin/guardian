@@ -714,7 +714,7 @@ component schemas.
 | client | `GET /delta/proposal/execution` | signed headers | The latest execution of a proposal (404 `GUARDIAN_EXECUTION_NOT_FOUND` when the proposal exists but was never executed; 404 `proposal_not_found` when the proposal is gone and no attempt is left, which is how a proposal whose records retention deleted reads: see `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS`) |
 | client | `GET /delta/execution/current` | signed headers | The account's in-flight execution; `{"execution": null}` when none |
 | client | `GET /policies` | signed headers | The policy modules that apply to `?account_id`, as far as each instance's catalog entry discloses them, in evaluation order; empty without modules |
-| client | `POST /delta/proposal/check` | signed headers | Dry run of `POST /delta/proposal` (same body): its checks and the account's gate modules with `dry_run = true`; stores nothing. `200 {allowed: true, complete}`, or the error creation would return. Rate limited per account and signer (`GUARDIAN_MODULE_CHECK_RATE_PER_MIN`) |
+| client | `POST /delta/proposal/check` | signed headers | Dry run of `POST /delta/proposal` (same body): its checks, the account's gate modules with `dry_run = true` and the account-wide request byte limit; stores nothing. `200 {allowed: true, complete}`, or the error creation would return. Rate limited per account and signer (`GUARDIAN_MODULE_CHECK_RATE_PER_MIN`) |
 | client | `POST /session` | wallet-signed grant in the body | Register a delegated signer (see [Session Authentication](#session-authentication)) |
 | client | `POST /session/logout` | session-key-signed headers | Revoke this session |
 | client | `POST /session/revoke-all` | wallet-signed headers | Revoke every session of a signer |
@@ -974,7 +974,8 @@ Stable error codes include:
   operator module routes add `GUARDIAN_MODULE_NOT_FOUND` (404, `meta.module`) and
   `GUARDIAN_MODULE_NOT_DISABLEABLE` (409 / gRPC `FailedPrecondition`, `meta.module`),
   `GUARDIAN_MODULE_PARAMS_STALE` (409, a params write whose optional `expected_version` no
-  longer matches the params version), and
+  longer matches the params version, or an account write without one that another write to
+  the same account overtook), and
   return `GUARDIAN_MODULE_UNAVAILABLE` when an instance being enabled fails its startup checks.
 - `data_unavailable`
 

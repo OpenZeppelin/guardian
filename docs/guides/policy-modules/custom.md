@@ -165,8 +165,10 @@ every denial) should not repeat it.
 
 Cosigners can check a transaction before proposing it
 (`POST /delta/proposal/check`). The Guardian then calls the account's gate
-instances with `dry_run = true`: the creation instances, then those subscribed
-only to `before_transaction_approved`. Decide exactly as you would otherwise;
+instances with `dry_run = true`: the creation instances, then the
+`before_transaction_approved` ones. An instance on both hooks is asked once with
+each, so a module that decides differently at approval is checked as it would
+be then. Decide exactly as you would otherwise;
 `evaluate` has no side effects either way. An operator who does not want an
 instance to see transactions that may never be proposed sets `dry_run = false`
 in its catalog entry, and the check then reports `complete: false`.

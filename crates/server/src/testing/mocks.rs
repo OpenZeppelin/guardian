@@ -710,6 +710,8 @@ pub struct MockStorageBackend {
     /// Makes `admit_delta_proposal` report that the queue tail moved under
     /// the account lock (`ProposalWrite::TailMoved`).
     pub admit_tail_moved: Arc<std::sync::atomic::AtomicBool>,
+    /// Served by `viable_request_bytes`.
+    pub viable_request_bytes: Arc<std::sync::atomic::AtomicU64>,
     /// Stored commitments by account id, served by
     /// `pull_state_commitments_batch` (accounts not listed have no state).
     pub state_commitments: Arc<StdMutex<std::collections::HashMap<String, String>>>,
@@ -966,6 +968,12 @@ impl MockStorageBackend {
     pub fn with_admit_already_stored(self) -> Self {
         self.admit_already_stored
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        self
+    }
+
+    pub fn with_viable_request_bytes(self, bytes: u64) -> Self {
+        self.viable_request_bytes
+            .store(bytes, std::sync::atomic::Ordering::SeqCst);
         self
     }
 
@@ -1617,6 +1625,17 @@ impl StorageBackend for MockStorageBackend {
         self.submit_delta_proposal(&admission.commitment, &admission.proposal)
             .await?;
         Ok(crate::storage::ProposalWrite::Stored)
+    }
+
+    async fn viable_request_bytes(
+        &self,
+        _account_id: &str,
+        _prev_commitment: &str,
+        _viable_nonce: Option<u64>,
+    ) -> Result<u64, String> {
+        Ok(self
+            .viable_request_bytes
+            .load(std::sync::atomic::Ordering::SeqCst))
     }
 
     async fn pull_delta_proposal(

@@ -337,7 +337,7 @@ if qual_write_module_catalog "${MODULE_RUN}/modules" "${MODULE_RUN}/secrets" "${
     "$(cat "${MODULE_RUN}/secrets/qual-remote-token")" "$(cat "${MODULE_RUN}/tls/token")"
   # The file secrets backend refuses a token anyone but its owner can read.
   assert_eq "the token is owner-only" "600" \
-    "$(stat -f '%Lp' "${MODULE_RUN}/secrets/qual-remote-token" 2>/dev/null || stat -c '%a' "${MODULE_RUN}/secrets/qual-remote-token")"
+    "$(stat -c '%a' "${MODULE_RUN}/secrets/qual-remote-token" 2>/dev/null || stat -f '%Lp' "${MODULE_RUN}/secrets/qual-remote-token")"
   if openssl verify -CAfile "${MODULE_RUN}/modules/module-ca.pem" -verify_hostname host.docker.internal \
        "${MODULE_RUN}/tls/cert.pem" >/dev/null 2>&1; then
     pass "the module certificate verifies for host.docker.internal under the catalog's CA"

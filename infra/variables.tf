@@ -796,7 +796,7 @@ variable "alarm_memory_threshold_percent" {
 }
 
 variable "alarm_module_fail_open_threshold" {
-  description = "Requests approved without a policy module's judgement (fail-open instances whose module failed) per 5-minute period above which the module-fail-open alarm fires. 0 fires on any. Only created when guardian_modules_config is set."
+  description = "Policy module evaluations skipped because the module failed and its instance has on_error = allow (dry-run checks included), per 5-minute period, above which the module-fail-open alarm fires. 0 fires on any. Only created when guardian_modules_config is set."
   type        = number
   default     = 0
 

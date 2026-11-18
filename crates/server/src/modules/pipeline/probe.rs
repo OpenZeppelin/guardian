@@ -132,7 +132,7 @@ impl ModulePipeline {
                 }
                 Err(Unhealthy::Unreachable(error)) => {
                     tracing::warn!(module = id, %error, "Policy module health probe failed");
-                    self.breakers.failed(id);
+                    self.breakers.probe_failed(id);
                 }
                 Err(Unhealthy::Incompatible(error) | Unhealthy::InvalidParams(error)) => {
                     tracing::warn!(module = id, %error, "Policy module cannot be used by this Guardian; its circuit is open until a probe passes");
@@ -273,8 +273,8 @@ mod tests {
             breaker_failures: 1,
             ..Limits::default()
         });
-        pipeline.breakers().failed("caps");
-        pipeline.breakers().failed("screening");
+        pipeline.breakers().probe_failed("caps");
+        pipeline.breakers().probe_failed("screening");
         pipeline.probe().await;
         assert_eq!(pipeline.breakers().state("caps"), CircuitState::HalfOpen);
         assert_eq!(pipeline.breakers().state("screening"), CircuitState::Open);

@@ -614,11 +614,7 @@ pub async fn set_layer<'a>(
         Some(params) => Some(validated(pipeline, instance, &params).await?),
         None => None,
     };
-    let current = pipeline
-        .store()
-        .account_params(&account_id)
-        .await
-        .map_err(GuardianError::StorageError)?;
+    let (current, read_version) = account_rows(pipeline, &account_id).await?;
     if params.is_some()
         && current
             .iter()
@@ -645,7 +641,7 @@ pub async fn set_layer<'a>(
             &account_id,
             module_id,
             params,
-            &change_for(state, operator, write),
+            &account_change(state, operator, write, read_version)?,
         )
         .await
         .map_err(write_error)?;
@@ -659,6 +655,53 @@ pub async fn set_layer<'a>(
         client_ip,
     );
     view_of(state, &account_id).await
+}
+
+/// The account's rows and the account params version they were read at, in one read.
+async fn account_rows(
+    pipeline: &ModulePipeline,
+    account_id: &str,
+) -> Result<(Vec<super::store::AccountParamsRow>, u64)> {
+    let snapshot = pipeline
+        .store()
+        .snapshot(account_id, None)
+        .await
+        .map_err(GuardianError::StorageError)?;
+    Ok((snapshot.account_params, snapshot.account_version))
+}
+
+/// The change for a layer or assignment write. The write is budget-checked against the rows
+/// read at `read_version`, so it commits only while the account is still at that version. Two
+/// writes from the same rows can then never both commit and together exceed the budget. An
+/// operator's `expected_version` other than `read_version` is stale (or names a version the
+/// rows have not reached), and the write is refused before it is attempted.
+fn account_change<'a>(
+    state: &AppState,
+    operator: &'a AuthenticatedOperator,
+    write: Write<'a>,
+    read_version: u64,
+) -> Result<Change<'a>> {
+    if write
+        .expected_version
+        .is_some_and(|expected| expected != read_version)
+    {
+        return Err(GuardianError::ModuleParamsStale);
+    }
+    Ok(Change {
+        expected_version: Some(read_version),
+        ..change(state, operator, write.reason)
+    })
+}
+
+/// Whether the rows hold exactly this assignment.
+fn is_assigned(
+    rows: &[super::store::AccountParamsRow],
+    module_id: &str,
+    params: &serde_json::Value,
+) -> bool {
+    rows.iter().any(|row| {
+        row.kind == ParamsKind::Assignment && row.module_id == module_id && &row.params == params
+    })
 }
 
 /// A row as a pending write would store it, for the budget check before the write.
@@ -692,12 +735,9 @@ pub async fn set_assignment<'a>(
     require_reason(reason)?;
     let pipeline = pipeline(state)?;
     let account_id = existing_account(state, account_id).await?;
-    let current = pipeline
-        .store()
-        .account_params(&account_id)
-        .await
-        .map_err(GuardianError::StorageError)?;
+    let (earlier, _) = account_rows(pipeline, &account_id).await?;
     let mut to_store = Vec::with_capacity(modules.len());
+    let mut checked = Vec::with_capacity(modules.len());
     for (index, assigned) in modules.iter().enumerate() {
         let instance = instance(pipeline, &assigned.module_id)?;
         if instance.config.scope == Scope::All {
@@ -715,20 +755,28 @@ pub async fn set_assignment<'a>(
                 assigned.module_id
             )));
         }
-        let kept = current.iter().any(|row| {
-            row.kind == ParamsKind::Assignment
-                && row.module_id == assigned.module_id
-                && row.params == assigned.params
-        });
+        let kept = is_assigned(&earlier, &assigned.module_id, &assigned.params);
         let params = if kept {
             assigned.params.clone()
         } else {
             validated(pipeline, instance, &assigned.params).await?
         };
+        checked.push(!kept);
         to_store.push(Assigned {
             module_id: assigned.module_id.clone(),
             params,
         });
+    }
+    // Validation calls the modules and can take their whole timeouts. The rows the write is
+    // budgeted and fenced against are read after it, so another write to the account meanwhile
+    // does not make this one stale; params kept unchecked because they were stored are checked
+    // now if that write replaced them.
+    let (current, read_version) = account_rows(pipeline, &account_id).await?;
+    for (assigned, checked) in to_store.iter_mut().zip(checked) {
+        if !checked && !is_assigned(&current, &assigned.module_id, &assigned.params) {
+            let instance = instance(pipeline, &assigned.module_id)?;
+            assigned.params = validated(pipeline, instance, &assigned.params).await?;
+        }
     }
     if let Some(layer) = current.iter().find(|row| {
         row.kind == ParamsKind::Layer
@@ -771,7 +819,11 @@ pub async fn set_assignment<'a>(
         .collect();
     let committed = pipeline
         .store()
-        .set_assignment(&account_id, to_store, &change_for(state, operator, write))
+        .set_assignment(
+            &account_id,
+            to_store,
+            &account_change(state, operator, write, read_version)?,
+        )
         .await
         .map_err(write_error)?;
     let payload = serde_json::json!({ "reason": reason, "modules": assigned, "account_params_version": committed });
@@ -1093,7 +1145,7 @@ mod tests {
         let state = state();
         let pipeline = state.modules.as_ref().unwrap();
         for _ in 0..crate::modules::limits::Limits::default().breaker_failures {
-            pipeline.breakers().failed("blocklist");
+            pipeline.breakers().probe_failed("blocklist");
         }
         let view = catalog_view(&state).await.unwrap();
         let circuit = |id: &str| {
@@ -1449,6 +1501,36 @@ mod tests {
             "newest first"
         );
         assert_eq!(history[1].reason, "OP-90");
+    }
+
+    /// An account write is validated and budget-checked against the rows it read, so it is
+    /// always fenced on their version: the operator's when given, the read's otherwise.
+    #[tokio::test]
+    async fn an_account_write_is_fenced_on_the_version_it_read() {
+        let state = state();
+        let operator = operator();
+        let unversioned = account_change(&state, &operator, Write::from("no version"), 7).unwrap();
+        assert_eq!(unversioned.expected_version, Some(7));
+        let current = Write {
+            reason: "operator's version",
+            expected_version: Some(7),
+        };
+        assert_eq!(
+            account_change(&state, &operator, current, 7)
+                .unwrap()
+                .expected_version,
+            Some(7)
+        );
+        for other in [5, 8] {
+            let write = Write {
+                reason: "a version the rows were not read at",
+                expected_version: Some(other),
+            };
+            assert!(matches!(
+                account_change(&state, &operator, write, 7),
+                Err(GuardianError::ModuleParamsStale)
+            ));
+        }
     }
 
     #[tokio::test]

@@ -1093,14 +1093,16 @@ resource "aws_cloudwatch_metric_alarm" "module_circuit_open" {
   }
 }
 
-# Fail-open evaluations sign transactions no module judged. Any of them is
-# worth knowing about; an operator who accepts them for a fail-open instance
-# raises the threshold.
+# Counts module evaluations skipped under on_error = allow, when the skip
+# happens: dry-run checks included, and before a later module may still deny
+# the request. It is a count of skipped judgements, not of approved requests.
+# Any of them is worth knowing about; an operator who accepts them for a
+# fail-open instance raises the threshold.
 resource "aws_cloudwatch_metric_alarm" "module_fail_open" {
   count = local.modules_alarms_enabled ? 1 : 0
 
   alarm_name          = "${var.stack_name}-module-fail-open"
-  alarm_description   = "Guardian approved more than ${var.alarm_module_fail_open_threshold} requests in a 5-minute period without a policy module's judgement (on_error = allow). See docs/runbooks/policy-modules.md${local.alarm_description_links}"
+  alarm_description   = "More than ${var.alarm_module_fail_open_threshold} policy module evaluations in a 5-minute period were skipped because the module failed and its instance has on_error = allow (dry-run checks included; a later module may still have denied the request). See docs/runbooks/policy-modules.md${local.alarm_description_links}"
   comparison_operator = "GreaterThanThreshold"
   threshold           = var.alarm_module_fail_open_threshold
   evaluation_periods  = 1
@@ -1113,7 +1115,7 @@ resource "aws_cloudwatch_metric_alarm" "module_fail_open" {
     id          = "skipped"
     expression  = "SELECT SUM(guardian_module_fail_open_total) FROM SCHEMA(\"${local.metrics_namespace}\", module)"
     period      = 300
-    label       = "requests approved without a module's judgement"
+    label       = "module evaluations skipped under on_error = allow"
     return_data = true
   }
 }

@@ -1412,6 +1412,21 @@ async fn proposal_admission_counts_only_viable_request_bytes(h: &Harness) {
         }
     );
     assert_eq!(
+        h.storage
+            .viable_request_bytes(&h.account_id, NEXT, None)
+            .await
+            .unwrap(),
+        60,
+        "a dry run reads what admission counts"
+    );
+    assert_eq!(
+        h.storage
+            .viable_request_bytes(&h.account_id, BASE, None)
+            .await
+            .unwrap(),
+        90
+    );
+    assert_eq!(
         admit(h.proposal_admission(2, NEXT, 60)).await.unwrap(),
         ProposalWrite::AlreadyStored
     );

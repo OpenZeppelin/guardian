@@ -43,8 +43,9 @@ For every instance in the catalog, know which path stops it:
   [`spec/api.md`](../../spec/api.md) for the full list). On AWS the stack
   alarms on two of them once `guardian_modules_config` is set:
   `<stack>-module-circuit-open` (any circuit open for 10 minutes) and
-  `<stack>-module-fail-open` (any request approved without a module's
-  judgement, threshold `alarm_module_fail_open_threshold`). Elsewhere, alert on
+  `<stack>-module-fail-open` (any module evaluation skipped under
+  `on_error = allow`, threshold `alarm_module_fail_open_threshold`; it counts
+  skips, dry-run checks included, not approved requests). Elsewhere, alert on
   `max(guardian_module_circuit_open) > 0` for 10 minutes and on any increase of
   `guardian_module_fail_open_total`.
 

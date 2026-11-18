@@ -320,7 +320,7 @@ pub async fn disable_module(
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing policies:write permission", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
-        (status = 409, description = "expected_version is set and the params changed since (GUARDIAN_MODULE_PARAMS_STALE)", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "the account params changed since expected_version, or, without it, since this write read them (GUARDIAN_MODULE_PARAMS_STALE)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn set_account_layer(
@@ -359,7 +359,7 @@ pub async fn set_account_layer(
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing policies:write permission", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
-        (status = 409, description = "expected_version is set and the params changed since (GUARDIAN_MODULE_PARAMS_STALE)", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "the account params changed since expected_version, or, without it, since this write read them (GUARDIAN_MODULE_PARAMS_STALE)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn remove_account_layer(
@@ -398,7 +398,7 @@ pub async fn remove_account_layer(
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing policies:write permission", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
-        (status = 409, description = "expected_version is set and the params changed since (GUARDIAN_MODULE_PARAMS_STALE)", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "the account params changed since expected_version, or, without it, since this write read them (GUARDIAN_MODULE_PARAMS_STALE)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn set_assignment(

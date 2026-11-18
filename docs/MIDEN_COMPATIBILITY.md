@@ -934,6 +934,14 @@ deployment without one behaves as before. With one:
   `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` as Guardian execution failure codes.
   SDKs from 0.18.x surface the request codes as an untyped server error and
   reject the two execution codes as unknown.
+- **Rolling back with a catalog.** A Guardian execution a module refuses is
+  stored with one of the two new execution failure codes, which servers up to
+  0.18.x cannot decode: after a rollback, the execution status of those
+  proposals (`GET /delta/proposal/execution`) fails with a storage error. To
+  roll back, first restart the new release without a catalog
+  (`GUARDIAN_MODULES_DISABLED=true` in production) or with
+  `GUARDIAN_PROVING_ENABLED=false`, so no new refusal is stored, then roll back
+  as usual. Outcomes stored before that stay unreadable to the older server.
 - **Breaking for Rust callers.**
   - `ExecutionFailureCode` is no longer `Copy`, and has the two new variants
     `ModuleDenied(ModuleDenial)` and `ModuleUnavailable { module }`.

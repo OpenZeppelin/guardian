@@ -1071,6 +1071,31 @@ impl StorageBackend for FilesystemService {
         Ok(ProposalWrite::Stored)
     }
 
+    async fn viable_request_bytes(
+        &self,
+        account_id: &str,
+        prev_commitment: &str,
+        viable_nonce: Option<u64>,
+    ) -> Result<u64, String> {
+        let key = |commitment: &str| -> Result<String, String> {
+            let normalized = normalize_commitment_hex(commitment).map_err(|e| e.to_string())?;
+            Ok(normalized.trim_start_matches("0x").to_string())
+        };
+        let sizes = self.read_request_sizes(account_id).await?;
+        self.load_proposal_records(account_id)
+            .await?
+            .iter()
+            .filter(|record| {
+                record.proposal.status.is_pending()
+                    && record.proposal.prev_commitment == prev_commitment
+                    && viable_nonce.is_none_or(|viable| record.proposal.nonce == viable)
+            })
+            .map(|record| key(&record.commitment).map(|key| sizes.get(&key).copied().unwrap_or(0)))
+            .try_fold(0u64, |used, size| {
+                size.map(|size| used.saturating_add(size))
+            })
+    }
+
     async fn update_delta_proposal(
         &self,
         commitment: &str,
