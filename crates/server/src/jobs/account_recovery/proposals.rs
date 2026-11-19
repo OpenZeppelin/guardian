@@ -19,29 +19,36 @@ pub(super) fn review(restored: &AppliedState, pending: &[ProposalRecord]) -> Vec
         .collect()
 }
 
-fn change_for(signers: &[ChainCosigner], proposal: &DeltaObject) -> Option<ProposalChange> {
-    let DeltaStatus::Pending {
-        timestamp,
-        proposer_id,
-        cosigner_sigs,
-    } = &proposal.status
-    else {
-        return None;
+fn change_for(signers: &[ChainCosigner], proposal: &DeltaObject) -> ProposalChange {
+    let (timestamp, proposer_id, cosigner_sigs) = match &proposal.status {
+        DeltaStatus::Pending {
+            timestamp,
+            proposer_id,
+            cosigner_sigs,
+        } => (timestamp, proposer_id, cosigner_sigs),
+        DeltaStatus::Candidate { .. }
+        | DeltaStatus::Canonical { .. }
+        | DeltaStatus::Retained { .. }
+        | DeltaStatus::Discarded { .. } => return ProposalChange::Keep,
     };
     let approvals = approvals_of(signers, proposal, cosigner_sigs);
     let proposed_by_signer = signers
         .iter()
         .any(|signer| signer.commitment.eq_ignore_ascii_case(proposer_id));
     if approvals.is_empty() && !proposed_by_signer {
-        return Some(ProposalChange::Remove);
+        return ProposalChange::Remove;
     }
-    (approvals.len() != cosigner_sigs.len()).then(|| {
-        ProposalChange::DropApprovals(DeltaStatus::Pending {
+    if approvals.len() == cosigner_sigs.len() {
+        return ProposalChange::Keep;
+    }
+    ProposalChange::DropApprovals {
+        delta_payload: payload_with_approvals(&proposal.delta_payload, &approvals),
+        status: DeltaStatus::Pending {
             timestamp: timestamp.clone(),
             proposer_id: proposer_id.clone(),
             cosigner_sigs: approvals,
-        })
-    })
+        },
+    }
 }
 
 fn approvals_of(
@@ -64,4 +71,29 @@ fn approvals_of(
         })
         .cloned()
         .collect()
+}
+
+/// The payload with its `signatures` list reduced to the signers of `approvals`. A proposal
+/// stores each approval in its status and in its payload, and clients read either.
+fn payload_with_approvals(
+    delta_payload: &serde_json::Value,
+    approvals: &[CosignerSignature],
+) -> serde_json::Value {
+    let mut payload = delta_payload.clone();
+    if let Some(signatures) = payload
+        .get_mut("signatures")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        signatures.retain(|entry| {
+            entry
+                .get("signer_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|signer| {
+                    approvals
+                        .iter()
+                        .any(|approval| approval.signer_id.eq_ignore_ascii_case(signer))
+                })
+        });
+    }
+    payload
 }

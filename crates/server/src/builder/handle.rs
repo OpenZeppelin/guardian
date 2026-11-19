@@ -116,31 +116,41 @@ impl ServerHandle {
         &self,
         mode: StartupRecoveryMode,
     ) -> Result<(), StartupRecoveryError> {
-        let dry_run = match mode {
-            StartupRecoveryMode::Off => return Ok(()),
-            StartupRecoveryMode::DryRun => true,
-            StartupRecoveryMode::Apply => false,
-        };
+        if mode == StartupRecoveryMode::Off {
+            return Ok(());
+        }
         let (store, network_type) = self
             .account_recovery
             .as_ref()
             .ok_or_else(|| "Account recovery requires shared Postgres storage".to_owned())?;
-        if dry_run {
-            return crate::jobs::account_recovery::dry_run(&self.app_state, store, *network_type)
-                .await;
-        }
-        if crate::middleware::rate_limit::max_replicas_from_env()? != 1 {
-            tracing::warn!(
-                "Skipping startup account recovery because GUARDIAN_MAX_REPLICAS exceeds 1"
-            );
-            return Ok(());
-        }
-        if self.app_state.canonicalization.is_none() {
-            return Err(StartupRecoveryError::Incomplete(
+        let single_replica = crate::middleware::rate_limit::max_replicas_from_env()? == 1;
+        let canonicalizes = self.app_state.canonicalization.is_some();
+        match mode {
+            StartupRecoveryMode::Off => Ok(()),
+            StartupRecoveryMode::DryRun => {
+                if !single_replica {
+                    tracing::warn!(
+                        "Dry run: apply would be skipped because GUARDIAN_MAX_REPLICAS exceeds 1"
+                    );
+                }
+                if !canonicalizes {
+                    tracing::warn!("Dry run: apply would not run without canonicalization");
+                }
+                crate::jobs::account_recovery::dry_run(&self.app_state, store, *network_type).await
+            }
+            StartupRecoveryMode::Apply if !single_replica => {
+                tracing::warn!(
+                    "Skipping startup account recovery because GUARDIAN_MAX_REPLICAS exceeds 1"
+                );
+                Ok(())
+            }
+            StartupRecoveryMode::Apply if !canonicalizes => Err(StartupRecoveryError::Incomplete(
                 "Account recovery requires canonicalization".into(),
-            ));
+            )),
+            StartupRecoveryMode::Apply => {
+                crate::jobs::account_recovery::run_once(&self.app_state, store, *network_type).await
+            }
         }
-        crate::jobs::account_recovery::run_once(&self.app_state, store, *network_type).await
     }
 
     /// Run the server with the configured settings
@@ -897,4 +907,19 @@ fn start_session_sweep_worker(state: AppState) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod startup_recovery_mode_tests {
+    use super::StartupRecoveryMode;
+
+    #[test]
+    fn the_mode_has_three_values_and_takes_no_boolean() {
+        assert_eq!("off".parse(), Ok(StartupRecoveryMode::Off));
+        assert_eq!(" dry-run ".parse(), Ok(StartupRecoveryMode::DryRun));
+        assert_eq!("apply".parse(), Ok(StartupRecoveryMode::Apply));
+        for rejected in ["true", "false", "", "Apply"] {
+            assert!(rejected.parse::<StartupRecoveryMode>().is_err());
+        }
+    }
 }

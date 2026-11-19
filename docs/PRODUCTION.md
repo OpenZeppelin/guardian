@@ -364,7 +364,9 @@ Start Guardian once with `GUARDIAN_STARTUP_ACCOUNT_RECOVERY=dry-run` first. A
 dry run performs the same checks, logs what `apply` would do with each
 account, and writes nothing: no account record, no report row and no
 progress. It takes no lease, so it runs with any number of replicas, and it
-checks from the first account each time. The final log line counts the
+checks from the first account each time. It names each proposal a restore
+would change, and says so when `apply` would not run here (more than one
+replica, or the check already completed). The final log line counts the
 accounts that would be restored (`restorable`), deferred and left unresolved.
 
 **Applying**
@@ -403,7 +405,8 @@ A restore also reviews the account's pending proposals against the signers of
 the restored state. A proposal that one of those signers proposed or approved
 stays, keeping only their approvals. Any other pending proposal is removed.
 Every proposal a restore changes or removes is saved with the previous record
-in `account_recovery_backups.prior_proposals`.
+in `account_recovery_backups.prior_proposals`. If the account's proposals
+cannot be read, the restore leaves them as they are.
 
 A paused account, or one with work in flight (a delta awaiting its on-chain
 outcome or a reserved execution), is deferred and checked again on a later
@@ -440,9 +443,9 @@ listeners without finishing the check.
 **Reviewing the result**
 
 After `apply`, `account_recovery_pending` has one row for each account that
-was checked and not brought up to date. `outcome` is `deferred` (a later startup checks it
-again) or `unresolved` (Guardian does not hold what it needs), and `reason`
-says why. When the canonical history held here does not reach back to the
+was checked and not brought up to date. `outcome` is `deferred` (a later
+startup checks it again) or `unresolved` (Guardian does not hold what it
+needs), and `reason` says why. When the canonical history held here does not reach back to the
 account's creation, `history_starts_at_nonce` and `history_base_commitment`
 show where it begins. An unresolved account is brought up to date the next
 time it is registered with its current state.

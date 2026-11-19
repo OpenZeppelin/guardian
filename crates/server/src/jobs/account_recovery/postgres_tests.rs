@@ -200,8 +200,8 @@ fn a_proposal_review_keeps_what_the_restored_signers_proposed_or_approved() {
     let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
     let owner = TestSigner::new();
     let other_key = TestSigner::new();
-    let payload = serde_json::json!({ "tx_summary": create_test_delta_payload(account_id) });
-    let message = crate::services::proposal_signature::proposal_tx_summary(&payload)
+    let tx_summary = create_test_delta_payload(account_id);
+    let message = TransactionSummary::from_json(&tx_summary)
         .unwrap()
         .to_commitment();
     let approval = |signer: &TestSigner| CosignerSignature {
@@ -211,21 +211,34 @@ fn a_proposal_review_keeps_what_the_restored_signers_proposed_or_approved() {
         timestamp: "2026-11-14T12:50:00Z".into(),
         signer_id: signer.commitment_hex.clone(),
     };
-    let pending = |proposer: &TestSigner, approvals: Vec<CosignerSignature>| DeltaStatus::Pending {
+    let payload = |approvals: &[CosignerSignature]| {
+        let signatures: Vec<serde_json::Value> = approvals
+            .iter()
+            .map(|approval| {
+                serde_json::json!({
+                    "signer_id": approval.signer_id,
+                    "signature": approval.signature,
+                })
+            })
+            .collect();
+        serde_json::json!({ "tx_summary": tx_summary, "signatures": signatures })
+    };
+    let pending = |proposer: &TestSigner, approvals: &[CosignerSignature]| DeltaStatus::Pending {
         timestamp: "2026-11-14T12:45:00Z".into(),
         proposer_id: proposer.commitment_hex.clone(),
-        cosigner_sigs: approvals,
+        cosigner_sigs: approvals.to_vec(),
     };
-    let record = |commitment: &str, status: DeltaStatus| ProposalRecord {
-        account_id: account_id.into(),
-        commitment: commitment.into(),
-        proposal: DeltaObject {
+    let record =
+        |commitment: &str, proposer: &TestSigner, approvals: &[CosignerSignature]| ProposalRecord {
             account_id: account_id.into(),
-            delta_payload: payload.clone(),
-            status,
-            ..Default::default()
-        },
-    };
+            commitment: commitment.into(),
+            proposal: DeltaObject {
+                account_id: account_id.into(),
+                delta_payload: payload(approvals),
+                status: pending(proposer, approvals),
+                ..Default::default()
+            },
+        };
     let restored = |scheme: SignatureScheme| AppliedState {
         state_json: serde_json::Value::Null,
         commitment: "0xrestored".into(),
@@ -236,18 +249,17 @@ fn a_proposal_review_keeps_what_the_restored_signers_proposed_or_approved() {
         }],
         guardian_commitment: None,
     };
+    let own = approval(&owner);
+    let other = approval(&other_key);
     let records = [
-        record("signed", pending(&owner, vec![approval(&owner)])),
-        record(
-            "mixed",
-            pending(&owner, vec![approval(&owner), approval(&other_key)]),
-        ),
-        record("approved", pending(&other_key, vec![approval(&owner)])),
-        record("unrelated", pending(&other_key, vec![approval(&other_key)])),
-        record("unsigned", pending(&owner, Vec::new())),
+        record("signed", &owner, std::slice::from_ref(&own)),
+        record("mixed", &owner, &[own.clone(), other.clone()]),
+        record("approved", &other_key, std::slice::from_ref(&own)),
+        record("unrelated", &other_key, std::slice::from_ref(&other)),
+        record("unsigned", &owner, &[]),
     ];
 
-    let changes: Vec<Option<ProposalChange>> =
+    let changes: Vec<ProposalChange> =
         proposals::review(&restored(SignatureScheme::Falcon), &records)
             .into_iter()
             .map(|reviewed| reviewed.change)
@@ -255,32 +267,25 @@ fn a_proposal_review_keeps_what_the_restored_signers_proposed_or_approved() {
     assert_eq!(
         changes,
         [
-            None,
-            Some(ProposalChange::DropApprovals(pending(
-                &owner,
-                vec![approval(&owner)]
-            ))),
-            None,
-            Some(ProposalChange::Remove),
-            None,
+            ProposalChange::Keep,
+            ProposalChange::DropApprovals {
+                status: pending(&owner, std::slice::from_ref(&own)),
+                delta_payload: payload(std::slice::from_ref(&own)),
+            },
+            ProposalChange::Keep,
+            ProposalChange::Remove,
+            ProposalChange::Keep,
         ]
     );
 
     let under_another_scheme = proposals::review(&restored(SignatureScheme::Ecdsa), &records[..1]);
     assert_eq!(
         under_another_scheme[0].change,
-        Some(ProposalChange::DropApprovals(pending(&owner, Vec::new())))
+        ProposalChange::DropApprovals {
+            status: pending(&owner, &[]),
+            delta_payload: payload(&[]),
+        }
     );
-}
-
-#[test]
-fn the_startup_recovery_mode_has_three_values() {
-    use crate::builder::handle::StartupRecoveryMode;
-
-    assert_eq!("off".parse(), Ok(StartupRecoveryMode::Off));
-    assert_eq!(" dry-run ".parse(), Ok(StartupRecoveryMode::DryRun));
-    assert_eq!("apply".parse(), Ok(StartupRecoveryMode::Apply));
-    assert!("true".parse::<StartupRecoveryMode>().is_err());
 }
 
 #[tokio::test]
@@ -539,7 +544,7 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
                 &candidate,
                 &canonical.state_json,
                 &expected_auth,
-                &[],
+                &ProposalReview::Reviewed(Vec::new()),
                 state.clock.now(),
                 &lease
             )
@@ -577,10 +582,7 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
         .update_delta_status(
             account_id,
             3,
-            DeltaStatus::Discarded {
-                timestamp: "2026-11-14T12:40:00Z".into(),
-                reason: None,
-            },
+            DeltaStatus::discarded_client_abandoned("2026-11-14T12:40:00Z".into()),
         )
         .await
         .unwrap();
@@ -657,62 +659,115 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
     drop(conn);
 
     let other_key = crate::testing::helpers::TestSigner::new();
-    let proposal_payload = serde_json::json!({
-        "tx_summary": crate::testing::helpers::create_test_delta_payload(account_id),
-    });
-    let other_approval = crate::delta_object::CosignerSignature {
-        signature: guardian_shared::ProposalSignature::Falcon {
-            signature: other_key.sign_word(
-                crate::services::proposal_signature::proposal_tx_summary(&proposal_payload)
-                    .unwrap()
-                    .to_commitment(),
-            ),
-        },
-        timestamp: "2026-11-14T12:50:00Z".into(),
-        signer_id: other_key.commitment_hex.clone(),
+    let tx_summary = crate::testing::helpers::create_test_delta_payload(account_id);
+    let message = TransactionSummary::from_json(&tx_summary)
+        .unwrap()
+        .to_commitment();
+    let approval = |signature: guardian_shared::ProposalSignature, signer_id: &str| {
+        crate::delta_object::CosignerSignature {
+            signature,
+            timestamp: "2026-11-14T12:50:00Z".into(),
+            signer_id: signer_id.into(),
+        }
     };
-    let pending_proposal = |nonce: u64, proposer: &str| DeltaObject {
-        account_id: account_id.clone(),
-        nonce,
-        prev_commitment: prior.commitment.clone(),
-        delta_payload: proposal_payload.clone(),
-        status: DeltaStatus::Pending {
-            timestamp: "2026-11-14T12:45:00Z".into(),
-            proposer_id: proposer.into(),
-            cosigner_sigs: vec![other_approval.clone()],
+    let other_approval = approval(
+        guardian_shared::ProposalSignature::Falcon {
+            signature: other_key.sign_word(message),
         },
-        ..Default::default()
-    };
-    storage
-        .submit_delta_proposal(
-            "0xproposed-by-another-key",
-            &pending_proposal(4, &other_key.commitment_hex),
-        )
-        .await
-        .unwrap();
-    storage
-        .submit_delta_proposal(
-            "0xproposed-by-the-signer",
-            &pending_proposal(5, &signer.commitment_hex),
-        )
-        .await
-        .unwrap();
-
-    let preview = run(
-        &state,
-        &store,
-        MidenNetworkType::Testnet,
-        ScanWrites::DryRun,
-        &CancellationToken::new(),
-        "",
-        Instant::now() + Duration::from_secs(60),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        (preview.checked, preview.restorable, preview.restored),
-        (1, 1, 0)
+        &other_key.commitment_hex,
     );
+    let signer_approval = approval(
+        guardian_shared::ProposalSignature::Ecdsa {
+            signature: signer.sign_word(message),
+            public_key: Some(signer.pubkey_hex.clone()),
+            message_format: guardian_shared::EcdsaMessageFormat::Raw,
+        },
+        &signer.commitment_hex,
+    );
+    let pending_proposal =
+        |nonce: u64, proposer: &str, approvals: &[crate::delta_object::CosignerSignature]| {
+            let signatures: Vec<serde_json::Value> = approvals
+                .iter()
+                .map(|approval| {
+                    serde_json::json!({
+                        "signer_id": approval.signer_id,
+                        "signature": approval.signature,
+                    })
+                })
+                .collect();
+            DeltaObject {
+                account_id: account_id.clone(),
+                nonce,
+                prev_commitment: prior.commitment.clone(),
+                delta_payload: serde_json::json!({
+                    "tx_summary": tx_summary,
+                    "signatures": signatures,
+                }),
+                status: DeltaStatus::Pending {
+                    timestamp: "2026-11-14T12:45:00Z".into(),
+                    proposer_id: proposer.into(),
+                    cosigner_sigs: approvals.to_vec(),
+                },
+                ..Default::default()
+            }
+        };
+    let untouched = pending_proposal(
+        6,
+        &signer.commitment_hex,
+        std::slice::from_ref(&signer_approval),
+    );
+    for (commitment, proposal) in [
+        (
+            "0xproposed-by-another-key",
+            pending_proposal(
+                4,
+                &other_key.commitment_hex,
+                std::slice::from_ref(&other_approval),
+            ),
+        ),
+        (
+            "0xproposed-by-the-signer",
+            pending_proposal(
+                5,
+                &signer.commitment_hex,
+                &[signer_approval.clone(), other_approval.clone()],
+            ),
+        ),
+        ("0xsigned-by-the-signer-only", untouched.clone()),
+    ] {
+        storage
+            .submit_delta_proposal(commitment, &proposal)
+            .await
+            .unwrap();
+    }
+
+    #[derive(diesel::QueryableByName, Debug, PartialEq, Eq)]
+    struct RecoveryRows {
+        #[diesel(sql_type = BigInt)]
+        pending: i64,
+        #[diesel(sql_type = BigInt)]
+        backups: i64,
+        #[diesel(sql_type = Text)]
+        progress: String,
+    }
+    let recovery_rows = || async {
+        let mut conn = metadata.pool_handle().get().await.unwrap();
+        diesel::sql_query(
+            "SELECT (SELECT count(*) FROM account_recovery_pending) AS pending,
+                    (SELECT count(*) FROM account_recovery_backups) AS backups,
+                    (SELECT COALESCE(string_agg(to_jsonb(s)::text, ',' ORDER BY s.network_config::text), '')
+                       FROM account_recovery_startup s) AS progress",
+        )
+        .get_result::<RecoveryRows>(&mut conn)
+        .await
+        .unwrap()
+    };
+    let before_dry_run = recovery_rows().await;
+    assert_eq!((before_dry_run.pending, before_dry_run.backups), (1, 0));
+    dry_run(&state, &store, MidenNetworkType::Testnet)
+        .await
+        .unwrap();
+    assert_eq!(recovery_rows().await, before_dry_run);
     assert_eq!(
         storage.pull_state(account_id).await.unwrap().commitment,
         prior.commitment
@@ -723,8 +778,56 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
             .await
             .unwrap()
             .len(),
-        2
+        3
     );
+
+    let reviewing = store
+        .leader
+        .try_acquire(Duration::from_secs(300))
+        .await
+        .unwrap()
+        .unwrap();
+    let reviewed_candidate = store
+        .candidates(MidenNetworkType::Testnet, "", 10)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let RecoveryOutcome::Verified(reviewed) =
+        check_candidate(&state, &reviewed_candidate).await.unwrap()
+    else {
+        panic!("the account is restorable");
+    };
+    assert_eq!(reviewed.changed_proposals().count(), 2);
+    storage
+        .submit_delta_proposal(
+            "0xadded-after-the-review",
+            &pending_proposal(7, &signer.commitment_hex, &[]),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !store
+            .apply(
+                &reviewed_candidate,
+                &reviewed.state.state_json,
+                &reviewed.auth,
+                &reviewed.proposals,
+                state.clock.now(),
+                &reviewing,
+            )
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        storage.pull_state(account_id).await.unwrap().commitment,
+        prior.commitment
+    );
+    storage
+        .delete_delta_proposal(account_id, "0xadded-after-the-review")
+        .await
+        .unwrap();
+    store.leader.release(reviewing).await.unwrap();
 
     run_once(&state, &store, MidenNetworkType::Testnet)
         .await
@@ -747,12 +850,25 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
     );
 
     let kept = storage.pull_pending_proposals(account_id).await.unwrap();
-    assert_eq!(kept.len(), 1);
-    assert_eq!(kept[0].commitment, "0xproposed-by-the-signer");
-    assert!(matches!(
-        &kept[0].proposal.status,
-        DeltaStatus::Pending { cosigner_sigs, .. } if cosigner_sigs.is_empty()
-    ));
+    assert_eq!(
+        kept.iter()
+            .map(|record| record.commitment.as_str())
+            .collect::<Vec<_>>(),
+        ["0xproposed-by-the-signer", "0xsigned-by-the-signer-only"]
+    );
+    let trimmed = pending_proposal(
+        5,
+        &signer.commitment_hex,
+        std::slice::from_ref(&signer_approval),
+    );
+    assert_eq!(
+        (&kept[0].proposal.status, &kept[0].proposal.delta_payload),
+        (&trimmed.status, &trimmed.delta_payload)
+    );
+    assert_eq!(
+        (&kept[1].proposal.status, &kept[1].proposal.delta_payload),
+        (&untouched.status, &untouched.delta_payload)
+    );
 
     let held = contender
         .leader
@@ -782,7 +898,7 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
                 &candidate,
                 &canonical.state_json,
                 &expected_auth,
-                &[],
+                &ProposalReview::Reviewed(Vec::new()),
                 state.clock.now(),
                 &lease
             )
@@ -1305,7 +1421,7 @@ async fn account_recovery_scan_continues_from_its_saved_position_and_records_pen
                 &Auth::MidenEcdsa {
                     cosigner_commitments: vec![Word::from([1, 2, 3, 4_u32]).into_hex()],
                 },
-                &[],
+                &ProposalReview::Reviewed(Vec::new()),
                 chrono::Utc::now(),
                 &lease,
             )

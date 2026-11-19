@@ -15,8 +15,8 @@ use crate::network::{
 use crate::state::AppState;
 use crate::storage::is_record_corruption;
 use crate::storage::postgres::recovery::{
-    PendingOutcome, ProposalChange, RecoveryCandidate, RecoveryStore, ReviewedProposal,
-    ScanProgress,
+    PendingOutcome, ProposalChange, ProposalReview, RecoveryCandidate, RecoveryStore,
+    ReviewedProposal, ScanProgress,
 };
 
 const PAGE_SIZE: i64 = 100;
@@ -42,23 +42,38 @@ enum RecoveryOutcome {
 struct Restoration {
     state: AppliedState,
     auth: Auth,
-    proposals: Vec<ReviewedProposal>,
+    proposals: ProposalReview,
 }
 
 impl Restoration {
-    fn proposals_removed(&self) -> usize {
-        self.proposals_changed(|change| matches!(change, ProposalChange::Remove))
-    }
-
-    fn proposals_trimmed(&self) -> usize {
-        self.proposals_changed(|change| matches!(change, ProposalChange::DropApprovals(_)))
-    }
-
-    fn proposals_changed(&self, matches: impl Fn(&ProposalChange) -> bool) -> usize {
-        self.proposals
+    /// The proposals a restore removes or rewrites.
+    fn changed_proposals(&self) -> impl Iterator<Item = &ReviewedProposal> {
+        let reviewed = match &self.proposals {
+            ProposalReview::Reviewed(reviewed) => reviewed.as_slice(),
+            ProposalReview::Unreadable => &[],
+        };
+        reviewed
             .iter()
-            .filter(|proposal| proposal.change.as_ref().is_some_and(&matches))
-            .count()
+            .filter(|proposal| proposal.change != ProposalChange::Keep)
+    }
+
+    fn log_proposal_changes(&self, account_id: &str, dry_run: bool) {
+        if self.proposals == ProposalReview::Unreadable {
+            tracing::warn!(
+                %account_id,
+                dry_run,
+                "Account recovery could not read the pending proposals and leaves them as they are"
+            );
+        }
+        for proposal in self.changed_proposals() {
+            tracing::info!(
+                %account_id,
+                proposal = %proposal.commitment,
+                change = proposal.change.label(),
+                dry_run,
+                "Account recovery proposal review"
+            );
+        }
     }
 }
 
@@ -161,6 +176,18 @@ pub(crate) async fn dry_run(
     store: &RecoveryStore,
     network_type: MidenNetworkType,
 ) -> Result<(), StartupRecoveryError> {
+    if bounded_db_call(
+        "read the recovery checkpoint",
+        store.startup_completed(network_type),
+    )
+    .await
+    .unwrap_or(false)
+    {
+        tracing::info!(
+            ?network_type,
+            "Dry run: account recovery already completed, so apply would skip the scan"
+        );
+    }
     run(
         state,
         store,
@@ -328,10 +355,10 @@ async fn run(
                         summary.restorable += 1;
                         tracing::info!(
                             account_id = %candidate.account_id,
-                            proposals_removed = restoration.proposals_removed(),
-                            proposals_trimmed = restoration.proposals_trimmed(),
+                            proposals_changed = restoration.changed_proposals().count(),
                             "Dry run: the account would be restored"
                         );
+                        restoration.log_proposal_changes(&candidate.account_id, true);
                         PendingRecord::Clear
                     }
                     ScanWrites::Apply(lease) => {
@@ -350,10 +377,10 @@ async fn run(
                                 summary.restored += 1;
                                 tracing::info!(
                                     account_id = %candidate.account_id,
-                                    proposals_removed = restoration.proposals_removed(),
-                                    proposals_trimmed = restoration.proposals_trimmed(),
+                                    proposals_changed = restoration.changed_proposals().count(),
                                     "Restored chain-verified account state and signers"
                                 );
+                                restoration.log_proposal_changes(&candidate.account_id, false);
                                 PendingRecord::Clear
                             }
                             Ok(false) => {
@@ -602,18 +629,15 @@ async fn check_candidate(
         }
     }
 
-    let pending = match state
+    let proposals = match state
         .storage
         .pull_pending_proposals(&candidate.account_id)
         .await
     {
-        Ok(pending) => pending,
-        Err(reason) if is_record_corruption(&reason) => {
-            return Ok(RecoveryOutcome::Unresolved(reason));
-        }
+        Ok(pending) => ProposalReview::Reviewed(proposals::review(&applied, &pending)),
+        Err(reason) if is_record_corruption(&reason) => ProposalReview::Unreadable,
         Err(reason) => return Err(reason),
     };
-    let proposals = proposals::review(&applied, &pending);
     Ok(RecoveryOutcome::Verified(Box::new(Restoration {
         state: applied,
         auth,

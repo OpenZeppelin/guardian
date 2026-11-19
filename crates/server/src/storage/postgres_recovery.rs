@@ -14,6 +14,7 @@ use crate::metadata::{Auth, MidenNetworkType, NetworkConfig};
 use crate::schema::{account_metadata, delta_proposals, states};
 use crate::storage::LeaseFence;
 use crate::storage::encryption::{cipher::StorageCipher, envelope::RecordAad};
+use crate::utils::normalize_commitment_hex;
 
 use super::{Pool, lease_fence_is_current, lock_account_metadata};
 
@@ -96,8 +97,22 @@ impl PendingOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProposalChange {
+    Keep,
     Remove,
-    DropApprovals(DeltaStatus),
+    DropApprovals {
+        status: DeltaStatus,
+        delta_payload: Value,
+    },
+}
+
+impl ProposalChange {
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            Self::Keep => "keep",
+            Self::Remove => "remove",
+            Self::DropApprovals { .. } => "drop_approvals",
+        }
+    }
 }
 
 /// A pending proposal as the scan read it, and what the restore does with it.
@@ -105,7 +120,21 @@ pub(crate) enum ProposalChange {
 pub(crate) struct ReviewedProposal {
     pub commitment: String,
     pub status: DeltaStatus,
-    pub change: Option<ProposalChange>,
+    pub change: ProposalChange,
+}
+
+/// The review of an account's pending proposals, or the fact that they could not be read.
+/// A restore leaves unreadable proposals as they are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProposalReview {
+    Reviewed(Vec<ReviewedProposal>),
+    Unreadable,
+}
+
+/// What a restore writes to one proposal row.
+enum ProposalWrite {
+    Remove,
+    Replace { status: Value, delta_payload: Value },
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, diesel::QueryableByName)]
@@ -375,33 +404,33 @@ impl RecoveryStore {
         candidate: &RecoveryCandidate,
         state_json: &Value,
         auth: &Auth,
-        proposals: &[ReviewedProposal],
+        proposals: &ProposalReview,
         now: DateTime<Utc>,
         lease: &Lease,
     ) -> Result<bool, String> {
         let account_id = &candidate.account_id;
-        let mut reviewed = proposals
-            .iter()
-            .map(|proposal| {
-                serde_json::to_value(&proposal.status)
-                    .map(|status| (proposal.commitment.clone(), status))
-                    .map_err(|error| error.to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        reviewed.sort_by(|left, right| left.0.cmp(&right.0));
-        let changes = proposals
-            .iter()
+        let reviewed = match proposals {
+            ProposalReview::Reviewed(reviewed) => Some(reviewed),
+            ProposalReview::Unreadable => None,
+        };
+        let expected = reviewed.map(|reviewed| {
+            let mut expected: Vec<(String, DeltaStatus)> = reviewed
+                .iter()
+                .map(|proposal| (proposal.commitment.clone(), proposal.status.clone()))
+                .collect();
+            expected.sort_by(|left, right| left.0.cmp(&right.0));
+            expected
+        });
+        let writes = reviewed
+            .into_iter()
+            .flatten()
             .filter_map(|proposal| {
-                let change = match proposal.change.as_ref()? {
-                    ProposalChange::Remove => Ok(None),
-                    ProposalChange::DropApprovals(status) => serde_json::to_value(status)
-                        .map(Some)
-                        .map_err(|error| error.to_string()),
-                };
-                Some(change.map(|change| (proposal.commitment.clone(), change)))
+                self.proposal_write(account_id, proposal)
+                    .map(|write| write.map(|write| (proposal.commitment.clone(), write)))
+                    .transpose()
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let changed: Vec<String> = changes
+        let changed: Vec<String> = writes
             .iter()
             .map(|(commitment, _)| commitment.clone())
             .collect();
@@ -440,7 +469,9 @@ impl RecoveryStore {
                 if !lease_fence_is_current(conn, &fence).await? {
                     return Ok(false);
                 }
-                if pending_proposals(conn, account_id).await? != reviewed {
+                if let Some(expected) = &expected
+                    && pending_proposals(conn, account_id).await? != *expected
+                {
                     return Ok(false);
                 }
 
@@ -464,18 +495,24 @@ impl RecoveryStore {
                 .execute(conn)
                 .await?;
 
-                for (commitment, kept_status) in &changes {
+                for (commitment, write) in &writes {
                     let proposal = delta_proposals::table
                         .filter(delta_proposals::account_id.eq(account_id))
                         .filter(delta_proposals::commitment.eq(commitment));
-                    match kept_status {
-                        Some(status) => {
+                    match write {
+                        ProposalWrite::Replace {
+                            status,
+                            delta_payload,
+                        } => {
                             diesel::update(proposal)
-                                .set(delta_proposals::status.eq(status))
+                                .set((
+                                    delta_proposals::status.eq(status),
+                                    delta_proposals::delta_payload.eq(delta_payload),
+                                ))
                                 .execute(conn)
                                 .await?
                         }
-                        None => diesel::delete(proposal).execute(conn).await?,
+                        ProposalWrite::Remove => diesel::delete(proposal).execute(conn).await?,
                     };
                 }
 
@@ -510,6 +547,41 @@ impl RecoveryStore {
         .await
     }
 
+    /// The row write for a reviewed proposal, with its payload encrypted as the storage layer
+    /// stores it.
+    fn proposal_write(
+        &self,
+        account_id: &str,
+        proposal: &ReviewedProposal,
+    ) -> Result<Option<ProposalWrite>, String> {
+        let (status, delta_payload) = match &proposal.change {
+            ProposalChange::Keep => return Ok(None),
+            ProposalChange::Remove => return Ok(Some(ProposalWrite::Remove)),
+            ProposalChange::DropApprovals {
+                status,
+                delta_payload,
+            } => (status, delta_payload),
+        };
+        let commitment = normalize_commitment_hex(&proposal.commitment)
+            .unwrap_or_else(|_| proposal.commitment.clone());
+        let delta_payload = match &self.cipher {
+            Some(cipher) => cipher
+                .encrypt(
+                    &RecordAad::Proposal {
+                        account_id,
+                        commitment: &commitment,
+                    },
+                    delta_payload,
+                )
+                .map_err(|error| error.to_string())?,
+            None => delta_payload.clone(),
+        };
+        Ok(Some(ProposalWrite::Replace {
+            status: serde_json::to_value(status).map_err(|error| error.to_string())?,
+            delta_payload,
+        }))
+    }
+
     async fn write<'a, T, F>(&self, operation: &str, work: F) -> Result<T, String>
     where
         T: Send + 'a,
@@ -538,11 +610,12 @@ impl RecoveryStore {
     }
 }
 
-/// The account's pending proposals and their statuses, locked for the transaction.
+/// The account's pending proposals and their statuses, locked for the transaction and read
+/// the way the storage layer reads them.
 async fn pending_proposals(
     conn: &mut AsyncPgConnection,
     account_id: &str,
-) -> QueryResult<Vec<(String, Value)>> {
+) -> QueryResult<Vec<(String, DeltaStatus)>> {
     #[derive(diesel::QueryableByName)]
     struct PendingProposal {
         #[diesel(sql_type = Text)]
@@ -551,7 +624,7 @@ async fn pending_proposals(
         status: Value,
     }
 
-    let mut pending: Vec<(String, Value)> = diesel::sql_query(
+    let mut pending: Vec<(String, DeltaStatus)> = diesel::sql_query(
         "SELECT commitment, status FROM delta_proposals
          WHERE account_id = $1 AND status_kind = 'pending'
          FOR UPDATE",
@@ -560,7 +633,12 @@ async fn pending_proposals(
     .load::<PendingProposal>(conn)
     .await?
     .into_iter()
-    .map(|proposal| (proposal.commitment, proposal.status))
+    .filter_map(|proposal| {
+        serde_json::from_value::<DeltaStatus>(proposal.status)
+            .ok()
+            .filter(DeltaStatus::is_pending)
+            .map(|status| (proposal.commitment, status))
+    })
     .collect();
     pending.sort_by(|left, right| left.0.cmp(&right.0));
     Ok(pending)
