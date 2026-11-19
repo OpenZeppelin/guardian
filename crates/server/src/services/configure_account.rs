@@ -61,6 +61,9 @@ pub async fn configure_account(
         .network_config
         .validate_for_account(&params.account_id)
         .map_err(GuardianError::InvalidNetworkConfig)?;
+    network_config
+        .ensure_canonical_account_id(&params.account_id)
+        .map_err(GuardianError::InvalidAccountId)?;
 
     if network_config.is_evm() || matches!(params.auth, Auth::EvmEcdsa { .. }) {
         return Err(GuardianError::UnsupportedForNetwork {
