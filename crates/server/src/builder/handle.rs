@@ -54,6 +54,11 @@ pub struct ServerHandle {
     pub(crate) stats_leader: std::sync::Arc<dyn crate::coordination::LeaderElector>,
     /// Single-owner lease for the chain-driven release sweep (issue #434).
     pub(crate) release_sweep_leader: std::sync::Arc<dyn crate::coordination::LeaderElector>,
+    #[cfg(feature = "postgres")]
+    pub(crate) account_recovery: Option<(
+        std::sync::Arc<crate::storage::postgres::recovery::RecoveryStore>,
+        crate::metadata::MidenNetworkType,
+    )>,
     pub(crate) startup_info: StartupInfo,
     pub(crate) cors_layer: Option<CorsLayer>,
     pub(crate) rate_limit_config: Option<RateLimitConfig>,
@@ -65,7 +70,46 @@ pub struct ServerHandle {
     pub(crate) grpc_port: u16,
 }
 
+#[cfg(feature = "postgres")]
+#[derive(Debug, thiserror::Error)]
+pub enum StartupRecoveryError {
+    #[error("Another process already holds the account recovery lease")]
+    LeaseBusy,
+    #[error("Could not establish exclusive account recovery: {0}")]
+    LeaseUnavailable(String),
+    #[error("{0}")]
+    Incomplete(String),
+}
+
+#[cfg(feature = "postgres")]
+impl From<String> for StartupRecoveryError {
+    fn from(reason: String) -> Self {
+        Self::Incomplete(reason)
+    }
+}
+
 impl ServerHandle {
+    /// Recover accounts once before a stop-before-start deployment opens its listeners.
+    #[cfg(feature = "postgres")]
+    pub async fn recover_accounts_on_startup(&self) -> Result<(), StartupRecoveryError> {
+        if crate::middleware::rate_limit::max_replicas_from_env()? != 1 {
+            tracing::warn!(
+                "Skipping startup account recovery because GUARDIAN_MAX_REPLICAS exceeds 1"
+            );
+            return Ok(());
+        }
+        let (store, network_type) = self
+            .account_recovery
+            .as_ref()
+            .ok_or_else(|| "Account recovery requires shared Postgres storage".to_owned())?;
+        if self.app_state.canonicalization.is_none() {
+            return Err(StartupRecoveryError::Incomplete(
+                "Account recovery requires canonicalization".into(),
+            ));
+        }
+        crate::jobs::account_recovery::run_once(&self.app_state, store, *network_type).await
+    }
+
     /// Run the server with the configured settings
     pub async fn run(self) {
         self.startup_info.log();

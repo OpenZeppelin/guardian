@@ -36,6 +36,8 @@ use url::Url;
 
 #[path = "postgres_execution.rs"]
 mod execution;
+#[path = "postgres_recovery.rs"]
+pub(crate) mod recovery;
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 

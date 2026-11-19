@@ -166,6 +166,14 @@ locals {
     (local.effective_server_memory - local.fargate_memory_by_cpu[tostring(local.effective_server_cpu)].min) % local.fargate_memory_by_cpu[tostring(local.effective_server_cpu)].step == 0,
     false
   )
+  # Account recovery keeps the listeners closed for about 6 minutes at most:
+  # a 5-minute scan budget, up to 35 seconds waiting for a lease a stopped
+  # task left behind, and the writes in progress when the budget ends. 300 is
+  # the longest container start period ECS accepts; the health check's three
+  # retries at 30 seconds cover the remainder.
+  server_health_check_start_period_seconds = var.guardian_startup_account_recovery ? 300 : 10
+  server_health_check_grace_period_seconds = var.guardian_startup_account_recovery ? 420 : 30
+
   effective_server_desired_count             = var.server_desired_count != null ? var.server_desired_count : (local.is_prod ? 2 : 1)
   effective_server_autoscaling_enabled       = var.server_autoscaling_enabled != null ? var.server_autoscaling_enabled : local.is_prod
   effective_server_autoscaling_min_capacity  = var.server_autoscaling_min_capacity != null ? var.server_autoscaling_min_capacity : local.effective_server_desired_count

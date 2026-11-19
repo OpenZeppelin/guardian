@@ -570,6 +570,21 @@ variable "guardian_release_sweep_enabled" {
   default     = true
 }
 
+variable "guardian_startup_account_recovery" {
+  description = <<-EOT
+    Whether the server runs account recovery before it opens its listeners
+    (GUARDIAN_STARTUP_ACCOUNT_RECOVERY). true also lengthens the container
+    health check start period and the load balancer grace period, so a task
+    is not replaced while the scan keeps the listeners closed. The operator
+    arranges the rest: the server skips recovery unless it runs as a single
+    task, and the deploy must not overlap an older task, so stop the running
+    task before the deploy that turns this on. Turn it off again once the
+    scan has completed.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "guardian_block_watch_enabled" {
   description = <<-EOT
     Whether block watch runs (GUARDIAN_BLOCK_WATCH_ENABLED): the committed-block

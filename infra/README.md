@@ -116,6 +116,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # guardian_canonicalization_fast_promotion_enabled = false
 # guardian_max_pending_candidates_per_account = 4  # opt in to queueing chained candidates (server default 1, max 16; upgrade TS clients first, see docs/CONFIGURATION.md)
 # guardian_release_sweep_enabled = false         # turns the release sweep's walk of the fleet off
+# guardian_startup_account_recovery = true      # one deploy only: single task, older task stopped first; see docs/PRODUCTION.md
 # guardian_block_watch_enabled = false            # kill switch for the committed-block feed
 
 # Optional: dashboard operator Falcon public keys managed by Terraform
@@ -303,6 +304,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_canonicalization_fast_promotion_enabled` | `true` | Enables the recent-candidate promotion-only pass in the ECS task definition |
 | `guardian_max_pending_candidates_per_account` | server default (`1`) | `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`: chained candidate deltas one account may hold in flight (issue #17). `1` keeps one in-flight candidate per account; `2` to `16` opts in to queueing back-to-back transactions, after TypeScript clients are upgraded (see [`docs/CONFIGURATION.md`](../docs/CONFIGURATION.md)) |
 | `guardian_release_sweep_enabled` | `true` | Runs the release sweep's walk of the fleet (the rotation); `false` turns the walk off, and block watch too unless `guardian_block_watch_enabled` is set |
+| `guardian_startup_account_recovery` | `false` | `GUARDIAN_STARTUP_ACCOUNT_RECOVERY`: runs account recovery before the listeners open, and lengthens the container health check start period (to 300 s) and the load balancer grace period (to 420 s) so the task is not replaced during the scan. Needs a single task and a deploy with no older task still running; turn it off again once the scan has completed. See [Startup account recovery](../docs/PRODUCTION.md#startup-account-recovery) |
 | `guardian_release_sweep_rotation_seconds` | server default (`21600`) | Target time for one release sweep walk of the fleet; `604800` (weekly) is enough once block watch is healthy |
 | `guardian_block_watch_enabled` | unset (follows `guardian_release_sweep_enabled`) | Runs block watch (issue #585): switch detection from the node's committed-block feed; `false` is its kill switch, `true` runs it even with the release sweep's walk turned off |
 | `guardian_block_watch_transport` | `auto` | `GUARDIAN_BLOCK_WATCH_TRANSPORT`: `auto` (the block stream, polling when it is unavailable), `stream`, or `poll` |
