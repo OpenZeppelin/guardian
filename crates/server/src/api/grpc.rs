@@ -1,4 +1,5 @@
 use crate::delta_object::{DeltaObject, ProposalSignature};
+use crate::error::GuardianError;
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials, ExtractCredentials};
 use crate::services::{
@@ -292,8 +293,8 @@ impl Guardian for GuardianService {
     ) -> Result<Response<GetPubkeyResponse>, Status> {
         let req = request.into_inner();
         let scheme = match req.scheme.as_deref() {
-            Some(s) if s.eq_ignore_ascii_case("ecdsa") => SignatureScheme::Ecdsa,
-            _ => SignatureScheme::Falcon,
+            Some(value) => SignatureScheme::from(value).map_err(GuardianError::InvalidInput)?,
+            None => SignatureScheme::Falcon,
         };
         let commitment = self.app_state.ack.commitment(&scheme);
         let raw_pubkey = if matches!(scheme, SignatureScheme::Ecdsa) {
@@ -999,6 +1000,49 @@ mod tests {
             .expect("ecdsa raw pubkey should be present");
         assert!(!raw_pubkey.is_empty());
         assert!(raw_pubkey.starts_with("0x"));
+    }
+
+    #[tokio::test]
+    async fn test_grpc_get_pubkey_rejects_unknown_scheme() {
+        let (state, _storage, _network, _metadata) = create_test_state();
+        let service = create_service(state);
+
+        for scheme in ["bogus", "ecsda", "falcon2"] {
+            let request = Request::new(guardian::GetPubkeyRequest {
+                scheme: Some(scheme.to_string()),
+            });
+            let status = service
+                .get_pubkey(request)
+                .await
+                .expect_err("unknown scheme must be rejected");
+            assert_eq!(
+                status.code(),
+                tonic::Code::InvalidArgument,
+                "scheme={scheme}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_grpc_get_pubkey_scheme_selection() {
+        let (state, _storage, _network, _metadata) = create_test_state();
+        let falcon = state.ack.commitment(&SignatureScheme::Falcon);
+        let ecdsa = state.ack.commitment(&SignatureScheme::Ecdsa);
+        let service = create_service(state);
+
+        for (scheme, expected) in [
+            (None, &falcon),
+            (Some("falcon"), &falcon),
+            (Some("FALCON"), &falcon),
+            (Some("ecdsa"), &ecdsa),
+            (Some("ECDSA"), &ecdsa),
+        ] {
+            let request = Request::new(guardian::GetPubkeyRequest {
+                scheme: scheme.map(str::to_string),
+            });
+            let inner = service.get_pubkey(request).await.unwrap().into_inner();
+            assert_eq!(&inner.pubkey, expected, "scheme={scheme:?}");
+        }
     }
 
     #[tokio::test]

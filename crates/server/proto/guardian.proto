@@ -337,6 +337,8 @@ message GetCanonicalNonceResponse {
 
 // Get pubkey request
 message GetPubkeyRequest {
+  // "falcon" (default when unset) or "ecdsa", case-insensitive; any other
+  // value is rejected with INVALID_ARGUMENT.
   optional string scheme = 1;
 }
 

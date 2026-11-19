@@ -699,8 +699,8 @@ pub struct DeltaProposalResponse {
 #[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct PubkeyQuery {
-    /// `falcon` or `ecdsa`. Omitted or unrecognized values return the Falcon key, whichever
-    /// schemes the server admits for new accounts.
+    /// `falcon` or `ecdsa` (case-insensitive). Omitted returns the Falcon key, whichever
+    /// schemes the server admits for new accounts; any other value is rejected with 400.
     pub scheme: Option<String>,
 }
 
@@ -759,15 +759,16 @@ pub async fn status_root(state: State<AppState>) -> Json<crate::services::Status
     params(PubkeyQuery),
     responses(
         (status = 200, description = "ACK public key / commitment", body = PubkeyResponse),
+        (status = 400, description = "`scheme` is neither `falcon` nor `ecdsa` (`invalid_input`)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn get_pubkey(
     State(state): State<AppState>,
     Query(query): Query<PubkeyQuery>,
-) -> (StatusCode, Json<PubkeyResponse>) {
+) -> Result<Json<PubkeyResponse>, GuardianError> {
     let scheme = match query.scheme.as_deref() {
-        Some(s) if s.eq_ignore_ascii_case("ecdsa") => SignatureScheme::Ecdsa,
-        _ => SignatureScheme::Falcon,
+        Some(value) => SignatureScheme::from(value).map_err(GuardianError::InvalidInput)?,
+        None => SignatureScheme::Falcon,
     };
     let commitment = state.ack.commitment(&scheme);
     let pubkey = if matches!(scheme, SignatureScheme::Ecdsa) {
@@ -775,7 +776,7 @@ pub async fn get_pubkey(
     } else {
         None
     };
-    (StatusCode::OK, Json(PubkeyResponse { commitment, pubkey }))
+    Ok(Json(PubkeyResponse { commitment, pubkey }))
 }
 
 /// Create a new multisig delta proposal for cosigners to sign.
@@ -1336,10 +1337,10 @@ mod tests {
     #[tokio::test]
     async fn test_get_pubkey_success() {
         let (state, _storage, _network, _metadata) = create_test_state();
-        let (status, Json(response)) =
-            get_pubkey(State(state), Query(PubkeyQuery { scheme: None })).await;
+        let Json(response) = get_pubkey(State(state), Query(PubkeyQuery { scheme: None }))
+            .await
+            .unwrap();
 
-        assert_eq!(status, StatusCode::OK);
         assert!(!response.commitment.is_empty());
         assert!(response.commitment.starts_with("0x"));
     }
@@ -1347,19 +1348,76 @@ mod tests {
     #[tokio::test]
     async fn test_get_pubkey_success_for_ecdsa() {
         let (state, _storage, _network, _metadata) = create_test_state();
-        let (status, Json(response)) = get_pubkey(
+        let Json(response) = get_pubkey(
             State(state),
             Query(PubkeyQuery {
                 scheme: Some("ecdsa".to_string()),
             }),
         )
-        .await;
+        .await
+        .unwrap();
 
-        assert_eq!(status, StatusCode::OK);
         assert!(response.commitment.starts_with("0x"));
         assert_eq!(response.commitment.len(), 66);
         assert!(response.pubkey.is_some());
         assert!(response.pubkey.unwrap().starts_with("0x"));
+    }
+
+    async fn get_pubkey_route(state: AppState, uri: &str) -> (StatusCode, serde_json::Value) {
+        use crate::testing::helpers::create_router;
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let res = create_router(state)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request should succeed");
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        (
+            status,
+            serde_json::from_slice(&bytes).expect("body should be JSON"),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_get_pubkey_rejects_unknown_scheme() {
+        for scheme in ["bogus", "ecsda", "falcon2"] {
+            let (state, ..) = create_test_state();
+            let (status, body) = get_pubkey_route(state, &format!("/pubkey?scheme={scheme}")).await;
+
+            assert_eq!(status, StatusCode::BAD_REQUEST, "scheme={scheme}");
+            assert_eq!(body["code"], "invalid_input", "scheme={scheme}");
+            assert!(body.get("commitment").is_none(), "scheme={scheme}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_pubkey_scheme_selection() {
+        let (state, ..) = create_test_state();
+        let falcon = state.ack.commitment(&SignatureScheme::Falcon);
+        let ecdsa = state.ack.commitment(&SignatureScheme::Ecdsa);
+
+        for (uri, expected) in [
+            ("/pubkey", &falcon),
+            ("/pubkey?scheme=falcon", &falcon),
+            ("/pubkey?scheme=FALCON", &falcon),
+            ("/pubkey?scheme=ecdsa", &ecdsa),
+            ("/pubkey?scheme=ECDSA", &ecdsa),
+        ] {
+            let (status, body) = get_pubkey_route(state.clone(), uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri}");
+            assert_eq!(body["commitment"], expected.as_str(), "{uri}");
+        }
     }
 
     #[tokio::test]
