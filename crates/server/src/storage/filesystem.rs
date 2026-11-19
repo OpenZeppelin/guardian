@@ -3,9 +3,10 @@ use crate::state_object::StateObject;
 use crate::storage::StorageBackend;
 use crate::storage::encryption::marker::{EncryptionMarker, MarkerStore};
 use crate::storage::{
-    AbandonIntent, AccountDeltaCursor, AccountProposalCursor, DeltaStatusCounts, DeltaStatusKind,
-    GlobalDeltaCursor, GlobalDeltaRow, GlobalProposalCursor, ProposalAdmission, ProposalRecord,
-    ProposalWrite, StorageType,
+    AbandonIntent, AccountDeltaCursor, AccountHealWrite, AccountProposalCursor, DeltaStatusCounts,
+    DeltaStatusKind, GlobalDeltaCursor, GlobalDeltaRow, GlobalProposalCursor, HealDeltaWrite,
+    HealProposalWrite, HealWriteOutcome, ProposalAdmission, ProposalRecord, ProposalWrite,
+    StorageType,
 };
 use crate::utils::normalize_commitment_hex;
 use async_trait::async_trait;
@@ -1489,6 +1490,47 @@ impl StorageBackend for FilesystemService {
         Ok(crate::storage::CanonicalWrite::Applied)
     }
 
+    // Separate files, so the state is written last: a stop before it leaves
+    // the stored commitment unchanged and the next run repeats the repair.
+    async fn apply_account_heal(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        write: AccountHealWrite,
+    ) -> Result<HealWriteOutcome, String> {
+        write.check_rows_belong_to_account()?;
+        let _guard = self.delta_write_lock.lock().await;
+        let stored = self.pull_state(&write.account_id).await?;
+        if stored.commitment != write.expected_state_commitment {
+            return Ok(HealWriteOutcome::StateMoved {
+                current: stored.commitment,
+            });
+        }
+        let mut account_metadata = metadata
+            .get(&write.account_id)
+            .await?
+            .ok_or_else(|| format!("Account not found: {}", write.account_id))?;
+
+        self.apply_heal_proposal_writes(&write).await?;
+        for delta_write in &write.delta_writes {
+            self.apply_heal_delta_write_holding_lock(&write.account_id, delta_write)
+                .await?;
+        }
+
+        account_metadata.auth = write.auth;
+        account_metadata.has_pending_candidate = write.has_pending_candidate;
+        account_metadata.updated_at = write.now.clone();
+        metadata.set(account_metadata).await?;
+
+        let state = StateObject {
+            created_at: stored.created_at,
+            updated_at: write.now,
+            ..write.state
+        };
+        let _state_guard = self.state_write_lock.lock().await;
+        self.write_state_holding_lock(&state).await?;
+        Ok(HealWriteOutcome::Applied)
+    }
+
     async fn create_execution_reservation(
         &self,
         reservation: crate::storage::NewExecutionReservation,
@@ -2194,6 +2236,60 @@ impl FilesystemService {
             .await
     }
 
+    /// The proposal changes of an account heal, under `proposal_write_lock`.
+    /// A missing file on delete is not an error.
+    async fn apply_heal_proposal_writes(&self, write: &AccountHealWrite) -> Result<(), String> {
+        let _guard = self.proposal_write_lock.lock().await;
+        for proposal_write in &write.proposal_writes {
+            match proposal_write {
+                HealProposalWrite::Put {
+                    commitment,
+                    proposal,
+                } => {
+                    self.write_proposal_holding_lock(commitment, proposal)
+                        .await?
+                }
+                HealProposalWrite::Delete { commitment } => {
+                    let path = self.get_delta_proposal_path(&write.account_id, commitment)?;
+                    remove_file_if_present(&path)
+                        .await
+                        .map_err(|e| format!("Failed to delete proposal file: {e}"))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// One delta change of an account heal. A `Put` also removes the
+    /// archived copy of the row it stores. Callers hold `delta_write_lock`.
+    async fn apply_heal_delta_write_holding_lock(
+        &self,
+        account_id: &str,
+        delta_write: &HealDeltaWrite,
+    ) -> Result<(), String> {
+        match delta_write {
+            HealDeltaWrite::Put(delta) => {
+                self.write_delta_holding_lock(delta).await?;
+                for (path, archived) in self.read_archived(account_id).await? {
+                    if archived.delta.nonce == delta.nonce
+                        && archived.delta.prev_commitment == delta.prev_commitment
+                        && archived.delta.new_commitment == delta.new_commitment
+                    {
+                        remove_file_if_present(&path)
+                            .await
+                            .map_err(|e| format!("Failed to remove superseded delta: {e}"))?;
+                    }
+                }
+                Ok(())
+            }
+            HealDeltaWrite::Delete { nonce } => {
+                remove_file_if_present(&self.get_delta_path(account_id, *nonce))
+                    .await
+                    .map_err(|e| format!("Failed to delete delta file: {e}"))
+            }
+        }
+    }
+
     /// Serialize and write a delta row WITHOUT taking `delta_write_lock`.
     /// Callers must already hold the lock — this exists so the lifecycle
     /// writes (`submit_candidate`, `promote_candidate`) can compose the
@@ -2520,6 +2616,13 @@ impl MarkerStore for FilesystemService {
             }
         }
         Ok(false)
+    }
+}
+
+async fn remove_file_if_present(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path).await {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
     }
 }
 
@@ -4623,5 +4726,310 @@ mod tests {
 
         // Cleanup
         tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    const HEAL_ACCOUNT: &str = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+    const HEAL_NOW: &str = "2026-11-19T10:00:00Z";
+
+    fn heal_delta(nonce: u64, prev: &str, new: &str, status: DeltaStatus) -> DeltaObject {
+        DeltaObject {
+            prev_commitment: prev.to_string(),
+            new_commitment: Some(new.to_string()),
+            delta_payload: serde_json::json!({ "delta": new }),
+            status,
+            ..create_test_delta(HEAL_ACCOUNT, nonce)
+        }
+    }
+
+    fn heal_proposal(nonce: u64, status: DeltaStatus) -> DeltaObject {
+        DeltaObject {
+            delta_payload: serde_json::json!({ "proposal": nonce }),
+            status,
+            ..create_test_delta(HEAL_ACCOUNT, nonce)
+        }
+    }
+
+    fn proven_auth() -> crate::metadata::auth::Auth {
+        crate::metadata::auth::Auth::MidenFalconRpo {
+            cosigner_commitments: vec!["0xtruesigner".to_string()],
+        }
+    }
+
+    /// An account whose state and signer set a forged `/configure` replaced:
+    /// state `0xforged`, a forged delta at nonce 2 over the true one (which
+    /// sits in the archive), a candidate at nonce 3, two proposals, and a
+    /// pause set by an operator.
+    async fn seed_forged_account(
+        storage: &FilesystemService,
+        metadata_store: &crate::metadata::filesystem::FilesystemMetadataStore,
+    ) {
+        use crate::metadata::MetadataStore;
+        seed_account(storage, metadata_store, HEAL_ACCOUNT).await;
+        metadata_store
+            .set_pause(
+                HEAL_ACCOUNT,
+                Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap(),
+                "incident",
+            )
+            .await
+            .expect("pause");
+        let mut forged_state = create_test_state(HEAL_ACCOUNT);
+        forged_state.commitment = "0xforged".to_string();
+        forged_state.nonce = Some(9);
+        storage.submit_state(&forged_state).await.expect("state");
+
+        let canonical = DeltaStatus::canonical("2026-11-01T00:00:00Z".to_string());
+        storage
+            .submit_delta(&heal_delta(1, "0x123", "0xtrue1", canonical.clone()))
+            .await
+            .expect("delta 1");
+        storage
+            .submit_delta(&heal_delta(2, "0xtrue1", "0xforged", canonical.clone()))
+            .await
+            .expect("forged delta 2");
+        storage
+            .submit_delta(&heal_delta(
+                3,
+                "0xforged",
+                "0xforged3",
+                DeltaStatus::candidate("2026-11-01T00:00:00Z".to_string()),
+            ))
+            .await
+            .expect("candidate 3");
+        let superseded_at = Utc.with_ymd_and_hms(2026, 11, 2, 0, 0, 0).unwrap();
+        storage
+            .archive_delta_holding_lock(
+                &heal_delta(
+                    2,
+                    "0xtrue1",
+                    "0xtrue2",
+                    DeltaStatus::retained(
+                        "2026-11-01T00:00:00Z".to_string(),
+                        crate::delta_object::RetainReason::Diverged,
+                    ),
+                ),
+                superseded_at,
+            )
+            .await
+            .expect("archive true delta 2");
+        storage
+            .archive_delta_holding_lock(
+                &heal_delta(
+                    2,
+                    "0xtrue1",
+                    "0xother2",
+                    DeltaStatus::discarded_client_abandoned("2026-11-01T00:00:00Z".to_string()),
+                ),
+                superseded_at,
+            )
+            .await
+            .expect("archive other delta 2");
+
+        let pending = DeltaStatus::pending("2026-11-01T00:00:00Z".to_string(), "0xp".to_string());
+        storage
+            .submit_delta_proposal("0xaa01", &heal_proposal(3, pending.clone()))
+            .await
+            .expect("proposal 1");
+        storage
+            .submit_delta_proposal("0xaa02", &heal_proposal(3, pending))
+            .await
+            .expect("proposal 2");
+    }
+
+    fn heal_write(expected_state_commitment: &str) -> AccountHealWrite {
+        let mut proven = create_test_state(HEAL_ACCOUNT);
+        proven.commitment = "0xtrue2".to_string();
+        proven.nonce = Some(2);
+        proven.state_json = serde_json::json!({ "proven": true });
+        proven.created_at = "2099-01-01T00:00:00Z".to_string();
+        let mut signed = heal_proposal(
+            3,
+            DeltaStatus::pending("2026-11-01T00:00:00Z".to_string(), "0xp".to_string()),
+        );
+        signed.prev_commitment = "0xtrue2".to_string();
+        AccountHealWrite {
+            account_id: HEAL_ACCOUNT.to_string(),
+            expected_state_commitment: expected_state_commitment.to_string(),
+            state: proven,
+            auth: proven_auth(),
+            has_pending_candidate: false,
+            delta_writes: vec![
+                HealDeltaWrite::Put(heal_delta(
+                    2,
+                    "0xtrue1",
+                    "0xtrue2",
+                    DeltaStatus::canonical(HEAL_NOW.to_string()),
+                )),
+                HealDeltaWrite::Delete { nonce: 3 },
+                HealDeltaWrite::Delete { nonce: 7 },
+            ],
+            proposal_writes: vec![
+                HealProposalWrite::Put {
+                    commitment: "0xaa01".to_string(),
+                    proposal: signed,
+                },
+                HealProposalWrite::Delete {
+                    commitment: "0xaa02".to_string(),
+                },
+                HealProposalWrite::Delete {
+                    commitment: "0xaa03".to_string(),
+                },
+            ],
+            now: HEAL_NOW.to_string(),
+        }
+    }
+
+    /// Every file under `dir` with its content.
+    fn snapshot(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        let mut files = std::collections::BTreeMap::new();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(next) = pending.pop() {
+            for entry in std::fs::read_dir(&next).expect("read dir") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    let content = std::fs::read(&path).expect("read file");
+                    files.insert(path, content);
+                }
+            }
+        }
+        files
+    }
+
+    #[tokio::test]
+    async fn account_heal_applies_every_row_change_and_the_state() {
+        use crate::metadata::MetadataStore;
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone()).await.unwrap();
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .unwrap();
+        seed_forged_account(&storage, &metadata_store).await;
+        metadata_store
+            .set_has_pending_candidate(HEAL_ACCOUNT, true, HEAL_NOW)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            storage
+                .apply_account_heal(&metadata_store, heal_write("0xforged"))
+                .await
+                .unwrap(),
+            HealWriteOutcome::Applied
+        );
+
+        let state = storage.pull_state(HEAL_ACCOUNT).await.unwrap();
+        assert_eq!(state.commitment, "0xtrue2");
+        assert_eq!(state.nonce, Some(2));
+        assert_eq!(state.state_json, serde_json::json!({ "proven": true }));
+        assert_eq!(
+            state.created_at, "2024-11-14T12:00:00Z",
+            "the stored created_at stays"
+        );
+        assert_eq!(state.updated_at, HEAL_NOW);
+
+        let metadata = metadata_store.get(HEAL_ACCOUNT).await.unwrap().unwrap();
+        assert_eq!(metadata.auth, proven_auth());
+        assert!(!metadata.has_pending_candidate);
+        assert_eq!(metadata.updated_at, HEAL_NOW);
+        assert_eq!(
+            metadata.paused_at,
+            Some(Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap())
+        );
+        assert_eq!(metadata.paused_reason.as_deref(), Some("incident"));
+        assert_eq!(metadata.released_at, None);
+
+        let deltas = storage.pull_deltas_after(HEAL_ACCOUNT, 0).await.unwrap();
+        assert_eq!(
+            deltas
+                .iter()
+                .map(|delta| (delta.nonce, delta.new_commitment.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, Some("0xtrue1".to_string())),
+                (2, Some("0xtrue2".to_string()))
+            ],
+            "the true delta replaced the forged one and the candidate is gone"
+        );
+        assert!(deltas[1].status.is_canonical());
+        assert_eq!(
+            deltas[1].delta_payload,
+            serde_json::json!({ "delta": "0xtrue2" })
+        );
+        let archived = storage
+            .pull_superseded_deltas(HEAL_ACCOUNT, crate::storage::EVERY_ARCHIVED_DELTA)
+            .await
+            .unwrap();
+        assert_eq!(
+            archived
+                .iter()
+                .map(|archived| archived.delta.new_commitment.clone())
+                .collect::<Vec<_>>(),
+            vec![Some("0xother2".to_string())],
+            "only the archived copy of the stored row left the archive"
+        );
+
+        let proposals = storage
+            .pull_all_delta_proposals(HEAL_ACCOUNT)
+            .await
+            .unwrap();
+        assert_eq!(proposals.len(), 1, "the deleted proposal is gone");
+        assert_eq!(
+            proposals[0].proposal.prev_commitment, "0xtrue2",
+            "the kept proposal was replaced"
+        );
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn account_heal_writes_nothing_when_the_state_moved() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone()).await.unwrap();
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .unwrap();
+        seed_forged_account(&storage, &metadata_store).await;
+        let before = snapshot(&temp_dir);
+
+        assert_eq!(
+            storage
+                .apply_account_heal(&metadata_store, heal_write("0xplanned"))
+                .await
+                .unwrap(),
+            HealWriteOutcome::StateMoved {
+                current: "0xforged".to_string()
+            }
+        );
+        assert_eq!(snapshot(&temp_dir), before, "no file changed");
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn account_heal_refuses_a_row_of_another_account() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone()).await.unwrap();
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .unwrap();
+        seed_forged_account(&storage, &metadata_store).await;
+        let before = snapshot(&temp_dir);
+
+        let mut write = heal_write("0xforged");
+        write.delta_writes.push(HealDeltaWrite::Put(DeltaObject {
+            account_id: "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d".to_string(),
+            ..create_test_delta(HEAL_ACCOUNT, 4)
+        }));
+        assert!(
+            storage
+                .apply_account_heal(&metadata_store, write)
+                .await
+                .is_err()
+        );
+        assert_eq!(snapshot(&temp_dir), before, "no file changed");
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 }

@@ -72,6 +72,20 @@ claim, or reconstruction mismatch does not change candidate status, retry count,
 or divergence count. The full pass remains responsible for every retry, defer,
 divergence, and discard decision.
 
+### Startup self-heal
+
+The self-heal block repairs accounts whose stored state and signer set an
+unverified `/configure` replaced (Guardian 0.18.3 and earlier). It runs once at
+startup, before the background jobs start and before the HTTP and gRPC
+listeners bind. Read [`runbooks/self-heal.md`](./runbooks/self-heal.md) before
+you turn it on.
+
+| Variable | Default | Build mode | Notes |
+|---|---|---|---|
+| `GUARDIAN_SELF_HEAL` | `off` | any | `off`: the block does not run. `dry-run`: the block plans every account, logs the plan and writes the recovery file. It writes nothing to storage, and the server then starts as usual. `apply`: the block plans every account, applies each plan and writes the recovery file. In `apply` mode, a failed chain read or a failed write stops startup, so the server never serves an account that may still hold an attacker's keys. The value is trimmed and is not case sensitive. Any other value stops startup. |
+| `GUARDIAN_SELF_HEAL_RECOVERY_FILE` | `recovery.json` (in the working directory) | any | Where the block writes the recovery file. The block writes it in both modes, also when every account is recovered. It replaces an old file atomically, and on unix only the owner can read or write it. A value that does not name a file stops startup. |
+| `GUARDIAN_SELF_HEAL_MAX_CONCURRENT_ACCOUNTS` | `4` | any | How many accounts the block reads and plans at the same time. 1 to 64. Any other value stops startup. |
+
 ### Database TLS
 
 TLS behavior is driven entirely by the standard libpq parameters in

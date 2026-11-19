@@ -54,6 +54,8 @@ pub struct ServerHandle {
     pub(crate) stats_leader: std::sync::Arc<dyn crate::coordination::LeaderElector>,
     /// Single-owner lease for the chain-driven release sweep (issue #434).
     pub(crate) release_sweep_leader: std::sync::Arc<dyn crate::coordination::LeaderElector>,
+    /// The one-time startup repair (`jobs::self_heal`).
+    pub(crate) self_heal: crate::jobs::self_heal::SelfHealConfig,
     pub(crate) startup_info: StartupInfo,
     pub(crate) cors_layer: Option<CorsLayer>,
     pub(crate) rate_limit_config: Option<RateLimitConfig>,
@@ -124,6 +126,19 @@ impl ServerHandle {
                     );
                 }
             }
+        }
+
+        // Self-heal runs before every background job and before the HTTP
+        // and gRPC listeners bind. When it fails, the server must not
+        // serve accounts that may still hold an attacker's keys.
+        if let Err(error) = crate::jobs::self_heal::run_self_heal(
+            &self.app_state,
+            self.leader.clone(),
+            &self.self_heal,
+        )
+        .await
+        {
+            panic!("Self-heal failed; the server does not start: {error}");
         }
 
         // Start background jobs based on canonicalization config

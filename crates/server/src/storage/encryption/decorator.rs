@@ -9,10 +9,10 @@ use super::envelope::RecordAad;
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::state_object::{StateHead, StateObject};
 use crate::storage::{
-    AbandonIntent, AccountDeltaCursor, AccountProposalCursor, CandidatePromotion,
+    AbandonIntent, AccountDeltaCursor, AccountHealWrite, AccountProposalCursor, CandidatePromotion,
     CandidateSubmission, CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor,
-    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, PromoteWrite, ProposalRecord, StorageBackend,
-    StorageType,
+    GlobalDeltaRow, GlobalProposalCursor, HealDeltaWrite, HealProposalWrite, HealWriteOutcome,
+    LeaseFence, PromoteWrite, ProposalRecord, StorageBackend, StorageType,
 };
 use crate::utils::normalize_commitment_hex;
 
@@ -495,6 +495,44 @@ impl StorageBackend for EncryptedStorage {
             .await
     }
 
+    async fn apply_account_heal(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        write: AccountHealWrite,
+    ) -> Result<HealWriteOutcome, String> {
+        let delta_writes = write
+            .delta_writes
+            .iter()
+            .map(|delta_write| match delta_write {
+                HealDeltaWrite::Put(delta) => Ok(HealDeltaWrite::Put(self.encrypt_delta(delta)?)),
+                HealDeltaWrite::Delete { nonce } => Ok(HealDeltaWrite::Delete { nonce: *nonce }),
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let proposal_writes = write
+            .proposal_writes
+            .iter()
+            .map(|proposal_write| match proposal_write {
+                HealProposalWrite::Put {
+                    commitment,
+                    proposal,
+                } => Ok(HealProposalWrite::Put {
+                    commitment: commitment.clone(),
+                    proposal: self.encrypt_proposal(commitment, proposal)?,
+                }),
+                HealProposalWrite::Delete { commitment } => Ok(HealProposalWrite::Delete {
+                    commitment: commitment.clone(),
+                }),
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let write = AccountHealWrite {
+            state: self.encrypt_state(&write.state)?,
+            delta_writes,
+            proposal_writes,
+            ..write
+        };
+        self.inner.apply_account_heal(metadata, write).await
+    }
+
     async fn create_execution_reservation(
         &self,
         reservation: crate::storage::NewExecutionReservation,
@@ -792,6 +830,95 @@ mod tests {
         assert_eq!(
             enc.pull_state("acct1").await.unwrap().state_json,
             json!({ "secret": "second-secret" })
+        );
+    }
+
+    #[tokio::test]
+    async fn account_heal_seals_every_payload_it_writes() {
+        use crate::metadata::MetadataStore;
+        let (dir, fs) = fs_backend().await;
+        let metadata =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(dir.path().to_path_buf())
+                .await
+                .unwrap();
+        let auth = crate::metadata::auth::Auth::MidenFalconRpo {
+            cosigner_commitments: vec!["0xsigner".to_string()],
+        };
+        metadata
+            .set(crate::metadata::AccountMetadata {
+                account_id: "acct1".to_string(),
+                auth: auth.clone(),
+                network_config: crate::metadata::NetworkConfig::miden_default(),
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+                has_pending_candidate: false,
+                paused_at: None,
+                paused_reason: None,
+                released_at: None,
+            })
+            .await
+            .unwrap();
+        let inner: Arc<dyn StorageBackend> = Arc::new(fs);
+        let enc = encrypted(inner.clone());
+        let mut stored = state("acct1", "forged-secret");
+        stored.commitment = "0xforged".to_string();
+        enc.submit_state(&stored).await.unwrap();
+
+        let mut proven = state("acct1", "proven-secret");
+        proven.commitment = "0xproven".to_string();
+        let delta = DeltaObject {
+            account_id: "acct1".to_string(),
+            nonce: 1,
+            delta_payload: json!({ "move": "delta-secret" }),
+            status: DeltaStatus::canonical("2024-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        };
+        let proposal = DeltaObject {
+            account_id: "acct1".to_string(),
+            nonce: 2,
+            delta_payload: json!({ "proposed": "proposal-secret" }),
+            ..Default::default()
+        };
+        let write = AccountHealWrite {
+            account_id: "acct1".to_string(),
+            expected_state_commitment: "0xforged".to_string(),
+            state: proven,
+            auth,
+            has_pending_candidate: false,
+            delta_writes: vec![HealDeltaWrite::Put(delta)],
+            proposal_writes: vec![HealProposalWrite::Put {
+                commitment: "0xABC123".to_string(),
+                proposal,
+            }],
+            now: "2024-01-02T00:00:00Z".to_string(),
+        };
+        assert_eq!(
+            enc.apply_account_heal(&metadata, write).await.unwrap(),
+            HealWriteOutcome::Applied
+        );
+
+        let raw_state = inner.pull_state("acct1").await.unwrap();
+        assert_eq!(raw_state.commitment, "0xproven");
+        assert!(raw_state.state_json.get("ct").is_some());
+        assert!(!raw_state.state_json.to_string().contains("proven-secret"));
+        let raw_delta = inner.pull_delta("acct1", 1).await.unwrap();
+        assert!(raw_delta.delta_payload.get("ct").is_some());
+        let raw_proposals = inner.pull_all_delta_proposals("acct1").await.unwrap();
+        assert!(raw_proposals[0].proposal.delta_payload.get("ct").is_some());
+
+        assert_eq!(
+            enc.pull_state("acct1").await.unwrap().state_json,
+            json!({ "secret": "proven-secret" })
+        );
+        assert_eq!(
+            enc.pull_delta("acct1", 1).await.unwrap().delta_payload,
+            json!({ "move": "delta-secret" })
+        );
+        assert_eq!(
+            enc.pull_all_delta_proposals("acct1").await.unwrap()[0]
+                .proposal
+                .delta_payload,
+            json!({ "proposed": "proposal-secret" })
         );
     }
 

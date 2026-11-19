@@ -12,6 +12,7 @@
 use crate::block_watch::BlockWatchConfig;
 use crate::build_info;
 use crate::canonicalization::CanonicalizationConfig;
+use crate::jobs::self_heal::SelfHealConfig;
 use crate::network::NetworkType;
 use crate::release_sweep::ReleaseSweepConfig;
 use crate::storage::StorageType;
@@ -30,6 +31,7 @@ pub(crate) struct StartupInfo {
     canonicalization: Option<CanonicalizationConfig>,
     release_sweep: Option<ReleaseSweepConfig>,
     block_watch: Option<BlockWatchConfig>,
+    self_heal: SelfHealConfig,
     operator_count: usize,
     cursor_secret_configured: bool,
     http_port: Option<u16>,
@@ -68,6 +70,7 @@ impl StartupInfo {
             canonicalization,
             release_sweep,
             block_watch: None,
+            self_heal: crate::builder::self_heal::default_config(),
             operator_count,
             cursor_secret_configured,
             http_port,
@@ -79,6 +82,12 @@ impl StartupInfo {
     /// The block watch settings, `None` when it is disabled.
     pub(crate) fn with_block_watch(mut self, block_watch: Option<BlockWatchConfig>) -> Self {
         self.block_watch = block_watch;
+        self
+    }
+
+    /// The startup self-heal settings.
+    pub(crate) fn with_self_heal(mut self, self_heal: SelfHealConfig) -> Self {
+        self.self_heal = self_heal;
         self
     }
 
@@ -176,6 +185,12 @@ impl StartupInfo {
             ),
             None => tracing::info!("block watch disabled"),
         }
+        tracing::info!(
+            mode = crate::builder::self_heal::mode_label(self.self_heal.mode),
+            recovery_file = %self.self_heal.recovery_file.display(),
+            max_concurrent_accounts = self.self_heal.max_concurrent_accounts,
+            "self-heal"
+        );
         let rotation = self.release_sweep.as_ref().is_some_and(|c| c.enabled);
         if !rotation && self.block_watch.is_none() {
             tracing::info!("switch detection relies on the push path alone");

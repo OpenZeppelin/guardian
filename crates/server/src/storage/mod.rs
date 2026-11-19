@@ -393,6 +393,92 @@ pub enum StateReplace {
     StateMoved { current: String },
 }
 
+/// One delta row change of an [`AccountHealWrite`].
+// A heal writes a few rows once at startup, so the unboxed row costs nothing.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum HealDeltaWrite {
+    /// Store this row at its `(account_id, nonce)` with the status it
+    /// carries, in place of any row the `deltas` table holds there. The
+    /// row can come from the `deltas` table or from the superseded-delta
+    /// archive; an archived source row is removed from the archive.
+    Put(DeltaObject),
+    /// Delete the `deltas` row at this nonce.
+    Delete { nonce: u64 },
+}
+
+/// One proposal row change of an [`AccountHealWrite`].
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum HealProposalWrite {
+    /// Replace the proposal stored under `commitment`.
+    Put {
+        commitment: String,
+        proposal: DeltaObject,
+    },
+    /// Delete the proposal stored under `commitment`.
+    Delete { commitment: String },
+}
+
+/// The complete repair of one account whose stored state was replaced
+/// through an unverified `/configure` (the self-heal block,
+/// `jobs::self_heal`). The planner proved `state` against the on-chain
+/// commitment before it built this write.
+#[derive(Debug, Clone)]
+pub struct AccountHealWrite {
+    pub account_id: String,
+    /// The stored commitment the plan was made against. The write applies
+    /// only while the stored state still has this commitment.
+    pub expected_state_commitment: String,
+    /// The proven state. `created_at` is ignored: the stored value stays.
+    pub state: StateObject,
+    /// The signer set of `state`.
+    pub auth: crate::metadata::auth::Auth,
+    /// The pending-candidate flag after the delta writes.
+    pub has_pending_candidate: bool,
+    pub delta_writes: Vec<HealDeltaWrite>,
+    pub proposal_writes: Vec<HealProposalWrite>,
+    /// RFC 3339 timestamp for `updated_at` columns.
+    pub now: String,
+}
+
+impl AccountHealWrite {
+    /// Refuse a write whose state, delta or proposal rows name another
+    /// account than `account_id`. Every backend checks this before it
+    /// writes anything.
+    pub fn check_rows_belong_to_account(&self) -> Result<(), String> {
+        let delta_accounts = self.delta_writes.iter().filter_map(|write| match write {
+            HealDeltaWrite::Put(delta) => Some(delta.account_id.as_str()),
+            HealDeltaWrite::Delete { .. } => None,
+        });
+        let proposal_accounts = self.proposal_writes.iter().filter_map(|write| match write {
+            HealProposalWrite::Put { proposal, .. } => Some(proposal.account_id.as_str()),
+            HealProposalWrite::Delete { .. } => None,
+        });
+        let foreign = std::iter::once(self.state.account_id.as_str())
+            .chain(delta_accounts)
+            .chain(proposal_accounts)
+            .find(|account_id| *account_id != self.account_id);
+        match foreign {
+            Some(other) => Err(format!(
+                "heal write for account {} carries a row of account {other}",
+                self.account_id
+            )),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Outcome of [`StorageBackend::apply_account_heal`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HealWriteOutcome {
+    /// Every row change, the auth and the state committed.
+    Applied,
+    /// The stored state no longer had the expected commitment; nothing
+    /// was written. `current` is the commitment now stored.
+    StateMoved { current: String },
+}
+
 /// The chain position of one queued candidate, as the submission gate
 /// needs it: its nonce, the base it was admitted on, and the post-state
 /// commitment the server computed at push time (issue #17).
@@ -1307,6 +1393,19 @@ pub trait StorageBackend: Send + Sync {
         status: DeltaStatus,
         fence: Option<&LeaseFence>,
     ) -> Result<CanonicalWrite, String>;
+
+    /// Apply the repair of one account (the self-heal block): the proposal
+    /// changes, the delta changes, the pending-candidate flag, the auth and
+    /// last the state, which is replaced only while the stored commitment
+    /// is still `write.expected_state_commitment`. Postgres commits all of
+    /// it as one transaction. A single-process backend writes in that
+    /// order, so a stop in the middle leaves the stored state unchanged
+    /// and the next run repairs the account again.
+    async fn apply_account_heal(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        write: AccountHealWrite,
+    ) -> Result<HealWriteOutcome, String>;
 
     // ----------------------------------------------------------------------
     // Guardian execution reservations (issue #254). Required on every

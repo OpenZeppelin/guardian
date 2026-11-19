@@ -457,6 +457,18 @@ impl StorageBackend for InstrumentedStorage {
         .await
     }
 
+    async fn apply_account_heal(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        write: crate::storage::AccountHealWrite,
+    ) -> Result<crate::storage::HealWriteOutcome, String> {
+        timed(
+            "apply_account_heal",
+            self.inner.apply_account_heal(metadata, write),
+        )
+        .await
+    }
+
     async fn update_delta_status(
         &self,
         account_id: &str,
@@ -793,6 +805,55 @@ mod tests {
         assert!(inner.get_submit_state_calls().is_empty());
         assert!(handle.render().contains(
             "guardian_storage_operations_total{operation=\"replace_state\",outcome=\"ok\"} 1"
+        ));
+    }
+
+    #[test]
+    fn apply_account_heal_forwards_the_write() {
+        let inner = Arc::new(MockStorageBackend::new().with_apply_account_heal(Ok(
+            crate::storage::HealWriteOutcome::StateMoved {
+                current: "0xmoved".to_string(),
+            },
+        )));
+        let write = crate::storage::AccountHealWrite {
+            account_id: "acct".to_string(),
+            expected_state_commitment: "0xstored".to_string(),
+            state: StateObject {
+                account_id: "acct".to_string(),
+                state_json: serde_json::json!({}),
+                commitment: "0xproven".to_string(),
+                nonce: Some(3),
+                created_at: String::new(),
+                updated_at: String::new(),
+                auth_scheme: String::new(),
+            },
+            auth: crate::metadata::auth::Auth::MidenFalconRpo {
+                cosigner_commitments: vec!["0xsigner".to_string()],
+            },
+            has_pending_candidate: false,
+            delta_writes: vec![crate::storage::HealDeltaWrite::Delete { nonce: 4 }],
+            proposal_writes: Vec::new(),
+            now: "2026-01-01T00:00:00Z".to_string(),
+        };
+        let recorder = build_recorder();
+        let handle = recorder.handle();
+        let outcome = metrics::with_local_recorder(&recorder, || {
+            let storage = InstrumentedStorage::new(inner.clone());
+            let metadata = crate::testing::mocks::MockMetadataStore::new();
+            block_on(async move { storage.apply_account_heal(&metadata, write).await })
+        });
+        assert_eq!(
+            outcome,
+            Ok(crate::storage::HealWriteOutcome::StateMoved {
+                current: "0xmoved".to_string()
+            })
+        );
+        let calls = inner.get_apply_account_heal_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].expected_state_commitment, "0xstored");
+        assert_eq!(calls[0].state.commitment, "0xproven");
+        assert!(handle.render().contains(
+            "guardian_storage_operations_total{operation=\"apply_account_heal\",outcome=\"ok\"} 1"
         ));
     }
 

@@ -39,6 +39,8 @@ async fn main() {
 
     let release_sweep = server::release_sweep::ReleaseSweepConfig::from_env()
         .expect("Invalid release sweep configuration");
+    let self_heal =
+        server::builder::self_heal::config_from_env().expect("Invalid self-heal configuration");
     ServerBuilder::new()
         .with_logging(LoggingConfig::default())
         .network(network_type)
@@ -69,6 +71,7 @@ async fn main() {
             server::block_watch::BlockWatchConfig::from_env_following(release_sweep.enabled)
                 .expect("Invalid block watch configuration"),
         ))
+        .with_self_heal(self_heal)
         .with_rate_limit(RateLimitConfig::from_env())
         .with_body_limit(BodyLimitConfig::from_env())
         .storage(storage_backend)

@@ -12,6 +12,7 @@ pub mod clock;
 pub mod handle;
 pub mod logging;
 pub mod release_sweep;
+pub mod self_heal;
 pub mod startup;
 pub mod state;
 pub mod storage;
@@ -46,6 +47,7 @@ pub struct ServerBuilder {
     execution: crate::config::execution::ExecutionConfig,
     release_sweep: Option<ReleaseSweepConfig>,
     block_watch: Option<BlockWatchConfig>,
+    self_heal: crate::jobs::self_heal::SelfHealConfig,
     rpc: Option<crate::network::RpcSettings>,
     dashboard: Option<Arc<DashboardState>>,
     coordination: Option<crate::coordination::CoordinationHandles>,
@@ -73,6 +75,7 @@ impl ServerBuilder {
             execution: crate::config::execution::ExecutionConfig::default(),
             release_sweep: Some(ReleaseSweepConfig::default()),
             block_watch: Some(BlockWatchConfig::default()),
+            self_heal: self_heal::default_config(),
             rpc: None,
             dashboard: None,
             coordination: None,
@@ -218,6 +221,15 @@ impl ServerBuilder {
     /// stored as `None`.
     pub fn with_block_watch(mut self, config: Option<BlockWatchConfig>) -> Self {
         self.block_watch = config.filter(|config| config.enabled);
+        self
+    }
+
+    /// Configure the one-time startup self-heal block
+    /// (`jobs::self_heal`). It runs in [`ServerHandle::run`] before any
+    /// background job starts and before the HTTP and gRPC listeners bind.
+    /// The default is off.
+    pub fn with_self_heal(mut self, config: crate::jobs::self_heal::SelfHealConfig) -> Self {
+        self.self_heal = config;
         self
     }
 
@@ -728,7 +740,8 @@ impl ServerBuilder {
             self.grpc_enabled.then_some(self.grpc_port),
             metrics_config.enabled.then_some(metrics_config.bind_addr),
         )
-        .with_block_watch(self.block_watch.clone());
+        .with_block_watch(self.block_watch.clone())
+        .with_self_heal(self.self_heal.clone());
 
         // Prod fail-fast pair for rate-limit partitioning; non-prod keeps the
         // warnings emitted by RateLimitConfig::from_env. (A missing cursor
@@ -790,6 +803,7 @@ impl ServerBuilder {
             leader,
             stats_leader,
             release_sweep_leader,
+            self_heal: self.self_heal,
             startup_info,
             cors_layer: self.cors_layer,
             rate_limit_config: Some(rate_limit_config),

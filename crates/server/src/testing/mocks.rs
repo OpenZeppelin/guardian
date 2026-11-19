@@ -575,6 +575,11 @@ pub struct MockStorageBackend {
     pub discard_candidate_calls: Arc<StdMutex<Vec<(String, u64, crate::storage::DeltaStatusKind)>>>,
     pub update_candidate_status_responses:
         Arc<StdMutex<Vec<StdResult<crate::storage::CanonicalWrite, String>>>>,
+    /// Answers for `apply_account_heal`, popped last first;
+    /// `Ok(HealWriteOutcome::Applied)` when empty.
+    pub apply_account_heal_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::HealWriteOutcome, String>>>>,
+    pub apply_account_heal_calls: Arc<StdMutex<Vec<crate::storage::AccountHealWrite>>>,
     // Execution reservation writes. A queued outcome is returned (LIFO);
     // otherwise the call reports the uncontended success variant, and the
     // loads report no execution.
@@ -1138,6 +1143,21 @@ impl MockStorageBackend {
             .unwrap()
             .push(response);
         self
+    }
+
+    pub fn with_apply_account_heal(
+        self,
+        result: StdResult<crate::storage::HealWriteOutcome, String>,
+    ) -> Self {
+        self.apply_account_heal_responses
+            .lock()
+            .unwrap()
+            .push(result);
+        self
+    }
+
+    pub fn get_apply_account_heal_calls(&self) -> Vec<crate::storage::AccountHealWrite> {
+        self.apply_account_heal_calls.lock().unwrap().clone()
     }
 
     pub fn get_promote_candidate_sources(&self) -> Vec<crate::storage::PromotableKind> {
@@ -1876,6 +1896,19 @@ impl StorageBackend for MockStorageBackend {
             return response;
         }
         crate::storage::update_candidate_status_sequential(self, account_id, nonce, status).await
+    }
+
+    async fn apply_account_heal(
+        &self,
+        _metadata: &dyn crate::metadata::MetadataStore,
+        write: crate::storage::AccountHealWrite,
+    ) -> Result<crate::storage::HealWriteOutcome, String> {
+        self.apply_account_heal_calls.lock().unwrap().push(write);
+        self.apply_account_heal_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::storage::HealWriteOutcome::Applied))
     }
 
     // Dashboard read APIs (feature `005-operator-dashboard-metrics`).

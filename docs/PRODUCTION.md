@@ -569,6 +569,15 @@ behavior:
     it reads from against the [production checklist](#production-checklist)
     before the rollout.
 
+### Repairing accounts after the `/configure` takeover
+
+Guardian 0.18.3 and earlier let any caller replace an account's stored state
+and signer set through `/configure`. After you upgrade from such a release,
+run the startup self-heal block. It compares each stored account with the
+chain, rebuilds the true state where it can, and pauses the accounts it cannot
+prove. Do a dry run first. The steps, the recovery file and the limits are in
+[`runbooks/self-heal.md`](./runbooks/self-heal.md).
+
 ## Upgrading to Miden 0.16
 
 > **One-time, irreversible: the first 0.16 deploy wipes all pre-0.16 Miden
@@ -645,6 +654,7 @@ and metadata directories, and preserve the keystore directory.
 | Check runtime and deploy-time env vars | [`CONFIGURATION.md`](./CONFIGURATION.md) |
 | Bootstrap, replace, or respond to ACK/operator/EVM secret issues | [`runbooks/secrets.md`](./runbooks/secrets.md) |
 | Verify database backups or restore from one | [`runbooks/backup-restore.md`](./runbooks/backup-restore.md) |
+| Repair accounts after the `/configure` takeover | [`runbooks/self-heal.md`](./runbooks/self-heal.md) |
 | Migrate a deployed stack to verified database TLS | [`runbooks/enable-db-tls.md`](./runbooks/enable-db-tls.md) |
 | Configure dashboard operators and permissions | [`DASHBOARD.md`](./DASHBOARD.md) |
 | Scrape Prometheus metrics and visualize them | [`guides/observability/`](./guides/observability/README.md) |

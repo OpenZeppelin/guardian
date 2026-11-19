@@ -46,7 +46,7 @@ mod get_delta_since;
 mod get_state;
 mod get_state_tail;
 mod lookup_account;
-mod multisig_admission;
+pub(crate) mod multisig_admission;
 pub mod pause_account;
 pub(crate) mod proposal_signature;
 mod push_delta;

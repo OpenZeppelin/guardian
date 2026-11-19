@@ -7,10 +7,11 @@ use crate::state_object::{StateHead, StateObject};
 use crate::storage::StorageBackend;
 use crate::storage::encryption::marker::{EncryptionMarker, MarkerStore};
 use crate::storage::{
-    AbandonIntent, AccountDeltaCursor, AccountProposalCursor, CandidatePromotion,
+    AbandonIntent, AccountDeltaCursor, AccountHealWrite, AccountProposalCursor, CandidatePromotion,
     CandidateSubmission, CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor,
-    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, PromotableKind, PromoteWrite,
-    ProposalAdmission, ProposalRecord, ProposalWrite, StateReplace, StorageType,
+    GlobalDeltaRow, GlobalProposalCursor, HealDeltaWrite, HealProposalWrite, HealWriteOutcome,
+    LeaseFence, PromotableKind, PromoteWrite, ProposalAdmission, ProposalRecord, ProposalWrite,
+    StateReplace, StorageType,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Timelike, Utc};
@@ -1206,6 +1207,199 @@ async fn restore_superseded(
         .execute(conn)
         .await?;
     Ok(true)
+}
+
+/// The Jsonb `status` of a row and its typed mirror columns.
+struct StatusColumns {
+    json: serde_json::Value,
+    kind: &'static str,
+    timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+impl StatusColumns {
+    fn of(status: &DeltaStatus) -> Result<Self, String> {
+        let json =
+            serde_json::to_value(status).map_err(|e| format!("Failed to serialize status: {e}"))?;
+        let (kind, timestamp) = derive_status_columns(status)?;
+        Ok(Self {
+            json,
+            kind,
+            timestamp,
+        })
+    }
+}
+
+/// One delta row change of [`StorageBackend::apply_account_heal`], with its
+/// columns encoded before the transaction opens.
+#[allow(clippy::large_enum_variant)]
+enum HealDeltaRow {
+    Put {
+        delta: DeltaObject,
+        status: StatusColumns,
+        metadata: Option<serde_json::Value>,
+    },
+    Delete {
+        nonce: u64,
+    },
+}
+
+impl HealDeltaRow {
+    fn of(write: HealDeltaWrite) -> Result<Self, String> {
+        match write {
+            HealDeltaWrite::Put(delta) => Ok(Self::Put {
+                status: StatusColumns::of(&delta.status)?,
+                metadata: delta
+                    .metadata
+                    .as_ref()
+                    .map(crate::delta_summary::metadata_to_value),
+                delta,
+            }),
+            HealDeltaWrite::Delete { nonce } => Ok(Self::Delete { nonce }),
+        }
+    }
+
+    async fn apply(
+        &self,
+        conn: &mut AsyncPgConnection,
+        account_id: &str,
+    ) -> Result<(), diesel::result::Error> {
+        match self {
+            Self::Put {
+                delta,
+                status,
+                metadata,
+            } => {
+                diesel::insert_into(deltas::table)
+                    .values(&NewDelta {
+                        account_id,
+                        nonce: delta.nonce as i64,
+                        prev_commitment: &delta.prev_commitment,
+                        new_commitment: delta.new_commitment.as_deref(),
+                        delta_payload: &delta.delta_payload,
+                        ack_sig: Some(delta.ack_sig.as_str()),
+                        status: status.json.clone(),
+                        status_kind: status.kind,
+                        status_timestamp: status.timestamp,
+                        metadata: metadata.as_ref(),
+                    })
+                    .on_conflict((deltas::account_id, deltas::nonce))
+                    .do_update()
+                    .set((
+                        deltas::prev_commitment.eq(&delta.prev_commitment),
+                        deltas::new_commitment.eq(&delta.new_commitment),
+                        deltas::delta_payload.eq(&delta.delta_payload),
+                        deltas::ack_sig.eq(Some(&delta.ack_sig)),
+                        deltas::status.eq(&status.json),
+                        deltas::status_kind.eq(status.kind),
+                        deltas::status_timestamp.eq(status.timestamp),
+                        deltas::metadata.eq(metadata),
+                    ))
+                    .execute(conn)
+                    .await?;
+                diesel::delete(superseded_deltas::table)
+                    .filter(superseded_deltas::account_id.eq(account_id))
+                    .filter(superseded_deltas::nonce.eq(delta.nonce as i64))
+                    .filter(superseded_deltas::prev_commitment.eq(&delta.prev_commitment))
+                    .filter(
+                        superseded_deltas::new_commitment
+                            .is_not_distinct_from(&delta.new_commitment),
+                    )
+                    .execute(conn)
+                    .await?;
+            }
+            Self::Delete { nonce } => {
+                diesel::delete(deltas::table)
+                    .filter(deltas::account_id.eq(account_id))
+                    .filter(deltas::nonce.eq(*nonce as i64))
+                    .execute(conn)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One proposal row change of [`StorageBackend::apply_account_heal`], with
+/// its status columns encoded before the transaction opens.
+#[allow(clippy::large_enum_variant)]
+enum HealProposalRow {
+    Put {
+        commitment: String,
+        proposal: DeltaObject,
+        status: StatusColumns,
+    },
+    Delete {
+        commitment: String,
+    },
+}
+
+impl HealProposalRow {
+    fn of(write: HealProposalWrite) -> Result<Self, String> {
+        match write {
+            HealProposalWrite::Put {
+                commitment,
+                proposal,
+            } => Ok(Self::Put {
+                status: StatusColumns::of(&proposal.status)?,
+                commitment,
+                proposal,
+            }),
+            HealProposalWrite::Delete { commitment } => Ok(Self::Delete { commitment }),
+        }
+    }
+
+    // A replaced row keeps its `request_bytes`; a new row counts none, as
+    // `submit_delta_proposal` does.
+    async fn apply(
+        &self,
+        conn: &mut AsyncPgConnection,
+        account_id: &str,
+    ) -> Result<(), diesel::result::Error> {
+        match self {
+            Self::Put {
+                commitment,
+                proposal,
+                status,
+            } => {
+                diesel::insert_into(delta_proposals::table)
+                    .values(&NewProposal {
+                        account_id,
+                        commitment,
+                        nonce: proposal.nonce as i64,
+                        prev_commitment: &proposal.prev_commitment,
+                        new_commitment: proposal.new_commitment.as_deref(),
+                        delta_payload: &proposal.delta_payload,
+                        ack_sig: Some(proposal.ack_sig.as_str()),
+                        status: status.json.clone(),
+                        status_kind: status.kind,
+                        status_timestamp: status.timestamp,
+                        request_bytes: 0,
+                    })
+                    .on_conflict((delta_proposals::account_id, delta_proposals::commitment))
+                    .do_update()
+                    .set((
+                        delta_proposals::nonce.eq(proposal.nonce as i64),
+                        delta_proposals::prev_commitment.eq(&proposal.prev_commitment),
+                        delta_proposals::new_commitment.eq(&proposal.new_commitment),
+                        delta_proposals::delta_payload.eq(&proposal.delta_payload),
+                        delta_proposals::ack_sig.eq(Some(&proposal.ack_sig)),
+                        delta_proposals::status.eq(&status.json),
+                        delta_proposals::status_kind.eq(status.kind),
+                        delta_proposals::status_timestamp.eq(status.timestamp),
+                    ))
+                    .execute(conn)
+                    .await?;
+            }
+            Self::Delete { commitment } => {
+                diesel::delete(delta_proposals::table)
+                    .filter(delta_proposals::account_id.eq(account_id))
+                    .filter(delta_proposals::commitment.eq(commitment))
+                    .execute(conn)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -2775,6 +2969,92 @@ impl StorageBackend for PostgresService {
         })
         .await
         .map_err(|e| format!("Failed to update candidate status: {e}"))
+    }
+
+    async fn apply_account_heal(
+        &self,
+        _metadata: &dyn MetadataStore,
+        write: AccountHealWrite,
+    ) -> Result<HealWriteOutcome, String> {
+        write.check_rows_belong_to_account()?;
+        let mut conn = self
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let AccountHealWrite {
+            account_id,
+            expected_state_commitment,
+            state,
+            auth,
+            has_pending_candidate,
+            delta_writes,
+            proposal_writes,
+            now,
+        } = write;
+        let updated_at: chrono::DateTime<chrono::Utc> = now
+            .parse()
+            .map_err(|e| format!("Failed to parse timestamp: {e}"))?;
+        let auth_json =
+            serde_json::to_value(&auth).map_err(|e| format!("Failed to serialize auth: {e}"))?;
+        let delta_rows = delta_writes
+            .into_iter()
+            .map(HealDeltaRow::of)
+            .collect::<Result<Vec<_>, _>>()?;
+        let proposal_rows = proposal_writes
+            .into_iter()
+            .map(HealProposalRow::of)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        conn.transaction::<HealWriteOutcome, diesel::result::Error, _>(|conn| {
+            async move {
+                lock_account_metadata(conn, &account_id).await?;
+                // `submit_state` takes no account lock, so the state row is
+                // locked too before its commitment is compared.
+                let current = states::table
+                    .filter(states::account_id.eq(&account_id))
+                    .select(states::commitment)
+                    .for_update()
+                    .first::<String>(conn)
+                    .await?;
+                if current != expected_state_commitment {
+                    return Ok(HealWriteOutcome::StateMoved { current });
+                }
+
+                for row in &proposal_rows {
+                    row.apply(conn, &account_id).await?;
+                }
+                for row in &delta_rows {
+                    row.apply(conn, &account_id).await?;
+                }
+
+                diesel::update(account_metadata::table)
+                    .filter(account_metadata::account_id.eq(&account_id))
+                    .set((
+                        account_metadata::auth.eq(&auth_json),
+                        account_metadata::has_pending_candidate.eq(has_pending_candidate),
+                        account_metadata::updated_at.eq(updated_at),
+                    ))
+                    .execute(conn)
+                    .await?;
+
+                diesel::update(states::table)
+                    .filter(states::account_id.eq(&account_id))
+                    .set((
+                        states::state_json.eq(&state.state_json),
+                        states::commitment.eq(&state.commitment),
+                        states::nonce.eq(nonce_column(state.nonce)),
+                        states::updated_at.eq(updated_at),
+                    ))
+                    .execute(conn)
+                    .await?;
+                Ok(HealWriteOutcome::Applied)
+            }
+            .scope_boxed()
+        })
+        .await
+        .map_err(|e| format!("Failed to apply account heal: {e}"))
     }
 
     async fn create_execution_reservation(
@@ -6124,5 +6404,452 @@ mod tests {
             .execute(&mut conn)
             .await
             .expect("cleanup lease row");
+    }
+
+    mod account_heal {
+        use super::*;
+        use diesel::sql_types::{BigInt, Text};
+
+        const PAUSED_AT: &str = "2026-11-01T00:00:00+00:00";
+        const HEAL_NOW: &str = "2026-11-19T10:00:00Z";
+
+        #[derive(diesel::QueryableByName)]
+        struct JsonRow {
+            #[diesel(sql_type = Text)]
+            row: String,
+        }
+
+        #[derive(diesel::QueryableByName)]
+        struct VersionRow {
+            #[diesel(sql_type = BigInt)]
+            auth_version: i64,
+        }
+
+        fn delta(
+            account_id: &str,
+            nonce: u64,
+            prev: &str,
+            new: &str,
+            status: DeltaStatus,
+        ) -> DeltaObject {
+            DeltaObject {
+                prev_commitment: prev.to_string(),
+                new_commitment: Some(new.to_string()),
+                delta_payload: serde_json::json!({ "delta": new }),
+                status,
+                ..create_test_delta(account_id, nonce)
+            }
+        }
+
+        fn proposal(account_id: &str, prev: &str) -> DeltaObject {
+            DeltaObject {
+                prev_commitment: prev.to_string(),
+                delta_payload: serde_json::json!({ "proposal": prev }),
+                status: DeltaStatus::pending(
+                    "2026-11-01T00:00:00Z".to_string(),
+                    "0xproposer".to_string(),
+                ),
+                ..create_test_delta(account_id, 3)
+            }
+        }
+
+        fn proven_auth() -> crate::metadata::auth::Auth {
+            crate::metadata::auth::Auth::MidenFalconRpo {
+                cosigner_commitments: vec!["0xtruesigner".to_string()],
+            }
+        }
+
+        /// Store `parked` at its nonce, copy it to the archive, then store
+        /// `over` in its place.
+        async fn archive_under(
+            service: &PostgresService,
+            parked: &DeltaObject,
+            over: &DeltaObject,
+        ) {
+            service.submit_delta(parked).await.expect("parked row");
+            let mut conn = service
+                .pool
+                .get_timed(crate::metrics::labels::PoolKind::Storage)
+                .await
+                .expect("conn");
+            let archived = archive_parked_delta(
+                &mut conn,
+                &parked.account_id,
+                parked.nonce,
+                chrono::Utc::now(),
+            )
+            .await
+            .expect("archive");
+            assert_eq!(archived, 1);
+            drop(conn);
+            service
+                .submit_delta(over)
+                .await
+                .expect("row over the parked one");
+        }
+
+        /// An account whose state and signer set a forged `/configure`
+        /// replaced: state `0xforged`, a forged delta at nonce 2 over the true
+        /// one (archived), a candidate at nonce 3, two proposals, a set
+        /// pending flag and an operator pause.
+        async fn seed_forged_account(service: &PostgresService) -> String {
+            let account_id = format!("0xheal{}", chrono::Utc::now().timestamp_micros());
+            let mut conn = service
+                .pool
+                .get_timed(crate::metrics::labels::PoolKind::Storage)
+                .await
+                .expect("conn");
+            diesel::sql_query(
+                "INSERT INTO account_metadata \
+                 (account_id, auth, network_config, created_at, updated_at, \
+                  has_pending_candidate, paused_at, paused_reason) \
+                 VALUES ($1, '{}'::jsonb, $3, now(), now(), true, $2::timestamptz, \
+                         'incident')",
+            )
+            .bind::<Text, _>(&account_id)
+            .bind::<Text, _>(PAUSED_AT)
+            .bind::<diesel::sql_types::Jsonb, _>(
+                serde_json::to_value(crate::metadata::NetworkConfig::miden_default())
+                    .expect("network config"),
+            )
+            .execute(&mut conn)
+            .await
+            .expect("insert metadata row");
+            drop(conn);
+
+            let mut forged_state = create_test_state(&account_id);
+            forged_state.commitment = "0xforged".to_string();
+            forged_state.nonce = Some(9);
+            service.submit_state(&forged_state).await.expect("state");
+
+            let at = "2026-11-01T00:00:00Z".to_string();
+            let forged = delta(
+                &account_id,
+                2,
+                "0xtrue1",
+                "0xforged",
+                DeltaStatus::canonical(at.clone()),
+            );
+            service
+                .submit_delta(&delta(
+                    &account_id,
+                    1,
+                    "0x123",
+                    "0xtrue1",
+                    DeltaStatus::canonical(at.clone()),
+                ))
+                .await
+                .expect("delta 1");
+            archive_under(
+                service,
+                &delta(
+                    &account_id,
+                    2,
+                    "0xtrue1",
+                    "0xtrue2",
+                    DeltaStatus::retained(at.clone(), crate::delta_object::RetainReason::Diverged),
+                ),
+                &forged,
+            )
+            .await;
+            archive_under(
+                service,
+                &delta(
+                    &account_id,
+                    2,
+                    "0xtrue1",
+                    "0xother2",
+                    DeltaStatus::discarded_client_abandoned(at.clone()),
+                ),
+                &forged,
+            )
+            .await;
+            service
+                .submit_delta(&delta(
+                    &account_id,
+                    3,
+                    "0xforged",
+                    "0xforged3",
+                    DeltaStatus::candidate(at),
+                ))
+                .await
+                .expect("candidate 3");
+            service
+                .submit_delta_proposal("0xaa01", &proposal(&account_id, "0xforged"))
+                .await
+                .expect("proposal 1");
+            service
+                .submit_delta_proposal("0xaa02", &proposal(&account_id, "0xforged"))
+                .await
+                .expect("proposal 2");
+            account_id
+        }
+
+        fn heal_write(account_id: &str, expected_state_commitment: &str) -> AccountHealWrite {
+            let mut proven = create_test_state(account_id);
+            proven.commitment = "0xtrue2".to_string();
+            proven.nonce = Some(2);
+            proven.state_json = serde_json::json!({ "proven": true });
+            proven.created_at = "2099-01-01T00:00:00Z".to_string();
+            AccountHealWrite {
+                account_id: account_id.to_string(),
+                expected_state_commitment: expected_state_commitment.to_string(),
+                state: proven,
+                auth: proven_auth(),
+                has_pending_candidate: false,
+                delta_writes: vec![
+                    HealDeltaWrite::Put(delta(
+                        account_id,
+                        2,
+                        "0xtrue1",
+                        "0xtrue2",
+                        DeltaStatus::canonical(HEAL_NOW.to_string()),
+                    )),
+                    HealDeltaWrite::Delete { nonce: 3 },
+                    HealDeltaWrite::Delete { nonce: 7 },
+                ],
+                proposal_writes: vec![
+                    HealProposalWrite::Put {
+                        commitment: "0xaa01".to_string(),
+                        proposal: proposal(account_id, "0xtrue2"),
+                    },
+                    HealProposalWrite::Delete {
+                        commitment: "0xaa02".to_string(),
+                    },
+                    HealProposalWrite::Delete {
+                        commitment: "0xaa03".to_string(),
+                    },
+                ],
+                now: HEAL_NOW.to_string(),
+            }
+        }
+
+        /// Every row of the account in every table the heal writes.
+        async fn snapshot(service: &PostgresService, account_id: &str) -> Vec<String> {
+            let mut conn = service
+                .pool
+                .get_timed(crate::metrics::labels::PoolKind::Storage)
+                .await
+                .expect("conn");
+            let mut rows = Vec::new();
+            for table in [
+                "states",
+                "deltas",
+                "superseded_deltas",
+                "delta_proposals",
+                "account_metadata",
+            ] {
+                let table_rows: Vec<JsonRow> = diesel::sql_query(format!(
+                    "SELECT row_to_json(t)::text AS row FROM {table} t \
+                     WHERE account_id = $1 ORDER BY 1"
+                ))
+                .bind::<Text, _>(account_id)
+                .load(&mut conn)
+                .await
+                .expect("snapshot rows");
+                rows.extend(
+                    table_rows
+                        .into_iter()
+                        .map(|row| format!("{table}: {}", row.row)),
+                );
+            }
+            rows
+        }
+
+        async fn auth_version(service: &PostgresService, account_id: &str) -> i64 {
+            let mut conn = service
+                .pool
+                .get_timed(crate::metrics::labels::PoolKind::Storage)
+                .await
+                .expect("conn");
+            diesel::sql_query("SELECT auth_version FROM account_metadata WHERE account_id = $1")
+                .bind::<Text, _>(account_id)
+                .get_result::<VersionRow>(&mut conn)
+                .await
+                .expect("auth version")
+                .auth_version
+        }
+
+        async fn cleanup(service: &PostgresService, account_id: &str) {
+            let mut conn = service
+                .pool
+                .get_timed(crate::metrics::labels::PoolKind::Storage)
+                .await
+                .expect("conn");
+            for table in [
+                "deltas",
+                "superseded_deltas",
+                "delta_proposals",
+                "states",
+                "account_metadata",
+            ] {
+                let _ = diesel::sql_query(format!("DELETE FROM {table} WHERE account_id = $1"))
+                    .bind::<Text, _>(account_id)
+                    .execute(&mut conn)
+                    .await;
+            }
+        }
+
+        #[tokio::test]
+        #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+        async fn heal_applies_every_row_change_and_the_state_in_one_transaction() {
+            let url = crate::testing::pg::test_database_url().await;
+            let service = PostgresService::new(&url, 4).await.expect("storage");
+            let metadata_store = crate::metadata::postgres::PostgresMetadataStore::new(&url, 2)
+                .await
+                .expect("metadata store");
+            let account_id = seed_forged_account(&service).await;
+            let version_before = auth_version(&service, &account_id).await;
+
+            assert_eq!(
+                service
+                    .apply_account_heal(&metadata_store, heal_write(&account_id, "0xforged"))
+                    .await
+                    .expect("heal"),
+                HealWriteOutcome::Applied
+            );
+
+            let state = service.pull_state(&account_id).await.expect("state");
+            assert_eq!(state.commitment, "0xtrue2");
+            assert_eq!(state.nonce, Some(2));
+            assert_eq!(state.state_json, serde_json::json!({ "proven": true }));
+            assert_eq!(
+                state
+                    .created_at
+                    .parse::<chrono::DateTime<chrono::Utc>>()
+                    .unwrap(),
+                "2024-11-14T12:00:00Z"
+                    .parse::<chrono::DateTime<chrono::Utc>>()
+                    .unwrap(),
+                "the stored created_at stays"
+            );
+            assert_eq!(
+                state
+                    .updated_at
+                    .parse::<chrono::DateTime<chrono::Utc>>()
+                    .unwrap(),
+                HEAL_NOW.parse::<chrono::DateTime<chrono::Utc>>().unwrap()
+            );
+
+            let metadata = crate::metadata::MetadataStore::get(&metadata_store, &account_id)
+                .await
+                .expect("metadata read")
+                .expect("metadata row");
+            assert_eq!(metadata.auth, proven_auth());
+            assert!(!metadata.has_pending_candidate);
+            assert_eq!(
+                metadata.paused_at,
+                Some(PAUSED_AT.parse::<chrono::DateTime<chrono::Utc>>().unwrap())
+            );
+            assert_eq!(metadata.paused_reason.as_deref(), Some("incident"));
+            assert_eq!(metadata.released_at, None);
+            assert!(
+                auth_version(&service, &account_id).await > version_before,
+                "the heal raised the auth version"
+            );
+
+            let deltas = service
+                .pull_deltas_after(&account_id, 0)
+                .await
+                .expect("deltas");
+            assert_eq!(
+                deltas
+                    .iter()
+                    .map(|delta| (delta.nonce, delta.new_commitment.clone()))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (1, Some("0xtrue1".to_string())),
+                    (2, Some("0xtrue2".to_string()))
+                ],
+                "the true delta replaced the forged one and the candidate is gone"
+            );
+            assert!(deltas[1].status.is_canonical());
+            assert_eq!(
+                deltas[1].delta_payload,
+                serde_json::json!({ "delta": "0xtrue2" })
+            );
+            let archived = service
+                .pull_superseded_deltas(&account_id, crate::storage::EVERY_ARCHIVED_DELTA)
+                .await
+                .expect("archive");
+            assert_eq!(
+                archived
+                    .iter()
+                    .map(|archived| archived.delta.new_commitment.clone())
+                    .collect::<Vec<_>>(),
+                vec![Some("0xother2".to_string())],
+                "only the archived copy of the stored row left the archive"
+            );
+
+            let proposals = service
+                .pull_all_delta_proposals(&account_id)
+                .await
+                .expect("proposals");
+            assert_eq!(
+                proposals
+                    .iter()
+                    .map(|record| (
+                        record.commitment.clone(),
+                        record.proposal.prev_commitment.clone()
+                    ))
+                    .collect::<Vec<_>>(),
+                vec![("0xaa01".to_string(), "0xtrue2".to_string())],
+                "the kept proposal was replaced and the other deleted"
+            );
+            cleanup(&service, &account_id).await;
+        }
+
+        #[tokio::test]
+        #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+        async fn heal_writes_nothing_when_the_state_moved() {
+            let url = crate::testing::pg::test_database_url().await;
+            let service = PostgresService::new(&url, 4).await.expect("storage");
+            let metadata_store = crate::metadata::postgres::PostgresMetadataStore::new(&url, 2)
+                .await
+                .expect("metadata store");
+            let account_id = seed_forged_account(&service).await;
+            let before = snapshot(&service, &account_id).await;
+
+            assert_eq!(
+                service
+                    .apply_account_heal(&metadata_store, heal_write(&account_id, "0xplanned"))
+                    .await
+                    .expect("heal resolves"),
+                HealWriteOutcome::StateMoved {
+                    current: "0xforged".to_string()
+                }
+            );
+            assert_eq!(
+                snapshot(&service, &account_id).await,
+                before,
+                "no row changed, the auth version included"
+            );
+            cleanup(&service, &account_id).await;
+        }
+
+        #[tokio::test]
+        #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+        async fn heal_with_a_row_that_cannot_be_written_rolls_back_every_change() {
+            let url = crate::testing::pg::test_database_url().await;
+            let service = PostgresService::new(&url, 4).await.expect("storage");
+            let metadata_store = crate::metadata::postgres::PostgresMetadataStore::new(&url, 2)
+                .await
+                .expect("metadata store");
+            let account_id = seed_forged_account(&service).await;
+            let before = snapshot(&service, &account_id).await;
+
+            // A commitment longer than the column fails the state write,
+            // the last write, after every row change and the metadata.
+            let mut write = heal_write(&account_id, "0xforged");
+            write.state.commitment = format!("0x{}", "ab".repeat(100));
+            assert!(
+                service
+                    .apply_account_heal(&metadata_store, write)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(snapshot(&service, &account_id).await, before);
+            cleanup(&service, &account_id).await;
+        }
     }
 }
