@@ -354,23 +354,34 @@ The verification and restore procedure is in
 
 Guardian can check its stored Miden account records against the Miden network
 when it starts, and bring a record back in line with the account's canonical
-history when the two disagree. The check is off by default.
+history when the two disagree. `GUARDIAN_STARTUP_ACCOUNT_RECOVERY` selects
+the mode: `off` (the default), `dry-run` or `apply`. It needs a Guardian
+backed by Postgres. With the bundled Compose files, set it in `.env`.
 
-**Enabling it**
+**Previewing with a dry run**
 
-- Set `GUARDIAN_STARTUP_ACCOUNT_RECOVERY=true` on a single Guardian instance
-  backed by Postgres. With the bundled Compose files, set it in `.env`.
+Start Guardian once with `GUARDIAN_STARTUP_ACCOUNT_RECOVERY=dry-run` first. A
+dry run performs the same checks, logs what `apply` would do with each
+account, and writes nothing: no account record, no report row and no
+progress. It takes no lease, so it runs with any number of replicas, and it
+checks from the first account each time. The final log line counts the
+accounts that would be restored (`restorable`), deferred and left unresolved.
+
+**Applying**
+
+- Set `GUARDIAN_STARTUP_ACCOUNT_RECOVERY=apply` on a single Guardian instance.
 - Stop the old Guardian process before the new one starts. Rolling
   deployments overlap old and new servers even with a target of one instance,
-  so keep the flag off for those.
-- Guardian skips the check when `GUARDIAN_MAX_REPLICAS` exceeds `1`.
+  so do not use `apply` for those.
+- Guardian skips `apply` when `GUARDIAN_MAX_REPLICAS` exceeds `1`.
 - On the AWS stack in `infra/`, set Terraform variable
-  `guardian_startup_account_recovery = true` for that one deploy. It passes
-  the flag to the task and lengthens the container health check start period
-  and the load balancer grace period, so the task is not replaced while its
-  listeners are closed. Running a single task (desired count and autoscaling
-  maximum of one) and stopping the running task before the deploy remain
-  manual steps. Set the variable back to `false` once the check has completed.
+  `guardian_startup_account_recovery` to `"dry-run"` or `"apply"` for that one
+  deploy. It passes the mode to the task and lengthens the container health
+  check start period and the load balancer grace period, so the task is not
+  replaced while its listeners are closed. For `apply`, running a single task
+  (desired count and autoscaling maximum of one) and stopping the running task
+  before the deploy remain manual steps. Set the variable back to `"off"`
+  once the check has completed.
 
 **What it does**
 
@@ -388,9 +399,15 @@ Miden node for the account's current commitment.
 - Otherwise the account is left unchanged and listed in
   `account_recovery_pending`.
 
-A paused account, or one with work in progress such as a delta awaiting its
-outcome, a pending proposal or a reserved execution, is deferred and checked
-again on a later startup.
+A restore also reviews the account's pending proposals against the signers of
+the restored state. A proposal that one of those signers proposed or approved
+stays, keeping only their approvals. Any other pending proposal is removed.
+Every proposal a restore changes or removes is saved with the previous record
+in `account_recovery_backups.prior_proposals`.
+
+A paused account, or one with work in flight (a delta awaiting its on-chain
+outcome or a reserved execution), is deferred and checked again on a later
+startup.
 
 **How long it takes**
 
@@ -400,29 +417,30 @@ again on a later startup.
   writes. Allow for that in any startup health check or grace period.
 - The check stops for this startup after three account checks in a row fail,
   for example while the Miden node is unreachable.
-- Guardian records where it stopped in
-  `account_recovery_startup.resume_after`, and the next startup with the flag
-  on continues from there.
+- In `apply`, Guardian records where it stopped in
+  `account_recovery_startup.resume_after`, and the next startup in `apply`
+  continues from there.
 - The check completes when one startup covers every account, from the first
   to the last, without deferring any. Guardian then records how many accounts
   it could not bring up to date in
   `account_recovery_startup.unresolved_accounts`, and later startups skip the
-  check. Until then, each startup with the flag on runs it again.
+  check. Until then, each startup in `apply` runs it again.
 - An account Guardian holds canonical deltas for, but the configured node has
   no record of, is deferred. It keeps the check open until the node knows the
   account or the account is released.
 
 **If it cannot run**
 
-Guardian exits before opening its listeners if another process holds the
-recovery lease, or if it cannot confirm it holds the lease alone. It first
-waits up to 35 seconds for a lease a stopped process left behind. Any other
-error is logged, and Guardian opens its listeners without finishing the check.
+In `apply`, Guardian exits before opening its listeners if another process
+holds the recovery lease, or if it cannot confirm it holds the lease alone. It
+first waits up to 35 seconds for a lease a stopped process left behind. Any
+other error, and any error in a dry run, is logged, and Guardian opens its
+listeners without finishing the check.
 
 **Reviewing the result**
 
-`account_recovery_pending` has one row for each account that was checked and
-not brought up to date. `outcome` is `deferred` (a later startup checks it
+After `apply`, `account_recovery_pending` has one row for each account that
+was checked and not brought up to date. `outcome` is `deferred` (a later startup checks it
 again) or `unresolved` (Guardian does not hold what it needs), and `reason`
 says why. When the canonical history held here does not reach back to the
 account's creation, `history_starts_at_nonce` and `history_base_commitment`

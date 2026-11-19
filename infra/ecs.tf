@@ -204,7 +204,7 @@ resource "aws_ecs_task_definition" "server" {
           },
           {
             name  = "GUARDIAN_STARTUP_ACCOUNT_RECOVERY"
-            value = tostring(var.guardian_startup_account_recovery)
+            value = var.guardian_startup_account_recovery
           },
           {
             name  = "GUARDIAN_BLOCK_WATCH_TRANSPORT"

@@ -137,6 +137,153 @@ async fn rejects_incomplete_history_and_commitment_mismatches() {
 }
 
 #[tokio::test]
+async fn rebuilds_the_signer_set_under_each_scheme() {
+    let network = MidenNetworkClient::lazy_for_test(NetworkType::MidenLocal);
+    let signer = Word::from([1, 2, 3, 4_u32]);
+    let commitments = vec![signer.into_hex()];
+    let cases = [
+        (
+            SignatureScheme::Falcon,
+            SignatureScheme::Falcon,
+            Auth::MidenFalconRpo {
+                cosigner_commitments: commitments.clone(),
+            },
+        ),
+        (
+            SignatureScheme::Ecdsa,
+            SignatureScheme::Ecdsa,
+            Auth::MidenEcdsa {
+                cosigner_commitments: commitments.clone(),
+            },
+        ),
+        (
+            SignatureScheme::Falcon,
+            SignatureScheme::Ecdsa,
+            Auth::Miden {
+                cosigners: vec![crate::metadata::auth::MidenCosigner {
+                    commitment: commitments[0].clone(),
+                    scheme: SignatureScheme::Falcon,
+                }],
+                guardian_scheme: SignatureScheme::Ecdsa,
+            },
+        ),
+    ];
+    for (signer_scheme, guardian_scheme, expected) in cases {
+        let account = build_guarded_multisig_account(
+            [26; 32],
+            1,
+            &[(signer, signer_scheme)],
+            (Word::from([5, 6, 7, 8_u32]), guardian_scheme),
+        );
+        let (deltas, rebuilt) = canonical_history(&account, &network);
+        let (_, auth) = prove_recovery(
+            &network,
+            &account.id().to_hex(),
+            &rebuilt.commitment,
+            deltas,
+            Some(1),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(auth, expected);
+    }
+}
+
+#[test]
+fn a_proposal_review_keeps_what_the_restored_signers_proposed_or_approved() {
+    use crate::delta_object::CosignerSignature;
+    use crate::metadata::auth::ChainCosigner;
+    use crate::storage::ProposalRecord;
+    use crate::testing::helpers::{TestSigner, create_test_delta_payload};
+
+    let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+    let owner = TestSigner::new();
+    let other_key = TestSigner::new();
+    let payload = serde_json::json!({ "tx_summary": create_test_delta_payload(account_id) });
+    let message = crate::services::proposal_signature::proposal_tx_summary(&payload)
+        .unwrap()
+        .to_commitment();
+    let approval = |signer: &TestSigner| CosignerSignature {
+        signature: guardian_shared::ProposalSignature::Falcon {
+            signature: signer.sign_word(message),
+        },
+        timestamp: "2026-11-14T12:50:00Z".into(),
+        signer_id: signer.commitment_hex.clone(),
+    };
+    let pending = |proposer: &TestSigner, approvals: Vec<CosignerSignature>| DeltaStatus::Pending {
+        timestamp: "2026-11-14T12:45:00Z".into(),
+        proposer_id: proposer.commitment_hex.clone(),
+        cosigner_sigs: approvals,
+    };
+    let record = |commitment: &str, status: DeltaStatus| ProposalRecord {
+        account_id: account_id.into(),
+        commitment: commitment.into(),
+        proposal: DeltaObject {
+            account_id: account_id.into(),
+            delta_payload: payload.clone(),
+            status,
+            ..Default::default()
+        },
+    };
+    let restored = |scheme: SignatureScheme| AppliedState {
+        state_json: serde_json::Value::Null,
+        commitment: "0xrestored".into(),
+        nonce: Some(1),
+        cosigners: vec![ChainCosigner {
+            commitment: owner.commitment_hex.clone(),
+            scheme: Some(scheme),
+        }],
+        guardian_commitment: None,
+    };
+    let records = [
+        record("signed", pending(&owner, vec![approval(&owner)])),
+        record(
+            "mixed",
+            pending(&owner, vec![approval(&owner), approval(&other_key)]),
+        ),
+        record("approved", pending(&other_key, vec![approval(&owner)])),
+        record("unrelated", pending(&other_key, vec![approval(&other_key)])),
+        record("unsigned", pending(&owner, Vec::new())),
+    ];
+
+    let changes: Vec<Option<ProposalChange>> =
+        proposals::review(&restored(SignatureScheme::Falcon), &records)
+            .into_iter()
+            .map(|reviewed| reviewed.change)
+            .collect();
+    assert_eq!(
+        changes,
+        [
+            None,
+            Some(ProposalChange::DropApprovals(pending(
+                &owner,
+                vec![approval(&owner)]
+            ))),
+            None,
+            Some(ProposalChange::Remove),
+            None,
+        ]
+    );
+
+    let under_another_scheme = proposals::review(&restored(SignatureScheme::Ecdsa), &records[..1]);
+    assert_eq!(
+        under_another_scheme[0].change,
+        Some(ProposalChange::DropApprovals(pending(&owner, Vec::new())))
+    );
+}
+
+#[test]
+fn the_startup_recovery_mode_has_three_values() {
+    use crate::builder::handle::StartupRecoveryMode;
+
+    assert_eq!("off".parse(), Ok(StartupRecoveryMode::Off));
+    assert_eq!(" dry-run ".parse(), Ok(StartupRecoveryMode::DryRun));
+    assert_eq!("apply".parse(), Ok(StartupRecoveryMode::Apply));
+    assert!("true".parse::<StartupRecoveryMode>().is_err());
+}
+
+#[tokio::test]
 async fn partial_history_fixture_cannot_rebuild_a_missing_base() {
     let network = MidenNetworkClient::lazy_for_test(NetworkType::MidenLocal);
     let delta: DeltaObject = serde_json::from_str(crate::testing::fixtures::DELTA_1_JSON).unwrap();
@@ -342,7 +489,7 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
             &state,
             &store,
             MidenNetworkType::Testnet,
-            &lease,
+            ScanWrites::Apply(&lease),
             &CancellationToken::new(),
             "",
             Instant::now() + Duration::from_millis(40),
@@ -384,7 +531,7 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
     storage.submit_delta(&pending).await.unwrap();
     assert!(matches!(
         check_candidate(&state, &candidate).await.unwrap(),
-        RecoveryOutcome::Verified(_, _)
+        RecoveryOutcome::Verified(_)
     ));
     assert!(
         !store
@@ -392,6 +539,7 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
                 &candidate,
                 &canonical.state_json,
                 &expected_auth,
+                &[],
                 state.clock.now(),
                 &lease
             )
@@ -508,6 +656,76 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
     assert!(deferred.reason.contains("restore transaction failed"));
     drop(conn);
 
+    let other_key = crate::testing::helpers::TestSigner::new();
+    let proposal_payload = serde_json::json!({
+        "tx_summary": crate::testing::helpers::create_test_delta_payload(account_id),
+    });
+    let other_approval = crate::delta_object::CosignerSignature {
+        signature: guardian_shared::ProposalSignature::Falcon {
+            signature: other_key.sign_word(
+                crate::services::proposal_signature::proposal_tx_summary(&proposal_payload)
+                    .unwrap()
+                    .to_commitment(),
+            ),
+        },
+        timestamp: "2026-11-14T12:50:00Z".into(),
+        signer_id: other_key.commitment_hex.clone(),
+    };
+    let pending_proposal = |nonce: u64, proposer: &str| DeltaObject {
+        account_id: account_id.clone(),
+        nonce,
+        prev_commitment: prior.commitment.clone(),
+        delta_payload: proposal_payload.clone(),
+        status: DeltaStatus::Pending {
+            timestamp: "2026-11-14T12:45:00Z".into(),
+            proposer_id: proposer.into(),
+            cosigner_sigs: vec![other_approval.clone()],
+        },
+        ..Default::default()
+    };
+    storage
+        .submit_delta_proposal(
+            "0xproposed-by-another-key",
+            &pending_proposal(4, &other_key.commitment_hex),
+        )
+        .await
+        .unwrap();
+    storage
+        .submit_delta_proposal(
+            "0xproposed-by-the-signer",
+            &pending_proposal(5, &signer.commitment_hex),
+        )
+        .await
+        .unwrap();
+
+    let preview = run(
+        &state,
+        &store,
+        MidenNetworkType::Testnet,
+        ScanWrites::DryRun,
+        &CancellationToken::new(),
+        "",
+        Instant::now() + Duration::from_secs(60),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (preview.checked, preview.restorable, preview.restored),
+        (1, 1, 0)
+    );
+    assert_eq!(
+        storage.pull_state(account_id).await.unwrap().commitment,
+        prior.commitment
+    );
+    assert_eq!(
+        storage
+            .pull_pending_proposals(account_id)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+
     run_once(&state, &store, MidenNetworkType::Testnet)
         .await
         .unwrap();
@@ -527,6 +745,14 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
         storage.pull_state_head(account_id).await.unwrap().nonce,
         Some(2)
     );
+
+    let kept = storage.pull_pending_proposals(account_id).await.unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].commitment, "0xproposed-by-the-signer");
+    assert!(matches!(
+        &kept[0].proposal.status,
+        DeltaStatus::Pending { cosigner_sigs, .. } if cosigner_sigs.is_empty()
+    ));
 
     let held = contender
         .leader
@@ -556,6 +782,7 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
                 &candidate,
                 &canonical.state_json,
                 &expected_auth,
+                &[],
                 state.clock.now(),
                 &lease
             )
@@ -606,9 +833,11 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
         prior_state: serde_json::Value,
         #[diesel(sql_type = Jsonb)]
         prior_auth: serde_json::Value,
+        #[diesel(sql_type = Jsonb)]
+        prior_proposals: serde_json::Value,
     }
     let mut conn = metadata.pool_handle().get().await.unwrap();
-    let backup = diesel::sql_query("SELECT count(*) OVER () AS total, prior_state, prior_auth FROM account_recovery_backups WHERE account_id = $1")
+    let backup = diesel::sql_query("SELECT count(*) OVER () AS total, prior_state, prior_auth, prior_proposals FROM account_recovery_backups WHERE account_id = $1")
         .bind::<Text, _>(account_id).get_result::<Backup>(&mut conn).await.unwrap();
     let old_payload = &backup.prior_state["state_json"];
     assert_ne!(old_payload, &prior.state_json);
@@ -623,6 +852,17 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
         old_auth
     );
     assert_eq!(backup.total, 1);
+    let saved_proposals: Vec<&str> = backup
+        .prior_proposals
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|proposal| proposal["commitment"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        saved_proposals,
+        ["0xproposed-by-another-key", "0xproposed-by-the-signer"]
+    );
 
     #[derive(diesel::QueryableByName)]
     struct PendingCount {
@@ -784,7 +1024,7 @@ async fn account_recovery_scan_continues_from_its_saved_position_and_records_pen
         &checking(&[first, second, joined_later]),
         &store,
         network,
-        &lease,
+        ScanWrites::Apply(&lease),
         &CancellationToken::new(),
         "",
         later(),
@@ -872,7 +1112,7 @@ async fn account_recovery_scan_continues_from_its_saved_position_and_records_pen
         &checking(&[second, joined_later]),
         &store,
         network,
-        &lease,
+        ScanWrites::Apply(&lease),
         &CancellationToken::new(),
         first,
         later(),
@@ -895,7 +1135,7 @@ async fn account_recovery_scan_continues_from_its_saved_position_and_records_pen
         &unreachable,
         &store,
         network,
-        &lease,
+        ScanWrites::Apply(&lease),
         &CancellationToken::new(),
         "",
         later(),
@@ -917,7 +1157,7 @@ async fn account_recovery_scan_continues_from_its_saved_position_and_records_pen
         &flaky,
         &store,
         network,
-        &lease,
+        ScanWrites::Apply(&lease),
         &CancellationToken::new(),
         "",
         later(),
@@ -1065,6 +1305,7 @@ async fn account_recovery_scan_continues_from_its_saved_position_and_records_pen
                 &Auth::MidenEcdsa {
                     cosigner_commitments: vec![Word::from([1, 2, 3, 4_u32]).into_hex()],
                 },
+                &[],
                 chrono::Utc::now(),
                 &lease,
             )

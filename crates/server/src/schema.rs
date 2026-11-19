@@ -38,6 +38,7 @@ diesel::table! {
         account_id -> Varchar,
         prior_state -> Jsonb,
         prior_auth -> Jsonb,
+        prior_proposals -> Jsonb,
         #[max_length = 128]
         recovered_commitment -> Varchar,
         recovered_at -> Timestamptz,

@@ -2,15 +2,16 @@ use std::{sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
-use diesel::sql_types::{BigInt, Bool, Jsonb, Nullable, Text, Timestamptz};
+use diesel::sql_types::{Array, BigInt, Bool, Jsonb, Nullable, Text, Timestamptz};
 use diesel_async::scoped_futures::{ScopedBoxFuture, ScopedFutureExt};
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, SimpleAsyncConnection};
 use serde_json::Value;
 use tokio::time::timeout;
 
 use crate::coordination::{LeaderElector, Lease, postgres::PgLeaseElector};
+use crate::delta_object::DeltaStatus;
 use crate::metadata::{Auth, MidenNetworkType, NetworkConfig};
-use crate::schema::{account_metadata, states};
+use crate::schema::{account_metadata, delta_proposals, states};
 use crate::storage::LeaseFence;
 use crate::storage::encryption::{cipher::StorageCipher, envelope::RecordAad};
 
@@ -23,16 +24,6 @@ const UNSETTLED_ACCOUNT_WORK: &str = "
             SELECT 1 FROM deltas pending WHERE pending.account_id = st.account_id
               AND pending.status_kind IN ('candidate', 'retained')
         ) THEN 'a delta awaits its on-chain outcome'
-        WHEN EXISTS (
-            SELECT 1 FROM deltas abandoned WHERE abandoned.account_id = st.account_id
-              AND abandoned.status_kind = 'discarded'
-              AND abandoned.status->>'reason' = 'client_abandoned'
-        ) THEN 'a client-abandoned delta is on record'
-        WHEN EXISTS (SELECT 1 FROM superseded_deltas d WHERE d.account_id = st.account_id)
-            THEN 'a superseded delta is retained'
-        WHEN EXISTS (
-            SELECT 1 FROM delta_proposals p WHERE p.account_id = st.account_id AND p.status_kind = 'pending'
-        ) THEN 'a proposal is pending'
         WHEN EXISTS (
             SELECT 1 FROM execution_reservations r WHERE r.account_id = st.account_id AND r.released_at IS NULL
         ) THEN 'an execution is reserved'
@@ -101,6 +92,20 @@ impl PendingOutcome {
             Self::Unresolved => "unresolved",
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProposalChange {
+    Remove,
+    DropApprovals(DeltaStatus),
+}
+
+/// A pending proposal as the scan read it, and what the restore does with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReviewedProposal {
+    pub commitment: String,
+    pub status: DeltaStatus,
+    pub change: Option<ProposalChange>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, diesel::QueryableByName)]
@@ -370,10 +375,36 @@ impl RecoveryStore {
         candidate: &RecoveryCandidate,
         state_json: &Value,
         auth: &Auth,
+        proposals: &[ReviewedProposal],
         now: DateTime<Utc>,
         lease: &Lease,
     ) -> Result<bool, String> {
         let account_id = &candidate.account_id;
+        let mut reviewed = proposals
+            .iter()
+            .map(|proposal| {
+                serde_json::to_value(&proposal.status)
+                    .map(|status| (proposal.commitment.clone(), status))
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        reviewed.sort_by(|left, right| left.0.cmp(&right.0));
+        let changes = proposals
+            .iter()
+            .filter_map(|proposal| {
+                let change = match proposal.change.as_ref()? {
+                    ProposalChange::Remove => Ok(None),
+                    ProposalChange::DropApprovals(status) => serde_json::to_value(status)
+                        .map(Some)
+                        .map_err(|error| error.to_string()),
+                };
+                Some(change.map(|change| (proposal.commitment.clone(), change)))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let changed: Vec<String> = changes
+            .iter()
+            .map(|(commitment, _)| commitment.clone())
+            .collect();
         let canonical_nonce = candidate
             .canonical_nonce
             .ok_or("Recovery target has no canonical nonce")?;
@@ -409,18 +440,44 @@ impl RecoveryStore {
                 if !lease_fence_is_current(conn, &fence).await? {
                     return Ok(false);
                 }
+                if pending_proposals(conn, account_id).await? != reviewed {
+                    return Ok(false);
+                }
 
                 diesel::sql_query(
                     "INSERT INTO account_recovery_backups
-                         (account_id, prior_state, prior_auth, recovered_commitment)
-                     SELECT st.account_id, to_jsonb(st), m.auth, $2
+                         (account_id, prior_state, prior_auth, prior_proposals,
+                          recovered_commitment)
+                     SELECT st.account_id, to_jsonb(st), m.auth,
+                            COALESCE((
+                                SELECT jsonb_agg(to_jsonb(p) ORDER BY p.commitment)
+                                FROM delta_proposals p
+                                WHERE p.account_id = st.account_id AND p.commitment = ANY($3)
+                            ), '[]'::jsonb),
+                            $2
                      FROM states st JOIN account_metadata m USING (account_id)
                      WHERE st.account_id = $1",
                 )
                 .bind::<Text, _>(account_id)
                 .bind::<Text, _>(canonical_commitment)
+                .bind::<Array<Text>, _>(&changed)
                 .execute(conn)
                 .await?;
+
+                for (commitment, kept_status) in &changes {
+                    let proposal = delta_proposals::table
+                        .filter(delta_proposals::account_id.eq(account_id))
+                        .filter(delta_proposals::commitment.eq(commitment));
+                    match kept_status {
+                        Some(status) => {
+                            diesel::update(proposal)
+                                .set(delta_proposals::status.eq(status))
+                                .execute(conn)
+                                .await?
+                        }
+                        None => diesel::delete(proposal).execute(conn).await?,
+                    };
+                }
 
                 let written_nonce = diesel::update(states::table.find(account_id))
                     .set((
@@ -479,6 +536,34 @@ impl RecoveryStore {
         .await
         .map_err(|error| format!("Could not {operation}: {error}"))
     }
+}
+
+/// The account's pending proposals and their statuses, locked for the transaction.
+async fn pending_proposals(
+    conn: &mut AsyncPgConnection,
+    account_id: &str,
+) -> QueryResult<Vec<(String, Value)>> {
+    #[derive(diesel::QueryableByName)]
+    struct PendingProposal {
+        #[diesel(sql_type = Text)]
+        commitment: String,
+        #[diesel(sql_type = Jsonb)]
+        status: Value,
+    }
+
+    let mut pending: Vec<(String, Value)> = diesel::sql_query(
+        "SELECT commitment, status FROM delta_proposals
+         WHERE account_id = $1 AND status_kind = 'pending'
+         FOR UPDATE",
+    )
+    .bind::<Text, _>(account_id)
+    .load::<PendingProposal>(conn)
+    .await?
+    .into_iter()
+    .map(|proposal| (proposal.commitment, proposal.status))
+    .collect();
+    pending.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(pending)
 }
 
 fn miden_network_config(network_type: MidenNetworkType) -> Result<Value, String> {

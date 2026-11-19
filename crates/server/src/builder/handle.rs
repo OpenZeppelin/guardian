@@ -70,6 +70,27 @@ pub struct ServerHandle {
     pub(crate) grpc_port: u16,
 }
 
+/// Whether the server checks its account records at startup, and whether that check writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupRecoveryMode {
+    Off,
+    DryRun,
+    Apply,
+}
+
+impl std::str::FromStr for StartupRecoveryMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim() {
+            "off" => Ok(Self::Off),
+            "dry-run" => Ok(Self::DryRun),
+            "apply" => Ok(Self::Apply),
+            other => Err(format!("must be off, dry-run or apply, got {other:?}")),
+        }
+    }
+}
+
 #[cfg(feature = "postgres")]
 #[derive(Debug, thiserror::Error)]
 pub enum StartupRecoveryError {
@@ -91,17 +112,29 @@ impl From<String> for StartupRecoveryError {
 impl ServerHandle {
     /// Recover accounts once before a stop-before-start deployment opens its listeners.
     #[cfg(feature = "postgres")]
-    pub async fn recover_accounts_on_startup(&self) -> Result<(), StartupRecoveryError> {
+    pub async fn recover_accounts_on_startup(
+        &self,
+        mode: StartupRecoveryMode,
+    ) -> Result<(), StartupRecoveryError> {
+        let dry_run = match mode {
+            StartupRecoveryMode::Off => return Ok(()),
+            StartupRecoveryMode::DryRun => true,
+            StartupRecoveryMode::Apply => false,
+        };
+        let (store, network_type) = self
+            .account_recovery
+            .as_ref()
+            .ok_or_else(|| "Account recovery requires shared Postgres storage".to_owned())?;
+        if dry_run {
+            return crate::jobs::account_recovery::dry_run(&self.app_state, store, *network_type)
+                .await;
+        }
         if crate::middleware::rate_limit::max_replicas_from_env()? != 1 {
             tracing::warn!(
                 "Skipping startup account recovery because GUARDIAN_MAX_REPLICAS exceeds 1"
             );
             return Ok(());
         }
-        let (store, network_type) = self
-            .account_recovery
-            .as_ref()
-            .ok_or_else(|| "Account recovery requires shared Postgres storage".to_owned())?;
         if self.app_state.canonicalization.is_none() {
             return Err(StartupRecoveryError::Incomplete(
                 "Account recovery requires canonicalization".into(),

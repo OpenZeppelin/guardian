@@ -15,7 +15,8 @@ use crate::network::{
 use crate::state::AppState;
 use crate::storage::is_record_corruption;
 use crate::storage::postgres::recovery::{
-    PendingOutcome, RecoveryCandidate, RecoveryStore, ScanProgress,
+    PendingOutcome, ProposalChange, RecoveryCandidate, RecoveryStore, ReviewedProposal,
+    ScanProgress,
 };
 
 const PAGE_SIZE: i64 = 100;
@@ -31,9 +32,34 @@ const MAX_CONSECUTIVE_FAILED_CHECKS: usize = 3;
 #[derive(Debug)]
 enum RecoveryOutcome {
     Unchanged,
-    Verified(Box<AppliedState>, Auth),
+    Verified(Box<Restoration>),
     Retryable(String),
     Unresolved(String),
+}
+
+/// What a restore writes for one account.
+#[derive(Debug)]
+struct Restoration {
+    state: AppliedState,
+    auth: Auth,
+    proposals: Vec<ReviewedProposal>,
+}
+
+impl Restoration {
+    fn proposals_removed(&self) -> usize {
+        self.proposals_changed(|change| matches!(change, ProposalChange::Remove))
+    }
+
+    fn proposals_trimmed(&self) -> usize {
+        self.proposals_changed(|change| matches!(change, ProposalChange::DropApprovals(_)))
+    }
+
+    fn proposals_changed(&self, matches: impl Fn(&ProposalChange) -> bool) -> usize {
+        self.proposals
+            .iter()
+            .filter(|proposal| proposal.change.as_ref().is_some_and(&matches))
+            .count()
+    }
 }
 
 enum PendingRecord {
@@ -41,10 +67,18 @@ enum PendingRecord {
     Write(PendingOutcome, String),
 }
 
+/// Whether a scan writes what it finds. A dry run reads and reports only.
+#[derive(Clone, Copy)]
+enum ScanWrites<'a> {
+    Apply(&'a Lease),
+    DryRun,
+}
+
 #[derive(Debug, Default)]
 struct ScanSummary {
     checked: usize,
     restored: usize,
+    restorable: usize,
     unchanged: usize,
     retryable: usize,
     unresolved: i64,
@@ -120,6 +154,27 @@ async fn acquire_lease(
     }
 }
 
+/// Runs the scan without a lease and without writing anything: the log lines say what an
+/// applying run would do with each account.
+pub(crate) async fn dry_run(
+    state: &AppState,
+    store: &RecoveryStore,
+    network_type: MidenNetworkType,
+) -> Result<(), StartupRecoveryError> {
+    run(
+        state,
+        store,
+        network_type,
+        ScanWrites::DryRun,
+        &CancellationToken::new(),
+        "",
+        Instant::now() + SCAN_BUDGET,
+    )
+    .await
+    .map(drop)
+    .map_err(StartupRecoveryError::Incomplete)
+}
+
 async fn run_within(
     state: &AppState,
     store: &RecoveryStore,
@@ -156,7 +211,7 @@ async fn run_within(
             state,
             store,
             network_type,
-            &lease,
+            ScanWrites::Apply(&lease),
             &cancel,
             &started.resume_after,
             Instant::now() + budget,
@@ -221,12 +276,13 @@ async fn run(
     state: &AppState,
     store: &RecoveryStore,
     network_type: MidenNetworkType,
-    lease: &Lease,
+    writes: ScanWrites<'_>,
     cancel: &CancellationToken,
     resume_after: &str,
     deadline: Instant,
 ) -> Result<ScanSummary, String> {
-    tracing::info!(?network_type, %resume_after, "Starting account recovery scan");
+    let dry_run = matches!(writes, ScanWrites::DryRun);
+    tracing::info!(?network_type, %resume_after, dry_run, "Starting account recovery scan");
     let mut after = resume_after.to_owned();
     let mut summary = ScanSummary::default();
     let mut consecutive_failed_checks = 0;
@@ -267,78 +323,99 @@ async fn run(
                     summary.unchanged += 1;
                     PendingRecord::Clear
                 }
-                Ok(RecoveryOutcome::Verified(applied, auth)) => {
-                    match store
-                        .apply(
-                            &candidate,
-                            &applied.state_json,
-                            &auth,
-                            state.clock.now(),
-                            lease,
-                        )
-                        .await
-                    {
-                        Ok(true) => {
-                            summary.restored += 1;
-                            tracing::info!(account_id = %candidate.account_id, "Restored chain-verified account state and signers");
-                            PendingRecord::Clear
-                        }
-                        Ok(false) => {
-                            summary.retryable += 1;
-                            tracing::info!(account_id = %candidate.account_id, "Account became ineligible or changed during recovery");
-                            PendingRecord::Write(
-                                PendingOutcome::Deferred,
-                                "the account changed or became ineligible during recovery".into(),
+                Ok(RecoveryOutcome::Verified(restoration)) => match writes {
+                    ScanWrites::DryRun => {
+                        summary.restorable += 1;
+                        tracing::info!(
+                            account_id = %candidate.account_id,
+                            proposals_removed = restoration.proposals_removed(),
+                            proposals_trimmed = restoration.proposals_trimmed(),
+                            "Dry run: the account would be restored"
+                        );
+                        PendingRecord::Clear
+                    }
+                    ScanWrites::Apply(lease) => {
+                        match store
+                            .apply(
+                                &candidate,
+                                &restoration.state.state_json,
+                                &restoration.auth,
+                                &restoration.proposals,
+                                state.clock.now(),
+                                lease,
                             )
-                        }
-                        Err(reason) => {
-                            summary.failed += 1;
-                            tracing::warn!(account_id = %candidate.account_id, %reason, "Account recovery transaction failed");
-                            PendingRecord::Write(
-                                PendingOutcome::Deferred,
-                                "restore transaction failed; see Guardian logs".into(),
-                            )
+                            .await
+                        {
+                            Ok(true) => {
+                                summary.restored += 1;
+                                tracing::info!(
+                                    account_id = %candidate.account_id,
+                                    proposals_removed = restoration.proposals_removed(),
+                                    proposals_trimmed = restoration.proposals_trimmed(),
+                                    "Restored chain-verified account state and signers"
+                                );
+                                PendingRecord::Clear
+                            }
+                            Ok(false) => {
+                                summary.retryable += 1;
+                                tracing::info!(account_id = %candidate.account_id, "Account became ineligible or changed during recovery");
+                                PendingRecord::Write(
+                                    PendingOutcome::Deferred,
+                                    "the account changed or became ineligible during recovery"
+                                        .into(),
+                                )
+                            }
+                            Err(reason) => {
+                                summary.failed += 1;
+                                tracing::warn!(account_id = %candidate.account_id, %reason, "Account recovery transaction failed");
+                                PendingRecord::Write(
+                                    PendingOutcome::Deferred,
+                                    "restore transaction failed; see Guardian logs".into(),
+                                )
+                            }
                         }
                     }
-                }
+                },
                 Ok(RecoveryOutcome::Retryable(reason)) => {
                     summary.retryable += 1;
-                    tracing::info!(account_id = %candidate.account_id, %reason, "Account recovery deferred until a later startup");
+                    tracing::info!(account_id = %candidate.account_id, %reason, dry_run, "Account recovery deferred until a later startup");
                     PendingRecord::Write(PendingOutcome::Deferred, reason)
                 }
                 Ok(RecoveryOutcome::Unresolved(reason)) => {
                     summary.unresolved += 1;
-                    tracing::warn!(account_id = %candidate.account_id, %reason, "Account recovery needs additional evidence");
+                    tracing::warn!(account_id = %candidate.account_id, %reason, dry_run, "Account recovery needs additional evidence");
                     PendingRecord::Write(PendingOutcome::Unresolved, reason)
                 }
                 Err(reason) => {
                     summary.failed += 1;
-                    tracing::warn!(account_id = %candidate.account_id, %reason, "Account recovery could not check the candidate");
+                    tracing::warn!(account_id = %candidate.account_id, %reason, dry_run, "Account recovery could not check the candidate");
                     PendingRecord::Write(
                         PendingOutcome::Deferred,
                         "account verification failed; see Guardian logs".into(),
                     )
                 }
             };
-            let recorded = match record {
-                PendingRecord::Clear => {
-                    bounded_db_call(
-                        "clear a pending recovery record",
-                        store.clear_pending(&candidate.account_id, lease),
-                    )
-                    .await
+            if let ScanWrites::Apply(lease) = writes {
+                let recorded = match record {
+                    PendingRecord::Clear => {
+                        bounded_db_call(
+                            "clear a pending recovery record",
+                            store.clear_pending(&candidate.account_id, lease),
+                        )
+                        .await
+                    }
+                    PendingRecord::Write(outcome, reason) => {
+                        bounded_db_call(
+                            "write a pending recovery record",
+                            store.record_pending(&candidate, outcome, &reason, lease),
+                        )
+                        .await
+                    }
+                };
+                if let Err(reason) = recorded {
+                    summary.failed += 1;
+                    tracing::warn!(account_id = %candidate.account_id, %reason, "Account recovery could not update the pending record");
                 }
-                PendingRecord::Write(outcome, reason) => {
-                    bounded_db_call(
-                        "write a pending recovery record",
-                        store.record_pending(&candidate, outcome, &reason, lease),
-                    )
-                    .await
-                }
-            };
-            if let Err(reason) = recorded {
-                summary.failed += 1;
-                tracing::warn!(account_id = %candidate.account_id, %reason, "Account recovery could not update the pending record");
             }
             summary.last_checked = Some(candidate.account_id);
             if consecutive_failed_checks == 0 {
@@ -372,8 +449,10 @@ async fn run(
         Some(0)
     };
     tracing::info!(
+        dry_run,
         checked = summary.checked,
         restored = summary.restored,
+        restorable = summary.restorable,
         unchanged = summary.unchanged,
         retryable = summary.retryable,
         unresolved = summary.unresolved,
@@ -523,7 +602,23 @@ async fn check_candidate(
         }
     }
 
-    Ok(RecoveryOutcome::Verified(Box::new(applied), auth))
+    let pending = match state
+        .storage
+        .pull_pending_proposals(&candidate.account_id)
+        .await
+    {
+        Ok(pending) => pending,
+        Err(reason) if is_record_corruption(&reason) => {
+            return Ok(RecoveryOutcome::Unresolved(reason));
+        }
+        Err(reason) => return Err(reason),
+    };
+    let proposals = proposals::review(&applied, &pending);
+    Ok(RecoveryOutcome::Verified(Box::new(Restoration {
+        state: applied,
+        auth,
+        proposals,
+    })))
 }
 
 fn prove_recovery(
@@ -613,6 +708,8 @@ fn recovered_auth(scheme: SignatureScheme, state: &AppliedState) -> Result<Auth,
     };
     Ok(baseline.with_chain_cosigners(state.cosigners.clone()))
 }
+
+mod proposals;
 
 #[cfg(test)]
 mod postgres_tests;
