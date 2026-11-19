@@ -394,7 +394,8 @@ Miden node for the account's current commitment.
 - If the stored record already matches the network, nothing changes.
 - If the configured node has no record of the account and Guardian holds no
   canonical deltas for it, the stored record stands only when it is the
-  account's first state. Any other record is listed as unresolved.
+  account's first state. Any other record is listed as unresolved, or
+  deferred while the account has work in flight.
 - If Guardian holds the account's canonical deltas from creation (up to 128),
   it rebuilds the account from them. When the result matches the network and
   is bound to this server's ACK key, Guardian stores it together with its

@@ -471,23 +471,13 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
             RecoveryOutcome::Unresolved(reason) if reason.contains("no record of the account")
         ));
     }
-    for network_type in [MidenNetworkType::Local, MidenNetworkType::Testnet] {
-        let mut past_first_state = store
-            .candidates(network_type, "", 10)
+    undeployed.stored_nonce = Some(5);
+    assert!(matches!(
+        check_candidate(&absent_with(Ok(())), &undeployed)
             .await
-            .unwrap()
-            .pop()
-            .unwrap();
-        past_first_state.stored_nonce = Some(5);
-        past_first_state.canonical_nonce = None;
-        past_first_state.canonical_commitment = None;
-        assert!(matches!(
-            check_candidate(&absent_with(Ok(())), &past_first_state)
-                .await
-                .unwrap(),
-            RecoveryOutcome::Unresolved(reason) if reason.contains("no record of the account")
-        ));
-    }
+            .unwrap(),
+        RecoveryOutcome::Unresolved(reason) if reason.contains("no record of the account")
+    ));
 
     {
         let mut conn = metadata.pool_handle().get().await.unwrap();
@@ -521,17 +511,6 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
         RecoveryOutcome::Retryable(reason) if reason.contains("current chain head")
     ));
     chain.set_on_chain_commitment(account_id, target);
-    let mut ahead = store
-        .candidates(MidenNetworkType::Testnet, "", 10)
-        .await
-        .unwrap()
-        .pop()
-        .unwrap();
-    ahead.stored_nonce = Some(9);
-    assert!(matches!(
-        check_candidate(&state, &ahead).await.unwrap(),
-        RecoveryOutcome::Verified(_)
-    ));
     let pending = DeltaObject {
         nonce: 3,
         prev_commitment: target.into(),
@@ -838,6 +817,18 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
         .set_pause(account_id, state.clock.now(), "operator review")
         .await
         .unwrap();
+    {
+        let mut conn = metadata.pool_handle().get().await.unwrap();
+        diesel::sql_query("UPDATE states SET nonce = 9 WHERE account_id = $1")
+            .bind::<Text, _>(account_id)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        storage.pull_state_head(account_id).await.unwrap().nonce,
+        Some(9)
+    );
 
     run_once(&state, &store, MidenNetworkType::Testnet)
         .await
@@ -943,6 +934,11 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
     );
     let restored_metadata = metadata.get_for_read(account_id).await.unwrap().unwrap();
     assert_eq!(restored_metadata.auth, expected_auth);
+    assert!(restored_metadata.paused_at.is_some());
+    assert_eq!(
+        storage.pull_state_head(account_id).await.unwrap().nonce,
+        Some(2)
+    );
     assert_eq!(
         restored_metadata.paused_reason.as_deref(),
         Some("operator review")
