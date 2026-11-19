@@ -4,10 +4,12 @@ use crate::network::AppliedState;
 use crate::services::proposal_signature::{proposal_tx_summary, verify_proposal_signature};
 use crate::storage::ProposalRecord;
 use crate::storage::postgres::recovery::{ProposalChange, ReviewedProposal};
+use miden_protocol::transaction::TransactionSummary;
 
 /// Reviews an account's pending proposals against the signer set of its restored state. A
 /// proposal none of those signers proposed or approved is removed, and a proposal that stays
-/// keeps only their approvals.
+/// keeps only their approvals. A proposal whose transaction summary cannot be read stays as
+/// it is.
 pub(super) fn review(restored: &AppliedState, pending: &[ProposalRecord]) -> Vec<ReviewedProposal> {
     pending
         .iter()
@@ -31,7 +33,10 @@ fn change_for(signers: &[ChainCosigner], proposal: &DeltaObject) -> ProposalChan
         | DeltaStatus::Retained { .. }
         | DeltaStatus::Discarded { .. } => return ProposalChange::Keep,
     };
-    let approvals = approvals_of(signers, proposal, cosigner_sigs);
+    let Ok(summary) = proposal_tx_summary(&proposal.delta_payload) else {
+        return ProposalChange::Keep;
+    };
+    let approvals = approvals_of(signers, &summary, cosigner_sigs);
     let proposed_by_signer = signers
         .iter()
         .any(|signer| signer.commitment.eq_ignore_ascii_case(proposer_id));
@@ -53,16 +58,13 @@ fn change_for(signers: &[ChainCosigner], proposal: &DeltaObject) -> ProposalChan
 
 fn approvals_of(
     signers: &[ChainCosigner],
-    proposal: &DeltaObject,
+    summary: &TransactionSummary,
     signatures: &[CosignerSignature],
 ) -> Vec<CosignerSignature> {
-    let Ok(summary) = proposal_tx_summary(&proposal.delta_payload) else {
-        return Vec::new();
-    };
     signatures
         .iter()
         .filter(|approval| {
-            verify_proposal_signature(&summary, &approval.signature).is_ok_and(|signer| {
+            verify_proposal_signature(summary, &approval.signature).is_ok_and(|signer| {
                 signers.iter().any(|known| {
                     known.commitment.eq_ignore_ascii_case(&signer)
                         && known.scheme == Some(approval.signature.scheme())

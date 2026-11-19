@@ -13,14 +13,15 @@ use crate::network::{
     AppliedState, NetworkClient, ReconstructError, RpcReadMode, StateVerification, reconstructor,
 };
 use crate::state::AppState;
-use crate::storage::is_record_corruption;
 use crate::storage::postgres::recovery::{
     PendingOutcome, ProposalChange, ProposalReview, RecoveryCandidate, RecoveryStore,
     ReviewedProposal, ScanProgress,
 };
+use crate::storage::{AccountDeltaCursor, is_record_corruption};
 
 const PAGE_SIZE: i64 = 100;
-const MAX_DELTAS: u32 = 128;
+const HISTORY_PAGE: u32 = 128;
+const REBUILD_BUDGET: Duration = Duration::from_secs(60);
 const LEASE_TTL: Duration = Duration::from_secs(30);
 const SCAN_BUDGET: Duration = Duration::from_secs(300);
 const REMAINING_COUNT_BUDGET: Duration = Duration::from_secs(1);
@@ -28,6 +29,14 @@ const SCAN_CONTROL_BUDGET: Duration = Duration::from_secs(6);
 const STALE_LEASE_WAIT: Duration = Duration::from_secs(35);
 const LEASE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_CONSECUTIVE_FAILED_CHECKS: usize = 3;
+
+/// An account rebuilt from its canonical history, or the reason that history does not
+/// rebuild it.
+#[derive(Debug)]
+enum Rebuild {
+    Rebuilt(AppliedState),
+    Unresolved(String),
+}
 
 #[derive(Debug)]
 enum RecoveryOutcome {
@@ -79,6 +88,7 @@ impl Restoration {
 
 enum PendingRecord {
     Clear,
+    ClearedByRestore,
     Write(PendingOutcome, String),
 }
 
@@ -109,23 +119,24 @@ enum ScanStep {
 }
 
 impl ScanSummary {
-    /// What a scan that started at `started` leaves for the next startup: its position when
-    /// it stopped early, and otherwise a pass from the first account. Only a pass that
-    /// started at the first account, reached the last one within one startup and deferred
-    /// none completes the scan.
+    /// What a scan that started at `started` leaves for the next startup. A scan that stops
+    /// early keeps its position and the counts of its pass. A pass that reaches the last
+    /// account completes the scan when it deferred no account, and is followed by a new pass
+    /// from the first account otherwise.
     fn next_step(&self, started: ScanProgress) -> ScanStep {
+        let unresolved = started.unresolved + self.unresolved;
+        let deferred = started.deferred || self.retryable > 0 || self.failed > 0;
         if self.stopped_early {
             return ScanStep::Resume(ScanProgress {
                 resume_after: self.last_checked.clone().unwrap_or(started.resume_after),
+                unresolved,
+                deferred,
             });
         }
-        let covered_every_account = started.resume_after.is_empty();
-        if covered_every_account && self.retryable == 0 && self.failed == 0 {
-            ScanStep::Completed {
-                unresolved: self.unresolved,
-            }
-        } else {
+        if deferred {
             ScanStep::Resume(ScanProgress::default())
+        } else {
+            ScanStep::Completed { unresolved }
         }
     }
 }
@@ -330,7 +341,8 @@ async fn run(
             if cancel.is_cancelled() {
                 return Err("account recovery lease lost".into());
             }
-            let result = match timeout_at(deadline, check_candidate(state, &candidate)).await {
+            let result = match timeout_at(deadline, check_candidate(state, store, &candidate)).await
+            {
                 Ok(result) => result,
                 Err(_) => {
                     summary.stopped_early = true;
@@ -381,7 +393,7 @@ async fn run(
                                     "Restored chain-verified account state and signers"
                                 );
                                 restoration.log_proposal_changes(&candidate.account_id, false);
-                                PendingRecord::Clear
+                                PendingRecord::ClearedByRestore
                             }
                             Ok(false) => {
                                 summary.retryable += 1;
@@ -424,6 +436,7 @@ async fn run(
             };
             if let ScanWrites::Apply(lease) = writes {
                 let recorded = match record {
+                    PendingRecord::ClearedByRestore => Ok(()),
                     PendingRecord::Clear => {
                         bounded_db_call(
                             "clear a pending recovery record",
@@ -493,6 +506,7 @@ async fn run(
 
 async fn check_candidate(
     state: &AppState,
+    store: &RecoveryStore,
     candidate: &RecoveryCandidate,
 ) -> Result<RecoveryOutcome, String> {
     let chain = state
@@ -519,6 +533,16 @@ async fn check_candidate(
     if let Some(unsettled_work) = &candidate.unsettled_work {
         return Ok(RecoveryOutcome::Retryable(unsettled_work.clone()));
     }
+    if let StateVerification::Mismatch { on_chain } = &chain
+        && candidate.canonical_commitment.as_deref() != Some(on_chain.as_str())
+        && store
+            .holds_landed_delta(&candidate.account_id, on_chain)
+            .await?
+    {
+        return Ok(RecoveryOutcome::Retryable(
+            "a delta that landed awaits its promotion".into(),
+        ));
+    }
 
     let (Some(canonical_nonce), Some(target)) = (
         candidate.canonical_nonce,
@@ -534,41 +558,46 @@ async fn check_candidate(
         };
         return Ok(RecoveryOutcome::Unresolved(reason.into()));
     };
-    if !matches!(&chain, StateVerification::Mismatch { on_chain } if on_chain == target) {
-        return Ok(RecoveryOutcome::Retryable(
-            "latest canonical delta does not match the current chain head".into(),
-        ));
-    }
-    let Some(count) = u32::try_from(canonical_nonce)
-        .ok()
-        .filter(|count| (1..=MAX_DELTAS).contains(count))
-    else {
-        return Ok(RecoveryOutcome::Unresolved(
-            "canonical history exceeds the recovery limit".into(),
-        ));
-    };
-    let history = state
-        .storage
-        .list_canonical_deltas_paged(&candidate.account_id, count, None)
-        .await;
-    let deltas = match history {
-        Ok(deltas) => deltas,
-        Err(reason) if is_record_corruption(&reason) => {
-            return Ok(RecoveryOutcome::Unresolved(reason));
+    match &chain {
+        StateVerification::Mismatch { on_chain } if on_chain == target => {}
+        StateVerification::Mismatch { on_chain } => {
+            let earlier = store
+                .holds_canonical_commitment(&candidate.account_id, on_chain)
+                .await?;
+            return Ok(if earlier {
+                RecoveryOutcome::Retryable(
+                    "the configured node reports an earlier state of the account".into(),
+                )
+            } else {
+                RecoveryOutcome::Unresolved(
+                    "the configured node's commitment is missing from the canonical history held here".into(),
+                )
+            });
         }
-        Err(reason) => return Err(reason),
-    };
-    if deltas.len() != count as usize {
-        return Ok(RecoveryOutcome::Unresolved(
-            "missing canonical deltas from account creation".into(),
-        ));
+        StateVerification::Match | StateVerification::Absent => {
+            return Ok(RecoveryOutcome::Retryable(
+                "latest canonical delta does not match the current chain head".into(),
+            ));
+        }
     }
+    let rebuild = rebuild(state, &candidate.account_id, canonical_nonce, HISTORY_PAGE);
+    let rebuilt = match timeout(REBUILD_BUDGET, rebuild).await {
+        Ok(rebuilt) => match rebuilt? {
+            Rebuild::Rebuilt(rebuilt) => rebuilt,
+            Rebuild::Unresolved(reason) => return Ok(RecoveryOutcome::Unresolved(reason)),
+        },
+        Err(_) => {
+            return Ok(RecoveryOutcome::Unresolved(
+                "the canonical history takes too long to rebuild".into(),
+            ));
+        }
+    };
 
     let network = state.network_client.clone();
     let account_id = candidate.account_id.clone();
     let target = target.to_owned();
     let proof = reconstructor()
-        .run_background(move || prove_recovery(network.as_ref(), &account_id, &target, deltas))
+        .run_background(move || prove_recovery(network.as_ref(), &account_id, &target, rebuilt))
         .await;
     let (applied, auth) = match proof {
         Ok(proof) => proof,
@@ -584,6 +613,16 @@ async fn check_candidate(
             "recovered state is bound to a different Guardian key".into(),
         ));
     }
+
+    let proposals = match state
+        .storage
+        .pull_pending_proposals(&candidate.account_id)
+        .await
+    {
+        Ok(pending) => ProposalReview::Reviewed(proposals::review(&applied, &pending)),
+        Err(reason) if is_record_corruption(&reason) => ProposalReview::Unreadable,
+        Err(reason) => return Err(reason),
+    };
 
     match state
         .network_client
@@ -602,15 +641,6 @@ async fn check_candidate(
         }
     }
 
-    let proposals = match state
-        .storage
-        .pull_pending_proposals(&candidate.account_id)
-        .await
-    {
-        Ok(pending) => ProposalReview::Reviewed(proposals::review(&applied, &pending)),
-        Err(reason) if is_record_corruption(&reason) => ProposalReview::Unreadable,
-        Err(reason) => return Err(reason),
-    };
     Ok(RecoveryOutcome::Verified(Box::new(Restoration {
         state: applied,
         auth,
@@ -636,13 +666,74 @@ async fn holds_first_state(
     }
 }
 
+/// Rebuilds the account from its canonical deltas, read `page` at a time from the first one.
+async fn rebuild(
+    state: &AppState,
+    account_id: &str,
+    canonical_nonce: i64,
+    page: u32,
+) -> Result<Rebuild, String> {
+    let mut rebuilt: Option<AppliedState> = None;
+    let mut first = 1_i64;
+    let Some(end) = canonical_nonce.checked_add(1) else {
+        return Ok(Rebuild::Unresolved(
+            "canonical nonce exceeds the storage range".into(),
+        ));
+    };
+    while first < end {
+        let after = first.saturating_add(i64::from(page)).min(end);
+        let expected = u32::try_from(after - first).map_err(|error| error.to_string())?;
+        let read = state
+            .storage
+            .list_canonical_deltas_paged(
+                account_id,
+                expected,
+                Some(AccountDeltaCursor { last_nonce: after }),
+            )
+            .await;
+        let deltas = match read {
+            Ok(deltas) => deltas,
+            Err(reason) if is_record_corruption(&reason) => {
+                return Ok(Rebuild::Unresolved(reason));
+            }
+            Err(reason) => return Err(reason),
+        };
+        if u32::try_from(deltas.len()) != Ok(expected) {
+            return Ok(Rebuild::Unresolved(
+                "missing canonical deltas from account creation".into(),
+            ));
+        }
+        let network = state.network_client.clone();
+        let account = account_id.to_owned();
+        let replayed = reconstructor()
+            .run_background(move || replay(network.as_ref(), &account, rebuilt, deltas))
+            .await;
+        rebuilt = match replayed {
+            Ok(applied) => Some(applied),
+            Err(ReconstructError::Operation(reason)) => return Ok(Rebuild::Unresolved(reason)),
+            Err(ReconstructError::Task(reason)) => {
+                return Err(format!("state reconstruction failed: {reason}"));
+            }
+        };
+        first = after;
+    }
+    Ok(match rebuilt {
+        Some(rebuilt) => Rebuild::Rebuilt(rebuilt),
+        None => Rebuild::Unresolved("canonical history is empty".into()),
+    })
+}
+
+/// The rebuilt state with the signer set it carries, once it is the expected account head.
 fn prove_recovery(
     network: &dyn NetworkClient,
     account_id: &str,
     target: &str,
-    deltas: Vec<DeltaObject>,
+    applied: AppliedState,
 ) -> Result<(AppliedState, Auth), String> {
-    let applied = reconstruct(network, account_id, target, deltas)?;
+    let head = network.get_state_head(account_id, &applied.state_json)?;
+    if head.commitment != target || head.nonce != applied.nonce {
+        return Err("reconstructed state does not match the expected account head".into());
+    }
     let binding = network
         .account_auth_binding(&applied.state_json)?
         .ok_or("missing account auth binding")?;
@@ -654,18 +745,21 @@ fn prove_recovery(
     Ok((applied, auth))
 }
 
-fn reconstruct(
+/// Applies canonical deltas, newest first as storage returns them, on top of the state rebuilt
+/// so far. Without one, the first delta creates the account.
+fn replay(
     network: &dyn NetworkClient,
     account_id: &str,
-    target: &str,
+    rebuilt: Option<AppliedState>,
     deltas: Vec<DeltaObject>,
 ) -> Result<AppliedState, String> {
-    let mut reconstructed: Option<AppliedState> = None;
-    for (index, delta) in deltas.into_iter().rev().enumerate() {
-        if delta.account_id != account_id
-            || delta.nonce != index as u64 + 1
-            || !delta.status.is_canonical()
-        {
+    let first_nonce = match &rebuilt {
+        Some(rebuilt) => rebuilt.nonce.ok_or("rebuilt state has no nonce")? + 1,
+        None => 1,
+    };
+    let mut reconstructed = rebuilt;
+    for (nonce, delta) in (first_nonce..).zip(deltas.into_iter().rev()) {
+        if delta.account_id != account_id || delta.nonce != nonce || !delta.status.is_canonical() {
             return Err("canonical history is not contiguous from account creation".into());
         }
         let applied = match reconstructed {
@@ -683,12 +777,7 @@ fn reconstruct(
         }
         reconstructed = Some(applied);
     }
-    let applied = reconstructed.ok_or("canonical history is empty")?;
-    let head = network.get_state_head(account_id, &applied.state_json)?;
-    if head.commitment != target || head.nonce != applied.nonce {
-        return Err("reconstructed state does not match the expected account head".into());
-    }
-    Ok(applied)
+    reconstructed.ok_or_else(|| "canonical history is empty".into())
 }
 
 fn recovered_auth(scheme: SignatureScheme, state: &AppliedState) -> Result<Auth, String> {

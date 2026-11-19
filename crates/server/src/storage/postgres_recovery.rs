@@ -18,16 +18,33 @@ use crate::utils::normalize_commitment_hex;
 
 use super::{Pool, lease_fence_is_current, lock_account_metadata};
 
-const UNSETTLED_ACCOUNT_WORK: &str = "
-    CASE
-        WHEN m.has_pending_candidate OR EXISTS (
-            SELECT 1 FROM deltas pending WHERE pending.account_id = st.account_id
-              AND pending.status_kind IN ('candidate', 'retained')
-        ) THEN 'a delta awaits its on-chain outcome'
-        WHEN EXISTS (
-            SELECT 1 FROM execution_reservations r WHERE r.account_id = st.account_id AND r.released_at IS NULL
-        ) THEN 'an execution is reserved'
-    END";
+/// The work in flight that can still land on the account: a delta, or a reserved execution,
+/// that starts from `head`, the SQL expression for the account's latest canonical commitment.
+fn unsettled_account_work(head: &str) -> String {
+    format!(
+        "CASE
+            WHEN EXISTS (
+                SELECT 1 FROM deltas pending WHERE pending.account_id = st.account_id
+                  AND pending.status_kind IN ('candidate', 'retained')
+                  AND pending.prev_commitment = {head}
+            ) THEN 'a delta awaits its on-chain outcome'
+            WHEN EXISTS (
+                SELECT 1 FROM execution_reservations r
+                WHERE r.account_id = st.account_id AND r.released_at IS NULL
+                  AND (EXISTS (
+                           SELECT 1 FROM delta_proposals p
+                           WHERE p.account_id = r.account_id AND p.commitment = r.proposal_id
+                             AND p.prev_commitment = {head}
+                       )
+                       OR EXISTS (
+                           SELECT 1 FROM execution_submissions s
+                           WHERE s.account_id = r.account_id AND s.proposal_id = r.proposal_id
+                             AND s.attempt = r.attempt AND s.base_commitment = {head}
+                       ))
+            ) THEN 'an execution is reserved'
+        END"
+    )
+}
 
 const CANDIDATE_SOURCE: &str = "
     FROM account_metadata m
@@ -138,6 +155,10 @@ enum ProposalWrite {
 pub(crate) struct ScanProgress {
     #[diesel(sql_type = Text)]
     pub resume_after: String,
+    #[diesel(sql_type = BigInt)]
+    pub unresolved: i64,
+    #[diesel(sql_type = Bool)]
+    pub deferred: bool,
 }
 
 pub(crate) struct RecoveryStore {
@@ -196,7 +217,8 @@ impl RecoveryStore {
         let network = miden_network_config(network_type)?;
         let mut conn = self.pool.get().await.map_err(|error| error.to_string())?;
         diesel::sql_query(
-            "SELECT resume_after FROM account_recovery_startup WHERE network_config = $1",
+            "SELECT resume_after, pass_unresolved AS unresolved, pass_deferred AS deferred
+             FROM account_recovery_startup WHERE network_config = $1",
         )
         .bind::<Jsonb, _>(network)
         .get_result::<ScanProgress>(&mut conn)
@@ -217,10 +239,13 @@ impl RecoveryStore {
             .write("record startup recovery progress", |conn| {
                 async move {
                     diesel::sql_query(format!(
-                        "INSERT INTO account_recovery_startup (network_config, resume_after)
-             SELECT $4, $5 {HELD_LEASE}
+                        "INSERT INTO account_recovery_startup
+                 (network_config, resume_after, pass_unresolved, pass_deferred)
+             SELECT $4, $5, $6, $7 {HELD_LEASE}
              ON CONFLICT (network_config) DO UPDATE
-                 SET resume_after = EXCLUDED.resume_after
+                 SET resume_after = EXCLUDED.resume_after,
+                     pass_unresolved = EXCLUDED.pass_unresolved,
+                     pass_deferred = EXCLUDED.pass_deferred
                  WHERE account_recovery_startup.unresolved_accounts IS NULL",
                     ))
                     .bind::<Text, _>(&lease.name)
@@ -228,6 +253,8 @@ impl RecoveryStore {
                     .bind::<BigInt, _>(lease.fence_token)
                     .bind::<Jsonb, _>(network)
                     .bind::<Text, _>(&progress.resume_after)
+                    .bind::<BigInt, _>(progress.unresolved)
+                    .bind::<Bool, _>(progress.deferred)
                     .execute(conn)
                     .await
                 }
@@ -254,7 +281,9 @@ impl RecoveryStore {
              ON CONFLICT (network_config) DO UPDATE
                  SET completed_at = EXCLUDED.completed_at,
                      unresolved_accounts = EXCLUDED.unresolved_accounts,
-                     resume_after = ''
+                     resume_after = '',
+                     pass_unresolved = 0,
+                     pass_deferred = FALSE
                  WHERE account_recovery_startup.unresolved_accounts IS NULL",
         ))
         .bind::<Text, _>(&lease.name)
@@ -283,7 +312,7 @@ impl RecoveryStore {
         let mut conn = self.pool.get().await.map_err(|error| error.to_string())?;
         diesel::sql_query(format!(
             "SELECT st.account_id, st.nonce AS stored_nonce, st.commitment AS stored_commitment,
-                    d.nonce AS canonical_nonce, ({UNSETTLED_ACCOUNT_WORK}) AS unsettled_work,
+                    d.nonce AS canonical_nonce, ({unsettled_work}) AS unsettled_work,
                     d.new_commitment AS canonical_commitment, st.updated_at AS state_updated_at,
                     m.auth_version,
                     first_held.nonce AS history_starts_at_nonce,
@@ -291,6 +320,7 @@ impl RecoveryStore {
              {CANDIDATE_SOURCE}
              ORDER BY m.account_id
              LIMIT $3",
+            unsettled_work = unsettled_account_work("d.new_commitment"),
         ))
         .bind::<Text, _>(after)
         .bind::<Jsonb, _>(network)
@@ -320,6 +350,61 @@ impl RecoveryStore {
             .await
             .map(|row| row.remaining)
             .map_err(|error| format!("Could not count remaining recovery candidates: {error}"))
+    }
+
+    /// Whether a canonical delta of the account starts from or ends at `commitment`.
+    pub(crate) async fn holds_canonical_commitment(
+        &self,
+        account_id: &str,
+        commitment: &str,
+    ) -> Result<bool, String> {
+        self.holds_delta(
+            account_id,
+            commitment,
+            "status_kind = 'canonical' AND (new_commitment = $2 OR prev_commitment = $2)",
+        )
+        .await
+    }
+
+    /// Whether a delta of the account that still awaits its on-chain outcome ends at
+    /// `commitment`.
+    pub(crate) async fn holds_landed_delta(
+        &self,
+        account_id: &str,
+        commitment: &str,
+    ) -> Result<bool, String> {
+        self.holds_delta(
+            account_id,
+            commitment,
+            "status_kind IN ('candidate', 'retained') AND new_commitment = $2",
+        )
+        .await
+    }
+
+    async fn holds_delta(
+        &self,
+        account_id: &str,
+        commitment: &str,
+        condition: &str,
+    ) -> Result<bool, String> {
+        #[derive(diesel::QueryableByName)]
+        struct Held {
+            #[diesel(sql_type = Bool)]
+            held: bool,
+        }
+
+        let mut conn = self.pool.get().await.map_err(|error| error.to_string())?;
+        diesel::sql_query(format!(
+            "SELECT EXISTS (
+                 SELECT 1 FROM deltas WHERE account_id = $1 AND {condition}
+             ) AS held",
+        ))
+        .bind::<Text, _>(account_id)
+        .bind::<Text, _>(commitment)
+        .get_result::<Held>(&mut conn)
+        .await
+        .map(|row| row.held)
+        .map_err(|error| format!("Could not read the account's deltas: {error}"))
     }
 
     pub(crate) async fn record_pending(
@@ -413,6 +498,7 @@ impl RecoveryStore {
         let expected = reviewed.map(|reviewed| {
             let mut expected: Vec<(String, DeltaStatus)> = reviewed
                 .iter()
+                .filter(|proposal| proposal.status.is_pending())
                 .map(|proposal| (proposal.commitment.clone(), proposal.status.clone()))
                 .collect();
             expected.sort_by(|left, right| left.0.cmp(&right.0));
@@ -537,6 +623,10 @@ impl RecoveryStore {
                     ))
                     .execute(conn)
                     .await?;
+                diesel::sql_query("DELETE FROM account_recovery_pending WHERE account_id = $1")
+                    .bind::<Text, _>(account_id)
+                    .execute(conn)
+                    .await?;
                 Ok(true)
             }
             .scope_boxed()
@@ -608,7 +698,8 @@ impl RecoveryStore {
 }
 
 /// The account's pending proposals and their statuses, locked for the transaction and read
-/// the way the storage layer reads them.
+/// the way the storage layer reads them. A row whose status cannot be read is left out, as it
+/// is from the review this is compared with.
 async fn pending_proposals(
     conn: &mut AsyncPgConnection,
     account_id: &str,
@@ -663,13 +754,14 @@ impl RecoveryCandidate {
              FROM states st JOIN account_metadata m USING (account_id)
              WHERE st.account_id = $1 AND st.nonce IS NOT DISTINCT FROM $2 AND st.commitment = $3
                AND st.updated_at = $4 AND m.auth_version = $5
-               AND m.released_at IS NULL AND ({UNSETTLED_ACCOUNT_WORK}) IS NULL
+               AND m.released_at IS NULL AND ({unsettled_work}) IS NULL
                AND ($6, $7) = (
                    SELECT d.nonce, d.new_commitment FROM deltas d
                    WHERE d.account_id = st.account_id AND d.status_kind = 'canonical'
                    ORDER BY d.nonce DESC LIMIT 1
                )
              FOR UPDATE OF st",
+            unsettled_work = unsettled_account_work("$7"),
         ))
         .bind::<Text, _>(&self.account_id)
         .bind::<Nullable<BigInt>, _>(self.stored_nonce)

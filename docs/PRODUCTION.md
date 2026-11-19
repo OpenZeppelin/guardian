@@ -381,9 +381,13 @@ accounts that would be restored (`restorable`), deferred and left unresolved.
   deploy. It passes the mode to the task and lengthens the container health
   check start period and the load balancer grace period, so the task is not
   replaced while its listeners are closed. For `apply`, running a single task
-  (desired count and autoscaling maximum of one) and stopping the running task
-  before the deploy remain manual steps. Set the variable back to `"off"`
-  once the check has completed.
+  (desired count and autoscaling maximum of one) and keeping older tasks from
+  running during the deploy remain manual steps: turn off the service's
+  autoscaling, scale the service to zero, wait for its tasks to stop, deploy,
+  then scale back to one. Stopping a task alone is not enough, because the
+  service starts a replacement, and autoscaling with a minimum above zero
+  starts one too. Set the variable back to `"off"` and turn autoscaling back
+  on once the check has completed.
 
 **What it does**
 
@@ -394,10 +398,14 @@ Miden node for the account's current commitment.
 - If the stored record already matches the network, nothing changes.
 - If the configured node has no record of the account and Guardian holds no
   canonical deltas for it, the stored record stands only when it is the
-  account's first state. Any other record is listed as unresolved, or
-  deferred while the account has work in flight.
-- If Guardian holds the account's canonical deltas from creation (up to 128),
-  it rebuilds the account from them. When the result matches the network and
+  account's first state. Any other record is listed as unresolved.
+- If the network is past the canonical deltas Guardian holds and no delta in
+  flight ends at the network's state, the account is listed as unresolved. If
+  the configured node reports an earlier state of the account, the account is
+  deferred.
+- If Guardian holds the account's canonical deltas from creation, it rebuilds
+  the account from them. An account whose history takes more than a minute to
+  rebuild is listed as unresolved. When the result matches the network and
   is bound to this server's ACK key, Guardian stores it together with its
   nonce and the account metadata derived from it. The same transaction saves
   the previous record in `account_recovery_backups`; encrypted state keeps its
@@ -407,14 +415,17 @@ Miden node for the account's current commitment.
 
 A restore also reviews the account's pending proposals against the signers of
 the restored state. A proposal that one of those signers proposed or approved
-stays, keeping only their approvals. Any other pending proposal is removed.
+stays, keeping only their approvals. Any other pending proposal is removed,
+except one whose transaction summary cannot be read, which stays as it is.
 Every proposal a restore changes or removes is saved with the previous record
 in `account_recovery_backups.prior_proposals`. If the account's proposals
 cannot be read, the restore leaves them as they are.
 
 An account with work in flight (a delta awaiting its on-chain outcome or a
-reserved execution) is deferred and checked again on a later startup. A paused
-account is checked like any other, and stays paused.
+reserved execution) is deferred and checked again on a later startup. Work
+counts when it starts from the account's latest canonical state, or when it is
+a delta that ends at the network's current state. A paused account is checked
+like any other, and stays paused.
 
 **How long it takes**
 
@@ -427,9 +438,11 @@ account is checked like any other, and stays paused.
 - In `apply`, Guardian records where it stopped in
   `account_recovery_startup.resume_after`, and the next startup in `apply`
   continues from there.
-- The check completes when one startup covers every account, from the first
-  to the last, without deferring any. Guardian then records how many accounts
-  it could not bring up to date in
+- The check completes when a pass reaches the last account without deferring
+  any. A pass can span several startups: one that stops early keeps its
+  position and its counts. A pass that deferred an account is followed by a
+  new pass from the first account. On completion Guardian records how many
+  accounts it could not bring up to date in
   `account_recovery_startup.unresolved_accounts`, and later startups skip the
   check. Until then, each startup in `apply` runs it again.
 - An account Guardian holds canonical deltas for, but the configured node has
@@ -449,11 +462,23 @@ listeners without finishing the check.
 After `apply`, `account_recovery_pending` has one row for each account that
 was checked and not brought up to date. `outcome` is `deferred` (a later
 startup checks it again) or `unresolved` (Guardian does not hold what it
-needs), and `reason` says why. When the canonical history held here does not reach back to the
-account's creation, `history_starts_at_nonce` and `history_base_commitment`
-show where it begins. An unresolved account the network has a
-record of is brought up to date the next time it is registered with its
-current state.
+needs), and `reason` says why. When the canonical history held here does not
+reach back to the account's creation, `history_starts_at_nonce` and
+`history_base_commitment` show where it begins.
+
+An unresolved account the network has a record of is brought up to date the
+next time it is registered with its current state. One the network has no
+record of cannot be registered again while its stored state remains. Remove
+that row with the statement below and keep its output, which is the removed
+row. It removes the row only while it still holds the `stored_commitment`
+listed for the account in `account_recovery_pending`. The account's next
+registration with its first state is then accepted:
+
+```sql
+DELETE FROM states
+WHERE account_id = '<account id>' AND commitment = '<stored_commitment>'
+RETURNING to_jsonb(states);
+```
 
 A row is removed once its account is brought up to date or found unchanged. A
 row whose `stored_commitment` no longer matches the account's stored state is

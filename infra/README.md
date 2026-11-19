@@ -116,7 +116,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # guardian_canonicalization_fast_promotion_enabled = false
 # guardian_max_pending_candidates_per_account = 4  # opt in to queueing chained candidates (server default 1, max 16; upgrade TS clients first, see docs/CONFIGURATION.md)
 # guardian_release_sweep_enabled = false         # turns the release sweep's walk of the fleet off
-# guardian_startup_account_recovery = "dry-run" # then "apply" for one deploy: single task, older task stopped first; see docs/PRODUCTION.md
+# guardian_startup_account_recovery = "dry-run" # then "apply" for one deploy: single task, service scaled to zero first; see docs/PRODUCTION.md
 # guardian_block_watch_enabled = false            # kill switch for the committed-block feed
 
 # Optional: dashboard operator Falcon public keys managed by Terraform

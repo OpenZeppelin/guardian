@@ -8,6 +8,8 @@ diesel::table! {
         resume_after -> Varchar,
         completed_at -> Nullable<Timestamptz>,
         unresolved_accounts -> Nullable<Int8>,
+        pass_unresolved -> Int8,
+        pass_deferred -> Bool,
     }
 }
 

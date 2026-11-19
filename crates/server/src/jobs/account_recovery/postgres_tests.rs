@@ -104,6 +104,16 @@ fn canonical_history(
     (vec![second, first], second_state)
 }
 
+fn prove(
+    network: &dyn NetworkClient,
+    account_id: &str,
+    target: &str,
+    deltas: Vec<DeltaObject>,
+) -> Result<(AppliedState, Auth), String> {
+    replay(network, account_id, None, deltas)
+        .and_then(|rebuilt| prove_recovery(network, account_id, target, rebuilt))
+}
+
 #[tokio::test]
 async fn rejects_incomplete_history_and_commitment_mismatches() {
     let network = MidenNetworkClient::lazy_for_test(NetworkType::MidenLocal);
@@ -118,18 +128,36 @@ async fn rejects_incomplete_history_and_commitment_mismatches() {
     let account_id = account.id().to_hex();
     let target = &expected.commitment;
     assert_eq!(
-        reconstruct(&network, &account_id, target, deltas.clone()).unwrap(),
-        expected
-    );
-    assert_eq!(
-        prove_recovery(&network, &account_id, target, deltas.clone())
+        prove(&network, &account_id, target, deltas.clone())
             .unwrap()
             .0,
         expected
     );
-    assert!(reconstruct(&network, &account_id, target, vec![deltas[0].clone()]).is_err());
+    let first_page = replay(&network, &account_id, None, vec![deltas[1].clone()]).unwrap();
+    assert_eq!(first_page.nonce, Some(1));
+    assert!(prove_recovery(&network, &account_id, target, first_page.clone()).is_err());
+    assert!(
+        replay(
+            &network,
+            &account_id,
+            Some(first_page.clone()),
+            vec![deltas[1].clone()]
+        )
+        .is_err()
+    );
+    assert_eq!(
+        replay(
+            &network,
+            &account_id,
+            Some(first_page),
+            vec![deltas[0].clone()]
+        )
+        .unwrap(),
+        expected
+    );
+    assert!(prove(&network, &account_id, target, vec![deltas[0].clone()]).is_err());
     deltas[1].new_commitment = Some("wrong commitment".into());
-    assert!(reconstruct(&network, &account_id, target, deltas).is_err());
+    assert!(prove(&network, &account_id, target, deltas).is_err());
 }
 
 #[tokio::test]
@@ -172,7 +200,7 @@ async fn rebuilds_the_signer_set_under_each_scheme() {
             (Word::from([5, 6, 7, 8_u32]), guardian_scheme),
         );
         let (deltas, rebuilt) = canonical_history(&account, &network);
-        let (_, auth) = prove_recovery(
+        let (_, auth) = prove(
             &network,
             &account.id().to_hex(),
             &rebuilt.commitment,
@@ -244,12 +272,15 @@ fn a_proposal_review_keeps_what_the_restored_signers_proposed_or_approved() {
     };
     let own = approval(&owner);
     let other = approval(&other_key);
+    let mut unreadable = record("unreadable", &other_key, std::slice::from_ref(&other));
+    unreadable.proposal.delta_payload = serde_json::json!({ "tx_summary": "not a summary" });
     let records = [
         record("signed", &owner, std::slice::from_ref(&own)),
         record("mixed", &owner, &[own.clone(), other.clone()]),
         record("approved", &other_key, std::slice::from_ref(&own)),
         record("unrelated", &other_key, std::slice::from_ref(&other)),
         record("unsigned", &owner, &[]),
+        unreadable,
     ];
 
     let changes: Vec<ProposalChange> =
@@ -267,6 +298,7 @@ fn a_proposal_review_keeps_what_the_restored_signers_proposed_or_approved() {
             },
             ProposalChange::Keep,
             ProposalChange::Remove,
+            ProposalChange::Keep,
             ProposalChange::Keep,
         ]
     );
@@ -436,7 +468,7 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
             .with_verify_commitment(Ok(StateVerification::Absent)),
     );
     assert!(matches!(
-        check_candidate(&absent, &candidate).await.unwrap(),
+        check_candidate(&absent, &store, &candidate).await.unwrap(),
         RecoveryOutcome::Retryable(reason) if reason.contains("no record of the account")
     ));
     let mut undeployed = store
@@ -459,13 +491,13 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
     for stored_nonce in [Some(0), None] {
         undeployed.stored_nonce = stored_nonce;
         assert!(matches!(
-            check_candidate(&absent_with(Ok(())), &undeployed)
+            check_candidate(&absent_with(Ok(())), &store, &undeployed)
                 .await
                 .unwrap(),
             RecoveryOutcome::Unchanged
         ));
         assert!(matches!(
-            check_candidate(&absent_with(Err("nonce is 5, not 0".into())), &undeployed)
+            check_candidate(&absent_with(Err("nonce is 5, not 0".into())), &store, &undeployed)
                 .await
                 .unwrap(),
             RecoveryOutcome::Unresolved(reason) if reason.contains("no record of the account")
@@ -473,7 +505,7 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
     }
     undeployed.stored_nonce = Some(5);
     assert!(matches!(
-        check_candidate(&absent_with(Ok(())), &undeployed)
+        check_candidate(&absent_with(Ok(())), &store, &undeployed)
             .await
             .unwrap(),
         RecoveryOutcome::Unresolved(reason) if reason.contains("no record of the account")
@@ -505,11 +537,33 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
         assert_eq!(timed_out.checked, 0);
     }
 
+    for page in [1, 2, HISTORY_PAGE] {
+        assert!(matches!(
+            rebuild(&state, account_id, 2, page).await.unwrap(),
+            Rebuild::Rebuilt(rebuilt) if rebuilt.commitment == target && rebuilt.nonce == Some(2)
+        ));
+    }
+    assert!(matches!(
+        rebuild(&state, account_id, 3, 1).await.unwrap(),
+        Rebuild::Unresolved(reason) if reason.contains("not contiguous")
+    ));
+
     chain.set_on_chain_commitment(account_id, "different head");
     assert!(matches!(
-        check_candidate(&state, &candidate).await.unwrap(),
-        RecoveryOutcome::Retryable(reason) if reason.contains("current chain head")
+        check_candidate(&state, &store, &candidate).await.unwrap(),
+        RecoveryOutcome::Unresolved(reason) if reason.contains("missing from the canonical history")
     ));
+    assert_ne!(deltas[1].prev_commitment, prior.commitment);
+    for earlier in [
+        deltas[1].new_commitment.as_deref().unwrap(),
+        deltas[1].prev_commitment.as_str(),
+    ] {
+        chain.set_on_chain_commitment(account_id, earlier);
+        assert!(matches!(
+            check_candidate(&state, &store, &candidate).await.unwrap(),
+            RecoveryOutcome::Retryable(reason) if reason.contains("earlier state")
+        ));
+    }
     chain.set_on_chain_commitment(account_id, target);
     let pending = DeltaObject {
         nonce: 3,
@@ -519,8 +573,20 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
         ..deltas[0].clone()
     };
     storage.submit_delta(&pending).await.unwrap();
+    let current_candidate = || async {
+        store
+            .candidates(MidenNetworkType::Testnet, "", 10)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap()
+    };
+    assert_eq!(
+        current_candidate().await.unsettled_work.as_deref(),
+        Some("a delta awaits its on-chain outcome")
+    );
     assert!(matches!(
-        check_candidate(&state, &candidate).await.unwrap(),
+        check_candidate(&state, &store, &candidate).await.unwrap(),
         RecoveryOutcome::Verified(_)
     ));
     assert!(
@@ -571,6 +637,70 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
         )
         .await
         .unwrap();
+    storage
+        .submit_delta(&DeltaObject {
+            nonce: 4,
+            prev_commitment: prior.commitment.clone(),
+            new_commitment: None,
+            status: DeltaStatus::candidate("2026-11-14T12:41:00Z".into()),
+            ..deltas[0].clone()
+        })
+        .await
+        .unwrap();
+    assert_eq!(current_candidate().await.unsettled_work, None);
+    {
+        let mut conn = metadata.pool_handle().get().await.unwrap();
+        diesel::sql_query(
+            "INSERT INTO execution_reservations
+                 (account_id, proposal_id, attempt, holder_id, lease_name, fence_token,
+                  lease_expires_at, phase)
+             VALUES ($1, '0xreserved', 1, 'holder', 'execution', 1, now(), 'accepted')",
+        )
+        .bind::<Text, _>(account_id)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        diesel::sql_query(
+            "INSERT INTO execution_submissions
+                 (account_id, proposal_id, attempt, candidate_nonce, transaction_id,
+                  expected_commitment, reference_block, expiration_block, base_commitment)
+             VALUES ($1, '0xreserved', 1, 3, '0xtx', '0xexpected', 1, 2, $2)",
+        )
+        .bind::<Text, _>(account_id)
+        .bind::<Text, _>(target)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(
+            current_candidate().await.unsettled_work.as_deref(),
+            Some("an execution is reserved")
+        );
+        diesel::sql_query(
+            "UPDATE execution_submissions SET base_commitment = $2 WHERE account_id = $1",
+        )
+        .bind::<Text, _>(account_id)
+        .bind::<Text, _>(&prior.commitment)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(current_candidate().await.unsettled_work, None);
+
+        diesel::sql_query(
+            "UPDATE deltas SET new_commitment = '0xlanded' WHERE account_id = $1 AND nonce = 4",
+        )
+        .bind::<Text, _>(account_id)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        chain.set_on_chain_commitment(account_id, "0xlanded");
+        assert!(matches!(
+            check_candidate(&state, &store, &current_candidate().await)
+                .await
+                .unwrap(),
+            RecoveryOutcome::Retryable(reason) if reason.contains("landed")
+        ));
+        chain.set_on_chain_commitment(account_id, target);
+    }
 
     assert!(
         store
@@ -778,8 +908,9 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
         .unwrap()
         .pop()
         .unwrap();
-    let RecoveryOutcome::Verified(reviewed) =
-        check_candidate(&state, &reviewed_candidate).await.unwrap()
+    let RecoveryOutcome::Verified(reviewed) = check_candidate(&state, &store, &reviewed_candidate)
+        .await
+        .unwrap()
     else {
         panic!("the account is restorable");
     };
@@ -829,6 +960,128 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
         storage.pull_state_head(account_id).await.unwrap().nonce,
         Some(9)
     );
+    let eligible = store
+        .candidates(MidenNetworkType::Testnet, "", 10)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert!(
+        !store
+            .apply(
+                &eligible,
+                &reviewed.state.state_json,
+                &reviewed.auth,
+                &reviewed.proposals,
+                state.clock.now(),
+                &lease,
+            )
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        storage.pull_state(account_id).await.unwrap().commitment,
+        prior.commitment
+    );
+    {
+        #[derive(diesel::QueryableByName)]
+        struct Base {
+            #[diesel(sql_type = Text)]
+            prev_commitment: String,
+        }
+        let reserved_proposal = "0xproposed-by-the-signer";
+        let rebase = |prev_commitment: String| {
+            let metadata = metadata.clone();
+            async move {
+                let mut conn = metadata.pool_handle().get().await.unwrap();
+                diesel::sql_query(
+                    "UPDATE delta_proposals SET prev_commitment = $3
+                     WHERE account_id = $1 AND commitment = $2",
+                )
+                .bind::<Text, _>(account_id)
+                .bind::<Text, _>(reserved_proposal)
+                .bind::<Text, _>(prev_commitment)
+                .execute(&mut conn)
+                .await
+                .unwrap()
+            }
+        };
+        let original = {
+            let mut conn = metadata.pool_handle().get().await.unwrap();
+            diesel::sql_query("DELETE FROM execution_submissions WHERE account_id = $1")
+                .bind::<Text, _>(account_id)
+                .execute(&mut conn)
+                .await
+                .unwrap();
+            diesel::sql_query(
+                "UPDATE execution_reservations SET proposal_id = $2 WHERE account_id = $1",
+            )
+            .bind::<Text, _>(account_id)
+            .bind::<Text, _>(reserved_proposal)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+            diesel::sql_query(
+                "SELECT prev_commitment FROM delta_proposals
+                 WHERE account_id = $1 AND commitment = $2",
+            )
+            .bind::<Text, _>(account_id)
+            .bind::<Text, _>(reserved_proposal)
+            .get_result::<Base>(&mut conn)
+            .await
+            .unwrap()
+            .prev_commitment
+        };
+        assert_ne!(original, target);
+        assert_eq!(current_candidate().await.unsettled_work, None);
+
+        assert_eq!(rebase(target.to_owned()).await, 1);
+        assert_eq!(
+            current_candidate().await.unsettled_work.as_deref(),
+            Some("an execution is reserved")
+        );
+        let current = store
+            .leader
+            .try_acquire(Duration::from_secs(300))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            !store
+                .apply(
+                    &eligible,
+                    &reviewed.state.state_json,
+                    &reviewed.auth,
+                    &reviewed.proposals,
+                    state.clock.now(),
+                    &current,
+                )
+                .await
+                .unwrap()
+        );
+        store.leader.release(current).await.unwrap();
+        assert_eq!(rebase(original).await, 1);
+        assert_eq!(current_candidate().await.unsettled_work, None);
+    }
+    storage
+        .submit_delta_proposal(
+            "0xunreadable-status",
+            &pending_proposal(8, &other_key.commitment_hex, &[]),
+        )
+        .await
+        .unwrap();
+    {
+        let mut conn = metadata.pool_handle().get().await.unwrap();
+        let updated = diesel::sql_query(
+            "UPDATE delta_proposals SET status = '{\"status\": \"pending\", \"cosigner_sigs\": 1}'
+             WHERE account_id = $1 AND commitment = '0xunreadable-status'",
+        )
+        .bind::<Text, _>(account_id)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(updated, 1);
+    }
 
     run_once(&state, &store, MidenNetworkType::Testnet)
         .await
@@ -857,6 +1110,23 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
             .collect::<Vec<_>>(),
         ["0xproposed-by-the-signer", "0xsigned-by-the-signer-only"]
     );
+    {
+        #[derive(diesel::QueryableByName)]
+        struct Rows {
+            #[diesel(sql_type = BigInt)]
+            total: i64,
+        }
+        let mut conn = metadata.pool_handle().get().await.unwrap();
+        let unreadable = diesel::sql_query(
+            "SELECT count(*) AS total FROM delta_proposals
+             WHERE account_id = $1 AND commitment = '0xunreadable-status'",
+        )
+        .bind::<Text, _>(account_id)
+        .get_result::<Rows>(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(unreadable.total, 1);
+    }
     let trimmed = pending_proposal(
         5,
         &signer.commitment_hex,
@@ -1001,11 +1271,12 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
 fn scan_progress(resume_after: &str) -> ScanProgress {
     ScanProgress {
         resume_after: resume_after.into(),
+        ..Default::default()
     }
 }
 
 #[test]
-fn a_scan_completes_only_from_a_whole_pass_that_deferred_no_account() {
+fn a_scan_can_complete_across_startups_when_the_pass_deferred_no_account() {
     let interrupted = ScanSummary {
         unresolved: 2,
         last_checked: Some("0xb".into()),
@@ -1014,7 +1285,10 @@ fn a_scan_completes_only_from_a_whole_pass_that_deferred_no_account() {
     };
     assert_eq!(
         interrupted.next_step(scan_progress("0xa")),
-        ScanStep::Resume(scan_progress("0xb"))
+        ScanStep::Resume(ScanProgress {
+            unresolved: 2,
+            ..scan_progress("0xb")
+        })
     );
 
     let stalled = ScanSummary {
@@ -1036,7 +1310,17 @@ fn a_scan_completes_only_from_a_whole_pass_that_deferred_no_account() {
         ScanStep::Completed { unresolved: 1 }
     );
     assert_eq!(
-        finished.next_step(scan_progress("0xa")),
+        finished.next_step(ScanProgress {
+            unresolved: 2,
+            ..scan_progress("0xa")
+        }),
+        ScanStep::Completed { unresolved: 3 }
+    );
+    assert_eq!(
+        finished.next_step(ScanProgress {
+            deferred: true,
+            ..scan_progress("0xa")
+        }),
         ScanStep::Resume(ScanProgress::default())
     );
 
@@ -1291,7 +1575,10 @@ async fn account_recovery_scan_continues_from_its_saved_position_and_records_pen
         store.progress(network).await.unwrap(),
         ScanProgress::default()
     );
-    let saved = scan_progress(first);
+    let saved = ScanProgress {
+        unresolved: 1,
+        ..scan_progress(first)
+    };
     store.save_progress(network, &saved, &lease).await.unwrap();
     assert_eq!(store.progress(network).await.unwrap(), saved);
     store.leader.release(lease.clone()).await.unwrap();
@@ -1361,17 +1648,6 @@ async fn account_recovery_scan_continues_from_its_saved_position_and_records_pen
         store.progress(network).await.unwrap(),
         ScanProgress::default()
     );
-    assert!(!store.startup_completed(network).await.unwrap());
-
-    run_within(
-        &checking(&[first, second, joined_later]),
-        &store,
-        network,
-        Duration::from_secs(60),
-        Duration::ZERO,
-    )
-    .await
-    .unwrap();
     assert!(store.startup_completed(network).await.unwrap());
 
     #[derive(diesel::QueryableByName)]
@@ -1416,6 +1692,15 @@ async fn account_recovery_scan_continues_from_its_saved_position_and_records_pen
         .await
         .unwrap()
         .unwrap();
+    store
+        .record_pending(
+            &same_nonce,
+            PendingOutcome::Deferred,
+            "recorded before the restore",
+            &lease,
+        )
+        .await
+        .unwrap();
     assert!(
         store
             .apply(
@@ -1424,7 +1709,11 @@ async fn account_recovery_scan_continues_from_its_saved_position_and_records_pen
                 &Auth::MidenEcdsa {
                     cosigner_commitments: vec![Word::from([1, 2, 3, 4_u32]).into_hex()],
                 },
-                &ProposalReview::Reviewed(Vec::new()),
+                &ProposalReview::Reviewed(vec![ReviewedProposal {
+                    commitment: "0xunreadable-status".into(),
+                    status: DeltaStatus::default(),
+                    change: ProposalChange::Keep,
+                }]),
                 chrono::Utc::now(),
                 &lease,
             )
@@ -1436,5 +1725,19 @@ async fn account_recovery_scan_continues_from_its_saved_position_and_records_pen
         (restored.commitment.as_str(), restored.nonce),
         ("0xheld-head", Some(4))
     );
+    #[derive(diesel::QueryableByName)]
+    struct PendingRows {
+        #[diesel(sql_type = BigInt)]
+        total: i64,
+    }
+    let mut conn = metadata.pool_handle().get().await.unwrap();
+    let pending = diesel::sql_query(
+        "SELECT count(*) AS total FROM account_recovery_pending WHERE account_id = $1",
+    )
+    .bind::<Text, _>(joined_later)
+    .get_result::<PendingRows>(&mut conn)
+    .await
+    .unwrap();
+    assert_eq!(pending.total, 0);
     store.leader.release(lease).await.unwrap();
 }
