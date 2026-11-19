@@ -108,6 +108,9 @@ struct ScanSummary {
     retryable: usize,
     unresolved: i64,
     failed: usize,
+    /// Failed checks of accounts that the saved position leaves ahead, so the same pass
+    /// checks them again.
+    failed_ahead_of_position: usize,
     last_checked: Option<String>,
     stopped_early: bool,
 }
@@ -125,7 +128,8 @@ impl ScanSummary {
     /// from the first account otherwise.
     fn next_step(&self, started: ScanProgress) -> ScanStep {
         let unresolved = started.unresolved + self.unresolved;
-        let deferred = started.deferred || self.retryable > 0 || self.failed > 0;
+        let deferred =
+            started.deferred || self.retryable > 0 || self.failed > self.failed_ahead_of_position;
         if self.stopped_early {
             return ScanStep::Resume(ScanProgress {
                 resume_after: self.last_checked.clone().unwrap_or(started.resume_after),
@@ -467,6 +471,7 @@ async fn run(
                     "Account recovery stopped early after repeated failed checks"
                 );
                 summary.last_checked = position_before_failed_checks;
+                summary.failed_ahead_of_position = consecutive_failed_checks;
                 summary.stopped_early = true;
                 break 'scan;
             }

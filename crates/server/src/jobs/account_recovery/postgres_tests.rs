@@ -1324,6 +1324,29 @@ fn a_scan_can_complete_across_startups_when_the_pass_deferred_no_account() {
         ScanStep::Resume(ScanProgress::default())
     );
 
+    let rolled_back = ScanSummary {
+        failed: 3,
+        failed_ahead_of_position: 3,
+        last_checked: Some("0xa".into()),
+        stopped_early: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        rolled_back.next_step(ScanProgress::default()),
+        ScanStep::Resume(scan_progress("0xa"))
+    );
+    let failed_behind_position = ScanSummary {
+        failed: 4,
+        ..rolled_back
+    };
+    assert_eq!(
+        failed_behind_position.next_step(ScanProgress::default()),
+        ScanStep::Resume(ScanProgress {
+            deferred: true,
+            ..scan_progress("0xa")
+        })
+    );
+
     for deferring in [
         ScanSummary {
             retryable: 1,
@@ -1548,6 +1571,10 @@ async fn account_recovery_scan_continues_from_its_saved_position_and_records_pen
     assert_eq!((outage.checked, outage.failed), (3, 3));
     assert!(outage.stopped_early);
     assert_eq!(outage.last_checked, None);
+    assert_eq!(
+        outage.next_step(ScanProgress::default()),
+        ScanStep::Resume(ScanProgress::default())
+    );
 
     let flaky = {
         let chain = crate::testing::mocks::MockNetworkClient::new()

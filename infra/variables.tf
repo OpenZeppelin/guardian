@@ -579,8 +579,10 @@ variable "guardian_startup_account_recovery" {
     grace period, so a task is not replaced while the check keeps the
     listeners closed. For apply the operator arranges the rest: the server
     skips the check unless it runs as a single task, and the deploy must not
-    overlap an older task, so turn off autoscaling, scale the service to zero
-    and wait for its tasks to stop before the deploy that turns this on. Set it back to off once the check has completed.
+    overlap an older task. Before the deploy that turns this on, apply
+    server_autoscaling_enabled = false with server_desired_count = 0 and wait
+    for the tasks to stop, then deploy with server_desired_count = 1. Set it
+    back to off once the check has completed.
   EOT
   type        = string
   default     = "off"

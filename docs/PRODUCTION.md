@@ -381,13 +381,15 @@ accounts that would be restored (`restorable`), deferred and left unresolved.
   deploy. It passes the mode to the task and lengthens the container health
   check start period and the load balancer grace period, so the task is not
   replaced while its listeners are closed. For `apply`, running a single task
-  (desired count and autoscaling maximum of one) and keeping older tasks from
-  running during the deploy remain manual steps: turn off the service's
-  autoscaling, scale the service to zero, wait for its tasks to stop, deploy,
-  then scale back to one. Stopping a task alone is not enough, because the
-  service starts a replacement, and autoscaling with a minimum above zero
-  starts one too. Set the variable back to `"off"` and turn autoscaling back
-  on once the check has completed.
+  and keeping older tasks from running during the deploy remain manual steps.
+  Terraform sets the task count and autoscaling, so make them through its
+  variables: first apply `server_autoscaling_enabled = false` with
+  `server_desired_count = 0` and wait for the tasks to stop, then apply
+  `guardian_startup_account_recovery = "apply"` with
+  `server_desired_count = 1`. Stopping a task or scaling the service outside
+  Terraform is not enough, because the service or the next deploy starts a
+  replacement. Once the check has completed, set the mode back to `"off"`
+  and restore the usual task count and autoscaling.
 
 **What it does**
 
