@@ -245,7 +245,7 @@ pub async fn push_delta(
     };
 
     let response = services::push_delta(&state, params).await?;
-    Ok(Json(response.delta))
+    Ok(Json(response.delta.without_module_trace()))
 }
 
 /// Fetch the delta for an account at a specific nonce.
@@ -276,7 +276,7 @@ pub async fn get_delta(
     };
 
     let response = services::get_delta(&state, params).await?;
-    Ok(Json(response.delta))
+    Ok(Json(response.delta.without_module_trace()))
 }
 
 /// Fetch the merged delta accumulating all changes for an account
@@ -308,7 +308,7 @@ pub async fn get_delta_since(
     };
 
     let response = services::get_delta_since(&state, params).await?;
-    Ok(Json(response.merged_delta))
+    Ok(Json(response.merged_delta.without_module_trace()))
 }
 
 /// Paginated canonical delta history for an account (issue
@@ -696,6 +696,20 @@ pub struct DeltaProposalResponse {
     pub commitment: String,
 }
 
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
+pub struct CheckProposalResponse {
+    /// Always true: a refusal is returned as an error.
+    pub allowed: bool,
+    /// False when a module that opts out of dry runs was skipped.
+    pub complete: bool,
+}
+
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
+pub struct PoliciesResponse {
+    pub account_id: String,
+    pub policies: Vec<crate::modules::disclosure::PolicyEntry>,
+}
+
 #[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct PubkeyQuery {
@@ -811,8 +825,90 @@ pub async fn push_delta_proposal(
 
     let response = services::push_delta_proposal(&state, params).await?;
     Ok(Json(DeltaProposalResponse {
-        delta: response.delta,
+        delta: response.delta.without_module_trace(),
         commitment: response.commitment,
+    }))
+}
+
+/// Dry run of `POST /delta/proposal`: the same checks and proposal-creation
+/// policy modules, without storing a proposal or taking a slot. A refusal is
+/// the same error proposal creation returns; `complete` is false when a module
+/// that opts out of dry runs was skipped. Advisory: approval still decides.
+/// Rate limited per account and signer (`GUARDIAN_MODULE_CHECK_RATE_PER_MIN`).
+#[utoipa::path(
+    post,
+    path = "/delta/proposal/check",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    request_body = DeltaProposalRequest,
+    responses(
+        (status = 200, description = "Proposal creation would pass", body = CheckProposalResponse),
+        (status = 400, description = "Invalid proposal payload", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "A policy module refused (GUARDIAN_MODULE_DENIED)", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "Conflicting / too many pending proposals", body = crate::openapi::ApiErrorResponse),
+        (status = 429, description = "Too many checks for this account and signer", body = crate::openapi::ApiErrorResponse),
+        (status = 503, description = "A policy module is unavailable (GUARDIAN_MODULE_UNAVAILABLE)", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn check_delta_proposal(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Json(payload): Json<DeltaProposalRequest>,
+) -> Result<Json<CheckProposalResponse>, GuardianError> {
+    let request_payload = request_payload_for_operation(
+        &payload,
+        guardian_shared::auth_request_payload::SignedOperation::CheckDeltaProposal,
+    )
+    .map_err(GuardianError::InvalidInput)?;
+    let params = PushDeltaProposalParams {
+        account_id: payload.account_id,
+        nonce: payload.nonce,
+        delta_payload: payload.delta_payload,
+        credentials: request_payload.apply_to(credentials),
+    };
+    let result = services::check_proposal(&state, params).await?;
+    Ok(Json(CheckProposalResponse {
+        allowed: true,
+        complete: result.complete,
+    }))
+}
+
+/// The policy modules that apply to the account, as far as each module's
+/// catalog entry discloses them (RFC 0002 section 2.7), in evaluation order.
+/// Empty when the Guardian has no modules or discloses none.
+#[utoipa::path(
+    get,
+    path = "/policies",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(StateQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    responses(
+        (status = 200, description = "Disclosed policies", body = PoliciesResponse),
+        (status = 400, description = "The account is not a Miden account (unsupported_for_network)", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account not found", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn get_policies(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Query(query): Query<StateQuery>,
+) -> Result<Json<PoliciesResponse>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&query).map_err(GuardianError::InvalidInput)?;
+    let result = services::get_policies(
+        &state,
+        services::GetPoliciesParams {
+            account_id: query.account_id,
+            credentials: request_payload.apply_to(credentials),
+        },
+    )
+    .await?;
+    Ok(Json(PoliciesResponse {
+        account_id: result.account_id,
+        policies: result.policies,
     }))
 }
 
@@ -1041,7 +1137,11 @@ pub async fn get_delta_proposals(
 
     let response = services::get_delta_proposals(&state, params).await?;
     Ok(Json(ProposalsResponse {
-        proposals: response.proposals,
+        proposals: response
+            .proposals
+            .into_iter()
+            .map(DeltaObject::without_module_trace)
+            .collect(),
     }))
 }
 
@@ -1073,7 +1173,7 @@ pub async fn get_delta_proposal(
     };
 
     let response = services::get_delta_proposal(&state, params).await?;
-    Ok(Json(response.proposal))
+    Ok(Json(response.proposal.without_module_trace()))
 }
 
 /// Add a cosigner signature to an existing multisig proposal. The approval
@@ -1112,7 +1212,7 @@ pub async fn sign_delta_proposal(
     };
 
     let response = services::sign_delta_proposal(&state, params).await?;
-    Ok(Json(response.delta))
+    Ok(Json(response.delta.without_module_trace()))
 }
 
 struct RequestPayloadParts {

@@ -62,7 +62,7 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_tip(
     proposer.miden_client.sync_state().await.unwrap();
 
     // Proposal creation authenticates the notes before deriving the summary
-    // (see `ProposalBuilder::build_consume_notes`); mirror it here.
+    // (see `ProposalBuilder::draft_consume_notes`); mirror it here.
     let node_rpc = proposer.node_rpc_client();
     crate::transaction::ensure_notes_authenticated(
         &mut proposer.miden_client,

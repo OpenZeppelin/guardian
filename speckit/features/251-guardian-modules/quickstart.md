@@ -9,13 +9,32 @@ How to see the feature working locally and which checks prove each slice. Comman
 ```bash
 cat > /tmp/modules.toml <<'EOF'
 [[module]]
-id = "caps-and-signers"
-kind = "basic-policy"
+id = "caps"
+kind = "spending-limit"
+scope = "all"
+hooks = ["before_proposal_created", "before_transaction_approved"]
+timeout_ms = 20
+on_error = "deny"
+params = { max_per_transaction = { "0x<demo faucet>" = "1000" } }
+
+[[module]]
+id = "signers"
+kind = "signer-policy"
 scope = "all"
 hooks = ["before_proposal_created", "before_transaction_approved", "before_account_registered"]
 timeout_ms = 20
 on_error = "deny"
-params = { max_amount_per_tx = { "0x<demo faucet>" = "1000" }, signer_check = "added", signer_allowlist = ["0x<demo signer 1>", "0x<demo signer 2>"] }
+params = { check = "added", allowlist = ["0x<demo signer 1>", "0x<demo signer 2>"] }
+
+[[module]]
+id = "blocklist"
+kind = "recipient-policy"
+scope = "all"
+hooks = ["before_proposal_created", "before_transaction_approved"]
+timeout_ms = 20
+on_error = "deny"
+operator_can_disable = true
+params = { denylist = [] }
 EOF
 
 GUARDIAN_MODULES_CONFIG=/tmp/modules.toml cargo run -p guardian-server --bin server
@@ -41,19 +60,19 @@ With `examples/demo` against the local server:
 ## 3. Remote module and failure modes (M2a)
 
 ```bash
-openssl rand -hex 32 > .guardian/caps.token
-cargo run -p guardian-module-sdk --example basic-policy-serve -- \
+(umask 077; openssl rand -hex 32 > .guardian/caps.token)
+cargo run -p guardian-policy-module -- --kind spending-limit \
   --listen 127.0.0.1:7443 --instance caps-remote .guardian/caps.token
 ```
 
-The harness speaks plain text, so the catalog entry uses the loopback scheme and the same token (relative to the catalog file):
+The harness speaks plain text, so the catalog entry uses the loopback scheme and the same token, named as a secret:
 
 ```toml
 [[module]]
 id = "caps-remote"
 kind = "grpc"
 endpoint = "grpc+insecure://127.0.0.1:7443"
-auth = { token_file = "caps.token" }   # prototype stand-in; M2a uses token_secret (RFC 0002 section 2.2)
+auth = { token_secret = "caps.token" }   # read by the file provider from the catalog directory, mode 0600
 ```
 
 Point this second instance of kind `grpc` at it with `on_error = "deny"`, repeat step 2, then stop the module: pushes return `GUARDIAN_MODULE_UNAVAILABLE`; after five failures they return without waiting for the timeout; `guardian_module_up` drops to 0. Switch to `on_error = "allow"`: pushes proceed and `guardian_module_fail_open_total` increases. (US4, US6)
@@ -65,14 +84,14 @@ Point this second instance of kind `grpc` at it with `on_error = "deny"`, repeat
 cargo run -p guardian-server --example modules_admin -- keygen .guardian/operator.key
 #   paste the printed entry into a JSON array in .guardian/operators.json
 
-GUARDIAN_MODULES_CONFIG=.guardian/modules.toml \
+GUARDIAN_MODULES_CONFIG=/tmp/modules.toml \
 GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=.guardian/operators.json \
   cargo run -p guardian-server --bin server
 
 ADMIN="cargo run -q -p guardian-server --example modules_admin -- --key .guardian/operator.key"
 $ADMIN GET /modules
-$ADMIN PUT /modules/blocklist/params '{"params":{"recipient_denylist":["0xaaa","0xddd"]},"reason":"extend global list"}'
-$ADMIN PUT /accounts/0xACCOUNT/modules/blocklist/params '{"params":{"recipient_denylist":["0xccc"]},"reason":"customer block"}'
+$ADMIN PUT /modules/blocklist/params '{"params":{"denylist":["0x<account id 1>","0x<account id 2>"]},"reason":"extend global list"}'
+$ADMIN PUT /accounts/0xACCOUNT/modules/blocklist/params '{"params":{"denylist":["0x<account id 3>"]},"reason":"customer block"}'
 $ADMIN GET /accounts/0xACCOUNT/modules
 $ADMIN GET /modules/blocklist/params/history
 $ADMIN DELETE /accounts/0xACCOUNT/modules/blocklist/params '{"reason":"lift customer block"}'
@@ -105,4 +124,4 @@ A payment to `0xddd` is then refused for every account (`layer: global`), one to
 | M2b | `cargo test -p guardian-module-sdk stateful` | Counting interleavings, delayed notify with per-proposer limits, failover discard |
 | M2b | Deployment test: first stateful instance added while a candidate is queued; stateful module assigned to an account later | Activation fence applies, then lifts; later assignment needs no fence |
 | M2b | Qualification scenario with a daily volume module | SC-008 |
-| M2c | Build `examples/custom-guardian` with `--locked` (the prototype's equivalent is `cargo run -p guardian-server --example custom_module_server`) | Custom kind registered and usable (US8) |
+| M2c | `cargo run -p custom-guardian` with `custom-in-process.toml`; `scripts/custom-guardian-template.sh --rev <commit> --git file://$PWD --out <dir>` then `cargo build --locked` in `<dir>` | Custom kind registered and usable; the template builds against the release lockfile (US8) |

@@ -86,8 +86,24 @@ pub enum ForeignAccountUnavailableReason {
     Unavailable,
 }
 
+/// A GUARDIAN policy module's denial of the transaction, with the fields a
+/// `GUARDIAN_MODULE_DENIED` refusal carries in its `meta`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleDenial {
+    /// The denying instance; absent for a generic denial, which reports only `policy_denied`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
+    pub reason_code: String,
+    /// `global` or `account`: the parameter layer that denied; absent for a generic denial.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
+    /// The module's text for the requester, when the instance allows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_message: Option<String>,
+}
+
 /// Stable cause of a failed execution, persisted with its structured meta.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutionFailureCode {
     BindingMismatch,
     StateMismatch,
@@ -119,6 +135,13 @@ pub enum ExecutionFailureCode {
     Expired,
     LeaseExpired,
     Abandoned,
+    /// A GUARDIAN policy module refused the acknowledgement. The proposal stays stored.
+    ModuleDenied(ModuleDenial),
+    /// A fail-closed GUARDIAN policy module could not decide. Requesting again may succeed.
+    /// `module` is absent for an instance whose denials are generic.
+    ModuleUnavailable {
+        module: Option<String>,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -129,6 +152,17 @@ struct ReasonMeta<T> {
 #[derive(Serialize, Deserialize)]
 struct BoundMeta {
     bound: ExpirationBound,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ModuleMeta {
+    module: String,
+}
+
+#[derive(Deserialize)]
+struct OptionalModuleMeta {
+    #[serde(default)]
+    module: Option<String>,
 }
 
 impl ExecutionFailureCode {
@@ -167,6 +201,10 @@ impl ExecutionFailureCode {
             ExecutionFailureCode::Expired => "GUARDIAN_EXECUTION_EXPIRED",
             ExecutionFailureCode::LeaseExpired => "GUARDIAN_EXECUTION_LEASE_EXPIRED",
             ExecutionFailureCode::Abandoned => "GUARDIAN_EXECUTION_ABANDONED",
+            ExecutionFailureCode::ModuleDenied(_) => "GUARDIAN_EXECUTION_MODULE_DENIED",
+            ExecutionFailureCode::ModuleUnavailable { .. } => {
+                "GUARDIAN_EXECUTION_MODULE_UNAVAILABLE"
+            }
         }
     }
 
@@ -197,7 +235,9 @@ impl ExecutionFailureCode {
             | ExecutionFailureCode::AccountInadmissible
             | ExecutionFailureCode::SubmissionNotProcessed
             | ExecutionFailureCode::LeaseExpired
-            | ExecutionFailureCode::Abandoned => false,
+            | ExecutionFailureCode::Abandoned
+            | ExecutionFailureCode::ModuleDenied(_)
+            | ExecutionFailureCode::ModuleUnavailable { .. } => false,
         }
     }
 
@@ -213,6 +253,13 @@ impl ExecutionFailureCode {
             ExecutionFailureCode::ExpirationReached(bound) => {
                 serde_json::to_value(BoundMeta { bound: *bound })
             }
+            ExecutionFailureCode::ModuleDenied(denial) => serde_json::to_value(denial),
+            ExecutionFailureCode::ModuleUnavailable {
+                module: Some(module),
+            } => serde_json::to_value(ModuleMeta {
+                module: module.clone(),
+            }),
+            ExecutionFailureCode::ModuleUnavailable { module: None } => return None,
             ExecutionFailureCode::BindingMismatch
             | ExecutionFailureCode::StateMismatch
             | ExecutionFailureCode::RequestCodec
@@ -287,6 +334,19 @@ impl ExecutionFailureCode {
             "GUARDIAN_EXECUTION_EXPIRED" => ExecutionFailureCode::Expired,
             "GUARDIAN_EXECUTION_LEASE_EXPIRED" => ExecutionFailureCode::LeaseExpired,
             "GUARDIAN_EXECUTION_ABANDONED" => ExecutionFailureCode::Abandoned,
+            "GUARDIAN_EXECUTION_MODULE_DENIED" => {
+                ExecutionFailureCode::ModuleDenied(required::<ModuleDenial>(code, meta)?)
+            }
+            "GUARDIAN_EXECUTION_MODULE_UNAVAILABLE" => ExecutionFailureCode::ModuleUnavailable {
+                module: match meta {
+                    Some(meta) => {
+                        serde_json::from_value::<OptionalModuleMeta>(meta.clone())
+                            .map_err(|e| format!("{code} has malformed meta: {e}"))?
+                            .module
+                    }
+                    None => None,
+                },
+            },
             other => return Err(format!("unknown execution failure code '{other}'")),
         })
     }
@@ -303,6 +363,41 @@ mod tests {
         assert!(ExecutionFailureCode::Expired.ends_proposal());
         assert!(!ExecutionFailureCode::SubmissionNotProcessed.ends_proposal());
         assert!(!ExecutionFailureCode::LeaseExpired.ends_proposal());
+    }
+
+    #[test]
+    fn module_refusals_round_trip_with_their_meta_and_keep_the_proposal() {
+        let full = ExecutionFailureCode::ModuleDenied(ModuleDenial {
+            module: Some("caps".into()),
+            reason_code: "amount_cap_exceeded".into(),
+            layer: Some("account".into()),
+            client_message: Some("over the daily cap".into()),
+        });
+        let generic = ExecutionFailureCode::ModuleDenied(ModuleDenial {
+            module: None,
+            reason_code: "policy_denied".into(),
+            layer: None,
+            client_message: None,
+        });
+        let unavailable = ExecutionFailureCode::ModuleUnavailable {
+            module: Some("caps".into()),
+        };
+        assert_eq!(
+            generic.meta(),
+            Some(serde_json::json!({ "reason_code": "policy_denied" }))
+        );
+        let unnamed = ExecutionFailureCode::ModuleUnavailable { module: None };
+        assert_eq!(unnamed.meta(), None);
+        for code in [full, generic, unavailable, unnamed] {
+            assert!(!code.ends_proposal());
+            assert_eq!(
+                ExecutionFailureCode::from_parts(code.as_str(), code.meta().as_ref()).unwrap(),
+                code
+            );
+        }
+        assert!(
+            ExecutionFailureCode::from_parts("GUARDIAN_EXECUTION_MODULE_DENIED", None).is_err()
+        );
     }
 
     #[test]

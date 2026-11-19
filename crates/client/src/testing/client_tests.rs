@@ -242,6 +242,49 @@ async fn test_push_delta_proposal_success() {
 }
 
 #[tokio::test]
+async fn a_proposal_refused_by_a_policy_module_surfaces_as_a_typed_refusal() {
+    let details = serde_json::json!({
+        "code": "GUARDIAN_MODULE_DENIED",
+        "message": "This Guardian's policy doesn't allow this request.",
+        "meta": {
+            "retryable": false,
+            "module": "caps",
+            "reason_code": "amount_cap_exceeded",
+            "layer": "global"
+        }
+    })
+    .to_string()
+    .into_bytes();
+    let service = MockGuardianService::default().with_push_delta_proposal(Err(
+        Status::with_details(tonic::Code::PermissionDenied, "denied", details.into()),
+    ));
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+
+    let error = client
+        .push_delta_proposal(
+            &create_test_account_id(),
+            1,
+            serde_json::json!({"tx_summary": {}, "signatures": []}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.module_refusal(),
+        Some(crate::ModuleRefusal::Denied {
+            module: Some("caps".into()),
+            reason_code: "amount_cap_exceeded".into(),
+            layer: Some("global".into()),
+            client_message: None,
+        })
+    );
+    assert!(!error.is_retryable());
+}
+
+#[tokio::test]
 async fn test_get_delta_proposals_success() {
     let mock_delta1 = create_mock_delta();
     let mut mock_delta2 = create_mock_delta();
@@ -650,6 +693,46 @@ async fn terminal_authentication_failure_is_not_retried() {
         Some("authentication_failed")
     );
     assert!(!error.is_replay_rejection());
+}
+
+#[tokio::test]
+async fn policies_and_proposal_checks_round_trip() {
+    let service = MockGuardianService::default();
+    let handle = service.handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+    let account_id = create_test_account_id();
+
+    let policies = client.get_policies(&account_id).await.unwrap();
+    assert_eq!(policies.policies[0].module_id, "caps");
+    assert!(policies.policies[0].params.is_some());
+
+    let passed = client
+        .check_delta_proposal(&account_id, 1, serde_json::json!({ "tx_summary": {} }))
+        .await
+        .unwrap();
+    assert!(passed.allowed);
+    assert!(!passed.complete);
+
+    let refused = client
+        .check_delta_proposal(&account_id, 0, serde_json::json!({ "tx_summary": {} }))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        refused.module_refusal(),
+        Some(crate::ModuleRefusal::Denied { module: None, ref reason_code, .. }) if reason_code == "policy_denied"
+    ));
+    assert_eq!(
+        handle.calls(),
+        vec![
+            "get_policies",
+            "check_delta_proposal",
+            "check_delta_proposal"
+        ]
+    );
 }
 
 #[tokio::test]

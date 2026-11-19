@@ -173,13 +173,13 @@ impl Faults {
             .pass(&self.f.state, kind)
             .await
             .unwrap();
-        let mine: Vec<_> = report
+        let mut mine: Vec<_> = report
             .into_iter()
             .filter(|(record, _)| record.reservation.account_id == ACCOUNT)
             .map(|(_, outcome)| outcome)
             .collect();
         assert_eq!(mine.len(), 1, "{mine:?}");
-        mine[0]
+        mine.remove(0)
     }
 
     async fn state(&self) -> ExecutionState {

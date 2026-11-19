@@ -34,11 +34,19 @@ sequenceDiagram
   S->>S: reject unless auth cosigners == extracted signer map\n(exact set, order and schemes)
   S->>S: auth.verify(account_id, timestamp, request_payload_digest, credential)
   S->>N: get_state_head(account_id, initial_state)\n(commitment, nonce)
+  opt policy modules configured
+    S->>S: before_account_registered gate\n(a new account also runs its default-scope modules)
+    Note over S: a refusal: 403 GUARDIAN_MODULE_DENIED or 503 GUARDIAN_MODULE_UNAVAILABLE, nothing written
+  end
   alt no metadata for account_id
     S->>M: create(account_id, auth, network_config, timestamps)\n(insert only if absent)
     alt claim lost to a concurrent first configuration
       S->>M: get(account_id)\n(judged as a reconfiguration from here)
+      S->>S: before_account_registered gate again, as a reconfiguration
     end
+  end
+  opt the request claimed the account (or finishes an unfinished claim) and default-scope modules apply
+    S->>S: copy them into the account's assignment\n(only with no assignment and no assignment history)
   end
   Note over S,M: the claim guarantees the metadata row that replay state references by FK
   S->>M: update last_auth_timestamp (verified signer, CAS)\n(refused: authentication_replay, nothing written)
@@ -97,7 +105,10 @@ sequenceDiagram
       alt new_nonce is not the delta's nonce (at every queue depth)
         S-->>C: 400 InvalidDelta
       end
-      S->>S: ack_delta(delta.new_commitment) -> ack_sig
+      opt policy modules configured
+        S->>S: before_transaction_approved gate\n(a refusal: 403 GUARDIAN_MODULE_DENIED or 503 GUARDIAN_MODULE_UNAVAILABLE, nothing signed)
+      end
+      S->>S: ack_delta(delta.new_commitment) -> ack_sig\n(records the approving catalog and params version in metadata.modules)
       alt canonicalization enabled
         S->>ST: submit_candidate(candidate)\n(the same gate again, under the account lock)
       else optimistic mode
@@ -223,12 +234,26 @@ sequenceDiagram
         S-->>C: 409 ConflictPendingDelta
       end
       S->>N: verify_delta(tail_commitment, tail_state, tx_summary)
+      opt policy modules configured
+        S->>S: before_proposal_created gate\n(global params, then each account layer)
+        Note over S: a refusal: 403 GUARDIAN_MODULE_DENIED or 503 GUARDIAN_MODULE_UNAVAILABLE, no proposal stored
+      end
       S->>N: delta_proposal_id(account_id, nonce, tx_summary)
       S->>ST: submit_delta_proposal(id, pending_delta)\n(prev_commitment = tail commitment)
       S-->>C: 200 {delta, commitment:id}
     end
   end
 ```
+
+The dry-run check (`POST /delta/proposal/check`, gRPC `CheckDeltaProposal`) takes the same
+body and runs the same steps through `verify_delta`, then the account's gate modules with
+`dry_run = true`: those subscribed to `before_proposal_created`, then those subscribed to
+`before_transaction_approved` (an instance on both is asked once per hook), then the
+account-wide proposal request byte limit (`GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED`). It
+stores nothing, takes no proposal slot, and answers `200 {allowed: true, complete}`
+(`complete` is false when the catalog has an enabled gate instance with `dry_run = false`) or
+the error creation would return. It is rate limited per
+account and signer before the account state is rebuilt.
 
 #### sign_delta_proposal
 ```mermaid
@@ -710,7 +735,11 @@ The execute payload is domain-separated from a signed status read of the same pr
    Take the chain tip as the reference block `R` and build the chain view at `R`, tracking the
    bound block and every authenticated note's creation block.
 4. Reproduce the transaction unsigned at `R` and confirm it yields the signed summary.
-5. Issue Guardian's acknowledgment through the internal path, which stores no candidate.
+5. Issue Guardian's acknowledgment through the internal path, which stores no candidate. On a
+   server with policy modules the `before_transaction_approved` gate runs first, with the
+   requester as submitter and the proposal's creator as proposer; a refusal fails the execution
+   with `GUARDIAN_EXECUTION_MODULE_DENIED` or `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` and keeps
+   the proposal.
 6. Attach the cosigner signatures and the acknowledgment.
 7. Execute the authorized transaction at `R`, loading public foreign accounts at `R`.
 8. Re-check the executed notes against the summary and that the transaction has not expired.

@@ -8,10 +8,14 @@ members = [
     "crates/miden-rpc-client",
     "crates/miden-keystore",
     "crates/contracts",
+    "crates/guardian-module-sdk",
     "crates/miden-multisig-client",
     "crates/qualification-driver",
     "examples/rust",
     "examples/demo",
+    "examples/policy-module",
+    "examples/compliance-module",
+    "examples/custom-guardian",
 ]
 default-members = [
     "crates/shared",
@@ -20,6 +24,7 @@ default-members = [
     "crates/miden-rpc-client",
     "crates/miden-keystore",
     "crates/contracts",
+    "crates/guardian-module-sdk",
     "crates/miden-multisig-client",
 ]
 resolver = "2"

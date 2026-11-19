@@ -1,0 +1,40 @@
+[package]
+name = "guardian-module-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Module interface, protocol types and serving harness for Guardian policy modules"
+readme = "README.md"
+documentation = "https://docs.rs/guardian-module-sdk"
+keywords = ["guardian", "miden", "policy", "grpc", "multisig"]
+categories = ["cryptography::cryptocurrencies", "network-programming"]
+include = ["src/**/*", "proto/**/*", "build.rs", "Cargo.toml", "README.md"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+async-trait = "0.1"
+bech32 = "0.11"
+prost = { workspace = true }
+prost-types = "0.14"
+secrecy = "0.10"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "fs"] }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+
+[features]
+conformance = []
+
+[dev-dependencies]
+guardian-module-sdk = { path = ".", features = ["conformance"] }
+
+[build-dependencies]
+tonic-prost-build = { workspace = true }

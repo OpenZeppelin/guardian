@@ -308,6 +308,20 @@ impl StorageBackend for InstrumentedStorage {
         .await
     }
 
+    async fn viable_request_bytes(
+        &self,
+        account_id: &str,
+        prev_commitment: &str,
+        viable_nonce: Option<u64>,
+    ) -> Result<u64, String> {
+        timed(
+            "viable_request_bytes",
+            self.inner
+                .viable_request_bytes(account_id, prev_commitment, viable_nonce),
+        )
+        .await
+    }
+
     async fn pull_delta_proposal(
         &self,
         account_id: &str,

@@ -11,6 +11,12 @@
 export const DASHBOARD_READ = 'dashboard:read' as const;
 export const ACCOUNTS_PAUSE = 'accounts:pause' as const;
 export const POLICIES_WRITE = 'policies:write' as const;
+/** May change the global params of a policy module, which apply to every
+ * account (`PUT /dashboard/modules/{module_id}/params`). */
+export const POLICIES_WRITE_GLOBAL = 'policies:write_global' as const;
+/** May disable a policy module instance the catalog marks
+ * `operator_can_disable`, and nothing else. */
+export const MODULES_DISABLE = 'modules:disable' as const;
 /** May request an out-of-cycle refresh of the `/dashboard/stats`
  * aggregate (`POST /dashboard/stats/refresh`, issue #371). */
 export const STATS_REFRESH = 'stats:refresh' as const;
@@ -20,4 +26,6 @@ export type OperatorPermission =
   | typeof DASHBOARD_READ
   | typeof ACCOUNTS_PAUSE
   | typeof POLICIES_WRITE
+  | typeof POLICIES_WRITE_GLOBAL
+  | typeof MODULES_DISABLE
   | typeof STATS_REFRESH;

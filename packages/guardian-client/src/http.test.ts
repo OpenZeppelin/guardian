@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { GuardianHttpClient, GuardianHttpError } from './http.js';
+import { GuardianHttpClient, GuardianHttpError, type ModuleRefusal } from './http.js';
 import { RequestAuthPayload } from './auth-request.js';
 import {
   SessionOperation,
@@ -779,7 +779,160 @@ describe('GuardianHttpClient', () => {
     });
   });
 
+  describe('policy discovery', () => {
+    const accountId = '0x' + 'a'.repeat(30);
+
+    it('lists the disclosed policies over a signed query', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: accountId,
+          policies: [
+            {
+              module_id: 'caps',
+              hooks: ['before_transaction_approved'],
+              description: 'At most 5 per transaction',
+              params: { max_per_transaction: { '0xaa': '5' } },
+              account_layer: { max_per_transaction: { '0xaa': '2' } },
+            },
+            { module_id: 'screening', hooks: ['before_proposal_created'], description: 'Screened' },
+          ],
+        }),
+      });
+
+      const policies = await client.getPolicies(accountId);
+
+      expect(policies).toEqual([
+        {
+          moduleId: 'caps',
+          hooks: ['before_transaction_approved'],
+          description: 'At most 5 per transaction',
+          params: { max_per_transaction: { '0xaa': '5' } },
+          accountLayer: { max_per_transaction: { '0xaa': '2' } },
+        },
+        { moduleId: 'screening', hooks: ['before_proposal_created'], description: 'Screened' },
+      ]);
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/policies?account_id='),
+        expect.objectContaining({
+          method: 'GET',
+          headers: expect.objectContaining({ 'x-signature': expect.any(String) }),
+        })
+      );
+    });
+
+    it('checks a proposal without creating it', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ allowed: true, complete: false }),
+      });
+
+      const result = await client.checkDeltaProposal({
+        accountId,
+        nonce: 1,
+        deltaPayload: { txSummary: { data: 'base64summary' }, signatures: [] },
+      });
+
+      expect(result).toEqual({ allowed: true, complete: false });
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/delta/proposal/check'),
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+
+    it('signs the check tagged as CheckDeltaProposal, and creation untagged', async () => {
+      client.setSigner(mockSigner);
+      const signRequest = vi.mocked(mockSigner.signRequest!);
+      signRequest.mockClear();
+      mockFetch
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ allowed: true, complete: true }) })
+        .mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+      const request = {
+        accountId,
+        nonce: 1,
+        deltaPayload: { txSummary: { data: 'base64summary' }, signatures: [] },
+      };
+
+      await client.checkDeltaProposal(request);
+      await client.pushDeltaProposal(request).catch(() => undefined);
+
+      const body = {
+        account_id: accountId,
+        nonce: 1,
+        delta_payload: { tx_summary: { data: 'base64summary' }, signatures: [] },
+      };
+      const [check, create] = signRequest.mock.calls.map((call) => call[2].toBytes());
+      expect(check).toEqual(RequestAuthPayload.forOperation('CheckDeltaProposal', body).toBytes());
+      expect(create).toEqual(RequestAuthPayload.fromRequest(body).toBytes());
+    });
+
+    it('surfaces a policy refusal from the check as the creation error', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 403,
+        statusText: 'Forbidden',
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_MODULE_DENIED',
+            message: "This Guardian's policy doesn't allow this request.",
+            meta: { retryable: false, reason_code: 'policy_denied' },
+          }),
+      });
+
+      await expect(
+        client.checkDeltaProposal({
+          accountId,
+          nonce: 1,
+          deltaPayload: { txSummary: { data: 'base64summary' }, signatures: [] },
+        })
+      ).rejects.toMatchObject({ code: 'module_denied', status: 403 });
+    });
+  });
+
   describe('pushDeltaProposal', () => {
+    it('rejects a proposal a policy module refuses with the typed refusal', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 403,
+        statusText: 'Forbidden',
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_MODULE_DENIED',
+            message: "This Guardian's policy doesn't allow this request.",
+            meta: {
+              retryable: false,
+              module: 'caps',
+              reason_code: 'amount_cap_exceeded',
+              layer: 'global',
+            },
+          }),
+      });
+
+      const error = await client
+        .pushDeltaProposal({
+          accountId: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          deltaPayload: { txSummary: { data: 'base64summary' }, signatures: [] },
+        })
+        .catch((e) => e as GuardianHttpError);
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      const refused = error as GuardianHttpError;
+      expect(refused.moduleRefusal()).toEqual({
+        kind: 'denied',
+        module: 'caps',
+        reasonCode: 'amount_cap_exceeded',
+        layer: 'global',
+        clientMessage: null,
+      });
+      expect(refused.isRetryable()).toBe(false);
+    });
+
     it('lets an EIP-712 signer create an unsigned proposal', async () => {
       const signer: Signer = {
         ...mockSigner,
@@ -1757,6 +1910,63 @@ describe('GuardianHttpError', () => {
     expect(error.meta?.retryAfterSecs).toBe(30); // snake_case → camelCase
   });
 
+  describe('policy module refusals', () => {
+    const refused = (status: number, code: string, meta: Record<string, unknown>) =>
+      new GuardianHttpError(status, 'Refused', JSON.stringify({ code, message: 'refused', meta }));
+
+    it('parses a full denial into meta and moduleRefusal()', () => {
+      const error = refused(403, 'GUARDIAN_MODULE_DENIED', {
+        retryable: false,
+        module: 'caps',
+        reason_code: 'amount_cap_exceeded',
+        layer: 'account',
+        client_message: 'over the daily cap',
+      });
+      expect(error.code).toBe('module_denied');
+      expect(error.meta).toMatchObject({
+        module: 'caps',
+        reasonCode: 'amount_cap_exceeded',
+        layer: 'account',
+        clientMessage: 'over the daily cap',
+      });
+      expect(error.moduleRefusal()).toEqual({
+        kind: 'denied',
+        module: 'caps',
+        reasonCode: 'amount_cap_exceeded',
+        layer: 'account',
+        clientMessage: 'over the daily cap',
+      });
+      expect(error.isRetryable()).toBe(false);
+    });
+
+    it('reports a generic denial with only its reason code', () => {
+      const error = refused(403, 'GUARDIAN_MODULE_DENIED', { retryable: false, reason_code: 'policy_denied' });
+      expect(error.moduleRefusal()).toEqual({
+        kind: 'denied',
+        module: null,
+        reasonCode: 'policy_denied',
+        layer: null,
+        clientMessage: null,
+      });
+    });
+
+    it('reports an unavailable module as retryable', () => {
+      const error = refused(503, 'GUARDIAN_MODULE_UNAVAILABLE', { retryable: true, module: 'caps' });
+      expect(error.moduleRefusal()).toEqual({ kind: 'unavailable', module: 'caps' });
+      expect(error.isRetryable()).toBe(true);
+    });
+
+    it('reports no refusal for other codes or a refusal missing its required field', () => {
+      expect(refused(403, 'GUARDIAN_MODULE_DENIED', { retryable: false, module: 'caps' }).moduleRefusal()).toBeNull();
+      expect(refused(503, 'GUARDIAN_MODULE_UNAVAILABLE', { retryable: true }).moduleRefusal()).toEqual({
+        kind: 'unavailable',
+        module: null,
+      });
+      expect(refused(409, 'GUARDIAN_EXECUTION_CONFLICT', { retryable: false, module: 'caps' }).moduleRefusal()).toBeNull();
+      expect(new GuardianHttpError(502, 'Bad Gateway', 'upstream exploded').moduleRefusal()).toBeNull();
+    });
+  });
+
   it('leaves accessors undefined for a non-JSON / non-conforming body', () => {
     const plain = new GuardianHttpError(502, 'Bad Gateway', 'upstream exploded');
     expect(plain.code).toBeNull();
@@ -1791,6 +2001,29 @@ describe('GuardianHttpError', () => {
 
       expect(error.isRetryable()).toBe(c.expected.retryable);
       expect(error.retryAfterSecs()).toBe(c.expected.retryAfterSecs ?? undefined);
+    });
+  });
+
+  describe('module refusals (shared fixture)', () => {
+    interface FixtureCase {
+      name: string;
+      body: Record<string, unknown>;
+      http: { status: number };
+      expected: { retryable: boolean; refusal: ModuleRefusal | null };
+    }
+
+    const fixture = JSON.parse(
+      readFileSync(
+        new URL('../../../fixtures/guardian-client/module-refusals.json', import.meta.url),
+        'utf-8'
+      )
+    ) as { cases: FixtureCase[] };
+
+    it.each(fixture.cases.map((c) => [c.name, c] as const))('%s', (_name, c) => {
+      const error = new GuardianHttpError(c.http.status, 'error', JSON.stringify(c.body), null);
+
+      expect(error.moduleRefusal()).toEqual(c.expected.refusal);
+      expect(error.isRetryable()).toBe(c.expected.retryable);
     });
   });
 

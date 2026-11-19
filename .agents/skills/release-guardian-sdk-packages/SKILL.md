@@ -76,6 +76,7 @@ Rust crates:
 - `guardian-client`
 - `miden-confidential-contracts`
 - `miden-multisig-client`
+- `guardian-module-sdk`
 
 TypeScript packages:
 
@@ -116,6 +117,7 @@ cargo test -p guardian-shared
 cargo test -p guardian-client
 cargo test -p miden-confidential-contracts
 cargo test -p miden-multisig-client
+cargo test -p guardian-module-sdk
 ```
 
 ```bash
@@ -151,7 +153,8 @@ cargo publish --dry-run --locked \
   -p guardian-shared \
   -p guardian-client \
   -p miden-confidential-contracts \
-  -p miden-multisig-client
+  -p miden-multisig-client \
+  -p guardian-module-sdk
 ```
 
 ```bash
@@ -196,7 +199,7 @@ Workflow: publish-crates.yml
 Environment: release
 ```
 
-Published releases force-select all four crates and use OIDC trusted
+Published releases force-select all five crates and use OIDC trusted
 publishing. Manual runs expose `dry-run` and one boolean per crate. Pull
 requests changing the workflow force an all-crate credential-free dry run.
 
@@ -207,6 +210,7 @@ publishes dependency-safe topological batches:
 2. `guardian-client`
 3. `miden-confidential-contracts`
 4. `miden-multisig-client`
+5. `guardian-module-sdk` (no internal dependencies)
 
 Exact versions already on crates.io are skipped. The selected packages are
 passed to one native multi-package Cargo command, which owns dependency
@@ -215,6 +219,13 @@ its unselected prerequisites are already available at the coordinated version.
 
 Trusted-publishing failure must fail closed. The workflow has no long-lived
 registry-token fallback.
+
+`guardian-module-sdk` is new in the M2a release (0.19). crates.io accepts a
+trusted publisher only for a crate that already exists, so before the first
+release that includes it, a crate owner publishes it once by hand
+(`cargo publish -p guardian-module-sdk` with a personal token) and then adds the
+trusted-publisher entry above. Until then a release run fails when it reaches
+`guardian-module-sdk`; ask the user to do this step before cutting the release.
 
 ## TypeScript Publish Order
 
@@ -236,7 +247,7 @@ The user should usually only need to handle:
 - cutting the GitHub Release (`gh release create`), which also triggers the server image build
 
 For a normal Rust release, do not request `cargo login` or a local crates.io
-token. Verify the four external trusted-publisher entries and use:
+token. Verify the five external trusted-publisher entries and use:
 
 ```bash
 gh workflow run publish-crates.yml \
@@ -245,7 +256,8 @@ gh workflow run publish-crates.yml \
   -f guardian-shared=true \
   -f guardian-client=true \
   -f miden-confidential-contracts=true \
-  -f miden-multisig-client=true
+  -f miden-multisig-client=true \
+  -f guardian-module-sdk=true
 ```
 
 Continue TypeScript authentication checks with `npm whoami || npm login`.

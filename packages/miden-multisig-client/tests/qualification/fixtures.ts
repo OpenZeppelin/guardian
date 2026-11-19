@@ -32,6 +32,15 @@ export function readFixtureDelta(): { delta_payload: { data: string }; nonce: nu
   return readFixture('delta_1.json') as { delta_payload: { data: string }; nonce: number };
 }
 
+/**
+ * The first threshold-only fixture delta, which the policy module scenarios
+ * propose: `delta_1` adds a signer without the approver scheme entry a real
+ * add-signer writes, and the Guardian cannot build a module's view from it.
+ */
+export function readThresholdDelta(): { delta_payload: { data: string }; nonce: number } {
+  return readFixture('queue_1.json') as { delta_payload: { data: string }; nonce: number };
+}
+
 export interface FixtureAccount {
   readonly account_id: string;
   readonly data: string;

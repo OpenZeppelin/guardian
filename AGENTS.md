@@ -34,6 +34,7 @@ If a behavior changes in a lower layer, verify and propagate impact upward acros
 - `crates/miden-multisig-client`: Rust multisig SDK on top of Miden + GUARDIAN
 - `packages/miden-multisig-client`: TS multisig SDK on top of Miden + GUARDIAN
 - `crates/shared`: shared Rust primitives/utilities
+- `crates/guardian-module-sdk`: policy module SDK (published): the `guardian.module.v1` protocol, the `Module` trait, the `serve` gRPC harness, the conformance kit and the first-party policy kinds
 - `crates/qualification-driver`: Rust driver for the black-box qualification suite (not published; also the scenario-manifest validator both drivers read)
 - `qualification/`: scenario manifest, Compose stack and shell harness for the qualification suite (see `docs/QUALIFICATION.md`)
 - `spec/`: system and protocol-level behavior docs
@@ -226,8 +227,9 @@ Common mappings:
 - Server or API behavior -> `spec/`, `docs/CONCEPTS.md`, SDK docs
 - Multisig SDK behavior -> `docs/MULTISIG_SDK.md`, `crates/miden-multisig-client/README.md`, `packages/miden-multisig-client/README.md`, `examples/demo`, `examples/web`, `examples/smoke-web`
 - Miden version support, cross-line breaking changes, data resets -> `docs/MIDEN_COMPATIBILITY.md` (facts live there; `docs/PRODUCTION.md` keeps operator steps and `docs/TROUBLESHOOTING.md` keeps symptoms)
-- New or changed public API, builder option, or config field on a published crate or package -> that crate's or package's own `README.md`, in the same PR. These READMEs are the crates.io and npm landing pages, so a field documented only in `docs/` is invisible to every consumer who never opens the repo. Published surfaces: `crates/shared`, `crates/client`, `crates/contracts`, `crates/miden-multisig-client`, `packages/guardian-client`, `packages/guardian-evm-client`, `packages/guardian-operator-client`, `packages/miden-multisig-client`. Keep relative links out of npm READMEs; they resolve only on GitHub.
+- New or changed public API, builder option, or config field on a published crate or package -> that crate's or package's own `README.md`, in the same PR. These READMEs are the crates.io and npm landing pages, so a field documented only in `docs/` is invisible to every consumer who never opens the repo. Published surfaces: `crates/shared`, `crates/client`, `crates/contracts`, `crates/guardian-module-sdk`, `crates/miden-multisig-client`, `packages/guardian-client`, `packages/guardian-evm-client`, `packages/guardian-operator-client`, `packages/miden-multisig-client`. Keep relative links out of npm READMEs; they resolve only on GitHub.
 - Operator/dashboard behavior -> `docs/DASHBOARD.md`, `docs/PRODUCTION.md`, `examples/operator-smoke-web`
+- Policy modules (catalog, pipeline, operator module routes, module protocol) -> `docs/guides/policy-modules/`, `docs/runbooks/policy-modules.md`, `docs/rfcs/0002-guardian-modules.md`, `crates/guardian-module-sdk/README.md`, `docs/DASHBOARD.md`
 - EVM proposal behavior -> `speckit/features/001-evm-proposal-support/`, `packages/guardian-evm-client`, `examples/evm-smoke-web`
 - Deployment, config, infrastructure, or secrets -> `docs/PRODUCTION.md`, `docs/architecture/infra.md`, `docs/runbooks/secrets.md`, `docs/SERVER_AWS_DEPLOY.md`, `infra/README.md`
 - Local dev or test startup -> `README.md`, `CONTRIBUTING.md`, relevant example README or quickstart

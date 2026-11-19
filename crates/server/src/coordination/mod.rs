@@ -81,6 +81,8 @@ pub struct CoordinationHandles {
     pub block_watch_store: Arc<dyn BlockWatchStore>,
     /// Miden account sessions.
     pub miden_sessions: Arc<dyn SessionStore>,
+    /// Policy module tables on the shared database; `None` keeps them as files.
+    pub module_store: Option<Arc<dyn crate::modules::store::ModuleStore>>,
     /// Record of accepted session reads (`unique` read replay policy).
     pub read_records: Arc<dyn ReadRecordStore>,
     #[cfg(feature = "evm")]
@@ -116,6 +118,7 @@ impl CoordinationHandles {
             stats_store: Arc::new(InMemoryStatsStore::new()),
             block_watch_store: Arc::new(InMemoryBlockWatchStore::new()),
             miden_sessions: Arc::new(InMemorySessionStore::new()),
+            module_store: None,
             read_records: Arc::new(InMemoryReadRecords::new()),
             #[cfg(feature = "evm")]
             evm_sessions: Arc::new(InMemorySessionStore::new()),
@@ -162,6 +165,9 @@ impl CoordinationHandles {
             read_records: Arc::new(PgReadRecords::new(pool.clone())),
             block_watch_store: Arc::new(PgBlockWatchStore::new(pool.clone())),
             miden_sessions: Arc::new(PgSessionStore::new(pool.clone(), Realm::Miden)),
+            module_store: Some(Arc::new(
+                crate::modules::postgres_store::PgModuleStore::new(pool.clone()),
+            )),
             #[cfg(feature = "evm")]
             evm_sessions: Arc::new(PgSessionStore::new(pool.clone(), Realm::Evm)),
             #[cfg(feature = "evm")]

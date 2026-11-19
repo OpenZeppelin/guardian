@@ -1,11 +1,11 @@
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::{Credentials, RequestAuthFormat};
-use crate::network::{AppliedState, NetworkClient};
+use crate::network::{AppliedState, ModuleInputs, NetworkClient};
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::ack_delta_internal::{
-    ProposalMatch, acknowledge_applied, ensure_labelled_with_applied_nonce,
-    lookup_matching_proposal,
+    ApprovalPlan, ProposalMatch, Submitter, acknowledge_applied,
+    ensure_labelled_with_applied_nonce, lookup_matching_proposal,
 };
 use crate::services::candidate_chain::{self, CandidateChain};
 use crate::services::delta_commit::{CommitContext, DeltaCommitStrategy};
@@ -162,19 +162,21 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         &params.delta.delta_payload,
     )
     .await;
-    let matched_payload = proposal_match.payload().cloned();
+    let plan = ApprovalPlan::for_account(state, &params.delta.account_id).await?;
     let admission = TailAdmission {
         client: state.network_client.clone(),
         tail_commitment: tail.commitment,
         tail_json: tail.state_json,
         delta_payload: params.delta.delta_payload.clone(),
         session: params.credentials.auth_format() == RequestAuthFormat::Session,
-        proposal: proposal_match,
+        proposal: proposal_match.clone(),
+        with_module_inputs: plan.wants_inputs(),
     };
-    let applied = crate::network::reconstructor()
+    let (applied, inputs) = crate::network::reconstructor()
         .run(move || Ok(admission.run()))
         .await??;
     ensure_labelled_with_applied_nonce(&params.delta, &applied)?;
+    let applied = plan.applied(applied, inputs)?;
     // The account verifies acknowledgements under its GUARDIAN's scheme.
     let scheme = resolved.metadata.auth.guardian_scheme();
     let acknowledged = acknowledge_applied(
@@ -182,7 +184,12 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         &scheme,
         &params.delta,
         applied,
-        matched_payload.as_ref(),
+        Submitter {
+            commitment: &resolved.signer_commitment,
+            session: params.credentials.auth_format() == RequestAuthFormat::Session,
+            account: &resolved.metadata,
+        },
+        &proposal_match,
     )
     .await?;
     let matched_proposal = acknowledged.matched_proposal;
@@ -244,12 +251,14 @@ struct TailAdmission {
     delta_payload: serde_json::Value,
     session: bool,
     proposal: ProposalMatch,
+    with_module_inputs: bool,
 }
 
 impl TailAdmission {
-    /// The applied tail, or why the push is refused. A delta that does not
-    /// verify or apply is `invalid_delta`, as before.
-    fn run(self) -> Result<AppliedState> {
+    /// The applied tail, with the policy module inputs built from the same
+    /// decode when `with_module_inputs`, or why the push is refused. A delta
+    /// that does not verify or apply is `invalid_delta`, as before.
+    fn run(self) -> Result<(AppliedState, Option<ModuleInputs>)> {
         match TailAccount::decode(&self.tail_json) {
             TailAccount::Multisig(multisig) => {
                 let proposal = match &self.proposal {
@@ -268,17 +277,42 @@ impl TailAdmission {
                 Err(GuardianError::WalletSignatureRequired)
             }
             TailAccount::SingleKey(account) => self.apply_to(account),
+            TailAccount::Undecodable if self.with_module_inputs => self
+                .client
+                .apply_delta_with_module_inputs(
+                    Some(&self.tail_commitment),
+                    &self.tail_json,
+                    &self.delta_payload,
+                )
+                .map(|(applied, inputs)| (applied, Some(inputs)))
+                .map_err(GuardianError::InvalidDelta),
             TailAccount::Undecodable => self
                 .client
                 .verify_and_apply_delta(&self.tail_commitment, &self.tail_json, &self.delta_payload)
+                .map(|applied| (applied, None))
                 .map_err(GuardianError::InvalidDelta),
         }
     }
 
-    fn apply_to(&self, account: Account) -> Result<AppliedState> {
-        self.client
-            .verify_and_apply_delta_to_account(&self.tail_commitment, account, &self.delta_payload)
-            .map_err(GuardianError::InvalidDelta)
+    fn apply_to(&self, account: Account) -> Result<(AppliedState, Option<ModuleInputs>)> {
+        let applied = if self.with_module_inputs {
+            self.client
+                .verify_and_apply_delta_to_account_with_module_inputs(
+                    &self.tail_commitment,
+                    account,
+                    &self.delta_payload,
+                )
+                .map(|(applied, inputs)| (applied, Some(inputs)))
+        } else {
+            self.client
+                .verify_and_apply_delta_to_account(
+                    &self.tail_commitment,
+                    account,
+                    &self.delta_payload,
+                )
+                .map(|applied| (applied, None))
+        };
+        applied.map_err(GuardianError::InvalidDelta)
     }
 }
 
@@ -287,6 +321,7 @@ mod tests {
     use super::*;
     use crate::metadata::AccountMetadata;
     use crate::metadata::auth::Auth;
+    use crate::modules::HookName;
     use crate::testing::helpers::create_test_app_state_with_mocks;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use chrono::TimeZone;
@@ -1588,6 +1623,28 @@ mod tests {
         procedure_overrides: &[(miden_protocol::Word, u32)],
         lookup: ProposalLookup,
     ) -> (Result<PushDeltaResult>, MockStorageBackend) {
+        push_on_multisig_gated_by(
+            request_signer,
+            approvers,
+            approver_schemes,
+            threshold,
+            procedure_overrides,
+            lookup,
+            None,
+        )
+        .await
+    }
+
+    /// As `push_on_multisig_signed_by`, with `modules` evaluating the push.
+    async fn push_on_multisig_gated_by(
+        request_signer: RequestSigner,
+        approvers: &[String],
+        approver_schemes: &[guardian_shared::SignatureScheme],
+        threshold: u32,
+        procedure_overrides: &[(miden_protocol::Word, u32)],
+        lookup: ProposalLookup,
+        modules: Option<Arc<crate::modules::pipeline::ModulePipeline>>,
+    ) -> (Result<PushDeltaResult>, MockStorageBackend) {
         let (result, storage, _network) = push_on_multisig_observed(
             request_signer,
             approvers,
@@ -1595,6 +1652,7 @@ mod tests {
             threshold,
             procedure_overrides,
             lookup,
+            modules,
         )
         .await;
         (result, storage)
@@ -1607,6 +1665,7 @@ mod tests {
         threshold: u32,
         procedure_overrides: &[(miden_protocol::Word, u32)],
         lookup: ProposalLookup,
+        modules: Option<Arc<crate::modules::pipeline::ModulePipeline>>,
     ) -> (
         Result<PushDeltaResult>,
         MockStorageBackend,
@@ -1673,7 +1732,19 @@ mod tests {
             .with_apply_delta(Ok((
                 serde_json::json!({"new_state": true}),
                 "0xnew_commitment".to_string(),
-            )));
+            )))
+            .with_module_views(
+                guardian_module_sdk::AccountView {
+                    signer_commitments: approvers.to_vec(),
+                    signer_schemes: approvers
+                        .iter()
+                        .map(|approver| (approver.clone(), "falcon".to_string()))
+                        .collect(),
+                    default_threshold: Some(threshold),
+                    ..Default::default()
+                },
+                guardian_module_sdk::MidenTransaction::default(),
+            );
         let metadata = MockMetadataStore::new().with_get(Ok(Some(AccountMetadata {
             account_id: account_id.clone(),
             auth: Auth::MidenFalconRpo {
@@ -1687,11 +1758,12 @@ mod tests {
             paused_reason: None,
             released_at: None,
         })));
-        let state = create_test_app_state_with_mocks(
+        let mut state = create_test_app_state_with_mocks(
             Arc::new(storage.clone()),
             Arc::new(network.clone()),
             Arc::new(metadata),
         );
+        state.modules = modules;
         let credentials = match request_signer {
             RequestSigner::Wallet => {
                 let (signature, timestamp) = caller.sign(&account_id);
@@ -1813,6 +1885,7 @@ mod tests {
                 falcon_approval(&first, &summary),
                 falcon_approval(&second, &summary),
             ]),
+            None,
         )
         .await;
         assert!(result.is_ok(), "{result:?}");
@@ -1829,6 +1902,63 @@ mod tests {
             *network.verify_and_apply_delta_json_calls.lock().unwrap(),
             0,
             "the tail is never decoded again from its JSON"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_gated_multisig_push_builds_module_inputs_from_the_account_its_gate_decoded() {
+        use crate::testing::helpers::TestSigner;
+
+        let first = TestSigner::new();
+        let second = TestSigner::new();
+        let summary = pushed_summary();
+        let (result, _storage, network) = push_on_multisig_observed(
+            RequestSigner::Wallet,
+            &[first.commitment_hex.clone(), second.commitment_hex.clone()],
+            &[],
+            2,
+            &[],
+            ProposalLookup::Signatures(vec![
+                falcon_approval(&first, &summary),
+                falcon_approval(&second, &summary),
+            ]),
+            Some(crate::modules::testing::pipeline(vec![
+                crate::modules::testing::instance(
+                    "approvals",
+                    &[HookName::BeforeTransactionApproved],
+                    crate::modules::catalog::OnError::Deny,
+                    crate::modules::testing::StubModule::allowing(),
+                ),
+            ])),
+        )
+        .await;
+        let pushed = result.expect("an allowing module acknowledges the push");
+        assert!(
+            pushed
+                .delta
+                .metadata
+                .is_some_and(|metadata| metadata.modules.is_some()),
+            "the approval is recorded"
+        );
+        assert_eq!(
+            network
+                .verify_and_apply_delta_to_account_calls
+                .lock()
+                .unwrap()
+                .len(),
+            1,
+            "the account the gate decoded is the one applied and viewed"
+        );
+        assert_eq!(
+            *network.verify_and_apply_delta_json_calls.lock().unwrap(),
+            0,
+            "the tail is never decoded again from its JSON"
+        );
+        assert_eq!(
+            network
+                .module_decodes
+                .load(std::sync::atomic::Ordering::SeqCst),
+            3
         );
     }
 
@@ -2406,5 +2536,498 @@ mod tests {
         .await;
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(storage.get_submit_delta_calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn modules_learn_whether_the_submitter_signed_through_a_session() {
+        use crate::modules::testing::{StubModule, instance, pipeline};
+        use crate::testing::helpers::TestSigner;
+
+        for (request_signer, through_session) in [
+            (RequestSigner::Wallet, false),
+            (RequestSigner::Session, true),
+        ] {
+            let first = TestSigner::new();
+            let second = TestSigner::new();
+            let summary = pushed_summary();
+            let module = StubModule::allowing();
+            let (result, _) = push_on_multisig_gated_by(
+                request_signer,
+                &[first.commitment_hex.clone(), second.commitment_hex.clone()],
+                &[],
+                2,
+                &[],
+                ProposalLookup::Signatures(vec![
+                    falcon_approval(&first, &summary),
+                    falcon_approval(&second, &summary),
+                ]),
+                Some(pipeline(vec![instance(
+                    "caps",
+                    &[HookName::BeforeTransactionApproved],
+                    crate::modules::catalog::OnError::Deny,
+                    module.clone(),
+                )])),
+            )
+            .await;
+            assert!(result.is_ok(), "{result:?}");
+            let request = module.last_request().expect("the module was called");
+            assert_eq!(request.submitter_session, through_session);
+            assert_eq!(request.network_id, "local");
+        }
+    }
+
+    async fn push_with_modules(
+        module: Arc<crate::modules::testing::StubModule>,
+    ) -> (Result<PushDeltaResult>, MockStorageBackend, String) {
+        push_with_modules_when(
+            module,
+            |_| Err("proposal not found".to_string()),
+            crate::modules::catalog::OnError::Deny,
+        )
+        .await
+    }
+
+    /// `proposal` builds the proposal lookup's result from the account id.
+    async fn push_with_modules_when(
+        module: Arc<crate::modules::testing::StubModule>,
+        proposal: impl FnOnce(&str) -> std::result::Result<DeltaObject, String>,
+        on_error: crate::modules::catalog::OnError,
+    ) -> (Result<PushDeltaResult>, MockStorageBackend, String) {
+        push_through(
+            crate::modules::testing::instance(
+                "caps",
+                &[HookName::BeforeTransactionApproved],
+                on_error,
+                module,
+            ),
+            guardian_module_sdk::MidenTransaction::default(),
+            proposal,
+        )
+        .await
+    }
+
+    /// Pushes a delta whose decoded effect is `projection` to a Guardian running `module`.
+    async fn push_through(
+        module: crate::modules::registry::Instance,
+        projection: guardian_module_sdk::MidenTransaction,
+        proposal: impl FnOnce(&str) -> std::result::Result<DeltaObject, String>,
+    ) -> (Result<PushDeltaResult>, MockStorageBackend, String) {
+        let (result, storage, signer, _) = push_on(Some(module), projection, proposal).await;
+        (result, storage, signer)
+    }
+
+    async fn push_on(
+        module: Option<crate::modules::registry::Instance>,
+        projection: guardian_module_sdk::MidenTransaction,
+        proposal: impl FnOnce(&str) -> std::result::Result<DeltaObject, String>,
+    ) -> (
+        Result<PushDeltaResult>,
+        MockStorageBackend,
+        String,
+        MockNetworkClient,
+    ) {
+        push_on_projected(module, Some(projection), proposal).await
+    }
+
+    /// [`push_on`] where the network decodes the transaction to `projection`, or fails to
+    /// project it when `None`.
+    async fn push_on_projected(
+        module: Option<crate::modules::registry::Instance>,
+        projection: Option<guardian_module_sdk::MidenTransaction>,
+        proposal: impl FnOnce(&str) -> std::result::Result<DeltaObject, String>,
+    ) -> (
+        Result<PushDeltaResult>,
+        MockStorageBackend,
+        String,
+        MockNetworkClient,
+    ) {
+        use crate::delta_object::DeltaStatus;
+        use crate::modules::testing::pipeline;
+        use crate::state_object::StateObject;
+        use crate::testing::helpers::create_test_delta_payload;
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
+            crate::testing::helpers::generate_falcon_signature(&account_id);
+        let storage = MockStorageBackend::new()
+            .with_pull_state(Ok(StateObject {
+                account_id: account_id.clone(),
+                state_json: serde_json::json!({}),
+                commitment: "0xprev".into(),
+                nonce: None,
+                created_at: "2026-05-25T08:00:00Z".into(),
+                updated_at: "2026-05-25T08:00:00Z".into(),
+                auth_scheme: String::new(),
+            }))
+            .with_pull_deltas_after(Ok(Vec::new()))
+            .with_pull_delta_proposal(proposal(&account_id))
+            .with_submit_state(Ok(()))
+            .with_submit_delta(Ok(()));
+        let network = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_verify_delta(Ok(()))
+            .with_apply_delta(Ok((
+                serde_json::json!({"new_state": true}),
+                "0xnew".to_string(),
+            )))
+            .with_module_views(
+                guardian_module_sdk::AccountView {
+                    signer_commitments: vec![signer_commitment.clone()],
+                    ..Default::default()
+                },
+                projection.clone().unwrap_or_default(),
+            );
+        if projection.is_none() {
+            *network.module_projection.lock().unwrap() = None;
+        }
+        let metadata = MockMetadataStore::new().with_get(Ok(Some(AccountMetadata {
+            account_id: account_id.clone(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![signer_commitment.clone()],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2026-05-01T00:00:00Z".into(),
+            updated_at: "2026-05-01T00:00:00Z".into(),
+            has_pending_candidate: false,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        })));
+        let mut state = create_test_app_state_with_mocks(
+            Arc::new(storage.clone()),
+            Arc::new(network.clone()),
+            Arc::new(metadata),
+        );
+        state.modules = module.map(|module| pipeline(vec![module]));
+        let params = PushDeltaParams {
+            delta: DeltaObject {
+                account_id: account_id.clone(),
+                nonce: 1,
+                prev_commitment: "0xprev".into(),
+                new_commitment: None,
+                delta_payload: create_test_delta_payload(&account_id),
+                ack_sig: String::new(),
+                ack_pubkey: String::new(),
+                ack_scheme: String::new(),
+                status: DeltaStatus::default(),
+                metadata: None,
+            },
+            credentials: Credentials::signature(signer_pubkey, signer_signature, signer_timestamp),
+        };
+        (
+            push_delta(&state, params).await,
+            storage,
+            signer_commitment,
+            network,
+        )
+    }
+
+    #[tokio::test]
+    async fn without_modules_a_push_builds_no_view_or_projection_and_records_no_approval() {
+        let (result, storage, _, network) =
+            push_on(None, paying(5_000), stored_proposal_labelled("p2id")).await;
+        let pushed = result.expect("acknowledged as before modules existed");
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+        assert_eq!(
+            network
+                .module_decodes
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert!(
+            pushed
+                .delta
+                .metadata
+                .is_none_or(|metadata| metadata.modules.is_none())
+        );
+        let (_, _, _, gated) = push_on(
+            Some(cap_of_1000()),
+            paying(500),
+            stored_proposal_labelled("p2id"),
+        )
+        .await;
+        assert_eq!(
+            gated
+                .module_decodes
+                .load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "the same push with a module builds both views and the projection, once each"
+        );
+        let (_, _, _, elsewhere) = push_on(
+            Some(crate::modules::testing::instance(
+                "proposals-only",
+                &[HookName::BeforeProposalCreated],
+                crate::modules::catalog::OnError::Deny,
+                crate::modules::testing::StubModule::allowing(),
+            )),
+            paying(500),
+            stored_proposal_labelled("p2id"),
+        )
+        .await;
+        assert_eq!(
+            elsewhere
+                .module_decodes
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a module on another hook builds nothing for a push"
+        );
+    }
+
+    /// A transaction the network cannot project for the modules is refused as unavailable, a
+    /// retryable module refusal rather than a hard error of the push, and a fail-open instance
+    /// does not let it through: the requester shapes the transaction.
+    #[tokio::test]
+    async fn a_transaction_that_cannot_be_projected_is_refused_even_by_a_fail_open_module() {
+        let (refused, storage, _, _) =
+            push_on_projected(Some(cap_of_1000()), None, stored_proposal_labelled("p2id")).await;
+        assert!(
+            matches!(refused, Err(GuardianError::ModuleUnavailable { .. })),
+            "{refused:?}"
+        );
+        assert!(storage.get_submit_delta_calls().is_empty());
+
+        let mut lenient = cap_of_1000();
+        lenient.config.on_error = crate::modules::catalog::OnError::Allow;
+        let (still_refused, storage, _, _) =
+            push_on_projected(Some(lenient), None, stored_proposal_labelled("p2id")).await;
+        assert!(
+            matches!(still_refused, Err(GuardianError::ModuleUnavailable { .. })),
+            "{still_refused:?}"
+        );
+        assert!(storage.get_submit_delta_calls().is_empty());
+    }
+
+    const USDC: &str = "0x00000000000000000000000000aa00";
+
+    fn cap_of_1000() -> crate::modules::registry::Instance {
+        crate::modules::testing::instance_with_params(
+            "caps",
+            &[HookName::BeforeTransactionApproved],
+            Arc::new(guardian_module_sdk::policies::SpendingLimit),
+            serde_json::json!({ "max_per_transaction": { USDC: "1000" } }),
+        )
+    }
+
+    fn paying(amount: u64) -> guardian_module_sdk::MidenTransaction {
+        guardian_module_sdk::MidenTransaction {
+            output_notes: vec![guardian_module_sdk::OutputNote {
+                note_id: "0xnote".into(),
+                assets: vec![guardian_module_sdk::Asset {
+                    faucet_id: USDC.into(),
+                    value: Some(guardian_module_sdk::proto::asset::Value::FungibleAmount(
+                        amount.to_string(),
+                    )),
+                }],
+                p2id_target: Some("0xrecipient".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn stored_proposal_labelled(
+        proposal_type: &'static str,
+    ) -> impl FnOnce(&str) -> std::result::Result<DeltaObject, String> {
+        move |account_id| {
+            Ok(DeltaObject {
+                account_id: account_id.to_string(),
+                nonce: 1,
+                status: crate::delta_object::DeltaStatus::Pending {
+                    timestamp: "2026-05-25T08:00:00Z".into(),
+                    proposer_id: "0xproposer".into(),
+                    cosigner_sigs: Vec::new(),
+                },
+                delta_payload: serde_json::json!({ "metadata": { "proposal_type": proposal_type } }),
+                ..Default::default()
+            })
+        }
+    }
+
+    fn no_stored_proposal(_: &str) -> std::result::Result<DeltaObject, String> {
+        Err("proposal not found".to_string())
+    }
+
+    fn assert_refused_by_the_cap(result: &Result<PushDeltaResult>, storage: &MockStorageBackend) {
+        assert!(
+            matches!(
+                result,
+                Err(GuardianError::ModuleDenied { module, reason_code, layer, .. })
+                    if module == "caps" && reason_code == "amount_cap_exceeded" && layer == "global"
+            ),
+            "{result:?}"
+        );
+        assert!(
+            storage.get_submit_delta_calls().is_empty(),
+            "nothing signed or stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_payment_under_a_mandatory_cap_is_acknowledged_as_without_modules() {
+        let (result, storage, _) =
+            push_through(cap_of_1000(), paying(500), stored_proposal_labelled("p2id")).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_payment_over_a_mandatory_cap_is_refused_through_a_stored_proposal() {
+        let (result, storage, _) = push_through(
+            cap_of_1000(),
+            paying(5_000),
+            stored_proposal_labelled("p2id"),
+        )
+        .await;
+        assert_refused_by_the_cap(&result, &storage);
+    }
+
+    #[tokio::test]
+    async fn a_payment_over_a_mandatory_cap_signed_offline_is_refused_without_a_proposal() {
+        let (result, storage, _) =
+            push_through(cap_of_1000(), paying(5_000), no_stored_proposal).await;
+        assert_refused_by_the_cap(&result, &storage);
+    }
+
+    #[tokio::test]
+    async fn the_decision_follows_the_effect_not_the_proposal_label() {
+        let (result, storage, _) = push_through(
+            cap_of_1000(),
+            paying(5_000),
+            stored_proposal_labelled("change_threshold"),
+        )
+        .await;
+        assert_refused_by_the_cap(&result, &storage);
+    }
+
+    #[tokio::test]
+    async fn a_failed_proposal_lookup_is_a_module_failure_not_an_empty_proposer() {
+        use crate::modules::catalog::OnError;
+        let lookup_fails = |_: &str| Err("connection reset by peer".to_string());
+
+        let module = crate::modules::testing::StubModule::allowing();
+        let (result, storage, _) =
+            push_with_modules_when(module.clone(), lookup_fails, OnError::Deny).await;
+        assert!(matches!(
+            result,
+            Err(GuardianError::ModuleUnavailable { module }) if module.as_deref() == Some("caps")
+        ));
+        assert_eq!(
+            module.calls(),
+            0,
+            "the module never sees a request without its proposer"
+        );
+        assert!(storage.get_submit_delta_calls().is_empty());
+
+        let module = crate::modules::testing::StubModule::allowing();
+        let (result, storage, _) =
+            push_with_modules_when(module.clone(), lookup_fails, OnError::Allow).await;
+        assert!(
+            matches!(result, Err(GuardianError::ModuleUnavailable { .. })),
+            "a request that cannot be built is refused even by a fail-open module: {result:?}"
+        );
+        assert_eq!(module.calls(), 0);
+        assert!(storage.get_submit_delta_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_one_proposal_read_gives_modules_the_proposer() {
+        use crate::delta_object::DeltaStatus;
+        let module = crate::modules::testing::StubModule::allowing();
+        let pending = |account_id: &str| {
+            Ok(DeltaObject {
+                account_id: account_id.to_string(),
+                nonce: 1,
+                status: DeltaStatus::Pending {
+                    timestamp: "2026-05-25T08:00:00Z".into(),
+                    proposer_id: "0xproposer".into(),
+                    cosigner_sigs: Vec::new(),
+                },
+                delta_payload: serde_json::json!({ "metadata": { "proposal_type": "p2id" } }),
+                ..Default::default()
+            })
+        };
+        let (result, storage, _) = push_with_modules_when(
+            module.clone(),
+            pending,
+            crate::modules::catalog::OnError::Deny,
+        )
+        .await;
+        let pushed = result.expect("allowed push succeeds");
+        assert_eq!(
+            pushed
+                .delta
+                .metadata
+                .and_then(|metadata| metadata.modules)
+                .map(|approval| approval.proposer),
+            Some("0xproposer".to_string()),
+            "the approval records the proposer the modules saw"
+        );
+        assert_eq!(
+            storage.get_pull_delta_proposal_calls().len(),
+            2,
+            "one read for metadata and modules, one by the optimistic commit to delete the proposal"
+        );
+        let request = module.last_request().expect("module was called");
+        match request.subject {
+            Some(guardian_module_sdk::proto::hook_request::Subject::Transaction(subject)) => {
+                assert_eq!(subject.proposer, "0xproposer");
+            }
+            other => panic!("unexpected subject {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn module_denial_refuses_the_ack_and_stores_nothing() {
+        let module = crate::modules::testing::StubModule::denying("amount_cap_exceeded");
+        let (result, storage, _) = push_with_modules(module.clone()).await;
+        assert!(matches!(
+            result,
+            Err(GuardianError::ModuleDenied { module, reason_code, .. })
+                if module == "caps" && reason_code == "amount_cap_exceeded"
+        ));
+        assert!(storage.get_submit_delta_calls().is_empty());
+        assert_eq!(module.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn module_allow_acks_and_receives_the_submitter_and_views() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let (result, storage, signer) = push_with_modules(module.clone()).await;
+        let pushed = result.expect("allowed push succeeds");
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+        let approval = pushed
+            .delta
+            .metadata
+            .and_then(|metadata| metadata.modules)
+            .expect("the approving module configuration is recorded");
+        assert_eq!(approval.params_version, 0);
+        assert_eq!(approval.proposer, "", "no stored proposal matched");
+        assert!(approval.failed_open.is_empty());
+        let request = module.last_request().expect("module was called");
+        assert_eq!(request.submitter, signer);
+        assert_eq!(approval.submitter, signer);
+        let accounting_time = request.accounting_time.expect("accounting time is sent");
+        assert_eq!(
+            chrono::DateTime::parse_from_rfc3339(&approval.signed_at)
+                .expect("signed_at is RFC 3339")
+                .timestamp_nanos_opt(),
+            Some(accounting_time.seconds * 1_000_000_000 + i64::from(accounting_time.nanos)),
+            "signed_at is the accounting time the modules evaluated with"
+        );
+        let Some(guardian_module_sdk::proto::hook_request::Subject::Transaction(subject)) =
+            &request.subject
+        else {
+            panic!("transaction subject expected");
+        };
+        assert!(
+            subject.miden().is_some(),
+            "the projection is tagged as Miden"
+        );
+        assert_eq!(
+            subject.raw.as_ref().map(|raw| raw.encoding.as_str()),
+            Some(guardian_module_sdk::RawTransaction::MIDEN_TRANSACTION_SUMMARY)
+        );
+        assert_eq!(request.after.unwrap().signer_commitments, vec![signer]);
+        assert!(request.before.is_some());
     }
 }

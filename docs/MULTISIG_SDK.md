@@ -798,6 +798,51 @@ report a refusal as their usual error: `ClientError` in Rust and a `GuardianHttp
 `rawCode` is the wire string in TypeScript. See
 [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md#guardian-execution) for every code.
 
+### Policy Modules
+
+A Guardian can run policy modules (spending caps, recipient and signer rules,
+screening) that refuse a proposal at creation, a transaction at approval, or
+an account at registration. Both SDKs expose the same three things.
+
+**The rules the operator discloses.** `get_policies()` in Rust and
+`getPolicies()` in TypeScript list the modules that apply to the account, as
+far as the operator chose to disclose them: the module id, its hooks and a
+description, and its params only where the catalog allows it.
+
+**A check before proposing.** `check_transaction(transaction_type)` in Rust and
+`checkTransaction({ type, ... })` in TypeScript build the transaction as the
+matching create call would and ask the Guardian whether it would be accepted.
+Nothing is stored, no proposal slot is taken and no signature is sent. The
+result's `complete` is false when a module that opts out of checks was
+skipped. The answer is advisory, since approval still decides, and checks are
+rate limited per account and signer. Both SDKs check every typed creator and
+custom proposals (`check_custom_transaction` in Rust, `{ type: 'custom' }` in
+TypeScript). A Guardian switch is checkable only in Rust, but a switch is never
+gated by modules anyway.
+
+A check and a creation build the proposal the same way: each create call first
+drafts the proposal locally (summary, metadata and payload, no signature) and
+then either sends that draft to the check route or pushes it. Rust adds the
+proposer's signature to a push; TypeScript pushes it unsigned and the proposer
+signs afterwards, as for any other approval. A check never carries a signature.
+
+**Typed refusals.** A refusal from a check, at creation, at push or at
+registration carries the same information in both SDKs:
+
+| | Rust | TypeScript |
+|---|---|---|
+| Denied (final) | `MultisigError::ModuleDenied { module, reason_code, layer, client_message }` | `GuardianHttpError`, `error.moduleRefusal()` with `kind: 'denied'` |
+| Could not decide (retryable) | `MultisigError::ModuleUnavailable { module }` | `error.moduleRefusal()` with `kind: 'unavailable'` |
+
+A denial from an instance the operator keeps generic names no module and
+carries only the reason code `policy_denied`. Neither SDK retries a refusal
+on its own. A Guardian execution refused by a module ends failed with
+`GUARDIAN_EXECUTION_MODULE_DENIED` or `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE`,
+and the proposal is kept. In Rust, `propose_with_fallback` falls back to an
+offline proposal on a module refusal for transaction types that can execute
+without the Guardian, which is how an account leaves a Guardian whose modules
+refuse it.
+
 ### Side-channel (offline) workflow
 
 For moving a proposal between cosigners as a document instead of through

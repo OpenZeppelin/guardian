@@ -1,0 +1,40 @@
+# Remote module: the built-in spending-limit policy, served by a separate process over gRPC.
+# Copy to .guardian/remote.toml, put the bearer token in .guardian/caps.token (mode 0600),
+# and start the module before the Guardian (see remote.md).
+
+[[module]]
+id = "caps"
+kind = "spending-limit"
+scope = "all"
+hooks = ["before_proposal_created", "before_transaction_approved"]
+timeout_ms = 50
+on_error = "deny"
+operator_can_disable = true
+params = { max_per_transaction = { "0xREPLACE_WITH_FAUCET_ID" = "5" } }
+
+# A tighter cap (3) than the in-process one (5), so refusals show which module decided.
+[[module]]
+id = "caps-remote"
+kind = "grpc"
+endpoint = "grpc+insecure://127.0.0.1:7443"
+scope = "all"
+hooks = ["before_proposal_created", "before_transaction_approved"]
+timeout_ms = 200
+on_error = "deny"
+operator_can_disable = true
+auth = { token_secret = "caps.token" }
+params = { max_per_transaction = { "0xREPLACE_WITH_FAUCET_ID" = "3" } }
+
+# The same module on another host, over TLS (examples/policy-module/README.md). Its token is
+# read from AWS Secrets Manager in the prod stage; the CA file is relative to this catalog.
+# [[module]]
+# id = "caps-remote"
+# kind = "grpc"
+# endpoint = "grpc://policy-module.internal:7443"
+# scope = "all"
+# hooks = ["before_proposal_created", "before_transaction_approved"]
+# timeout_ms = 200
+# on_error = "deny"
+# operator_can_disable = true
+# auth = { token_secret = "guardian/modules/caps-remote-token" }
+# tls = { ca_file = "module-ca.pem" }

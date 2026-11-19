@@ -516,7 +516,7 @@ async fn a_pre_boundary_failure_releases_with_its_outcome(h: &Harness) {
         h.storage
             .resolve_execution(
                 h.metadata.as_ref(),
-                h.resolution(&proposal, attempt, &owner, code)
+                h.resolution(&proposal, attempt, &owner, code.clone())
             )
             .await
             .unwrap(),
@@ -525,7 +525,7 @@ async fn a_pre_boundary_failure_releases_with_its_outcome(h: &Harness) {
     );
     assert_eq!(
         h.storage
-            .fail_execution(h.resolution(&proposal, attempt, &owner, code))
+            .fail_execution(h.resolution(&proposal, attempt, &owner, code.clone()))
             .await
             .unwrap(),
         ResolveWrite::Resolved
@@ -1410,6 +1410,21 @@ async fn proposal_admission_counts_only_viable_request_bytes(h: &Harness) {
             limit: 100,
             used: 60
         }
+    );
+    assert_eq!(
+        h.storage
+            .viable_request_bytes(&h.account_id, NEXT, None)
+            .await
+            .unwrap(),
+        60,
+        "a dry run reads what admission counts"
+    );
+    assert_eq!(
+        h.storage
+            .viable_request_bytes(&h.account_id, BASE, None)
+            .await
+            .unwrap(),
+        90
     );
     assert_eq!(
         admit(h.proposal_admission(2, NEXT, 60)).await.unwrap(),

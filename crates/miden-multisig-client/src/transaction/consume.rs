@@ -21,7 +21,7 @@ use crate::error::{MultisigError, Result};
 /// and converts each `InputNoteRecord` to a `Note`. Returns
 /// `LegacyConsumeNotesNoteMissing` for the first missing ID. Used by
 /// both proposal creation (the proposer-local fetch in
-/// `ProposalBuilder::build_consume_notes`) and the v1 verification
+/// `ProposalBuilder::draft_consume_notes`) and the v1 verification
 /// adapter below.
 pub(crate) async fn fetch_notes_from_store(
     client: &MidenSdkClient,

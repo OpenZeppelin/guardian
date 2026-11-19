@@ -10,6 +10,21 @@ use miden_protocol::Word;
 
 use super::{MultisigClient, ProposalResult};
 
+/// A policy GUARDIAN applies to the account, as far as its operator discloses it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Policy {
+    /// The operator-chosen module instance id.
+    pub module_id: String,
+    /// The points where it runs, for example `before_proposal_created`.
+    pub hooks: Vec<String>,
+    /// The operator's description of the rule.
+    pub description: String,
+    /// The rule's parameters, where the operator discloses them.
+    pub params: Option<serde_json::Value>,
+    /// This account's own stricter layer on the rule, where disclosed.
+    pub account_layer: Option<serde_json::Value>,
+}
+
 /// Immediate outcome of an abandon request (issue #319).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AbandonRequestState {
@@ -68,8 +83,8 @@ use crate::execution::{
 use crate::keystore::{proposal_public_key_hex, word_from_hex};
 use crate::proposal::{Proposal, TransactionType, is_builtin_proposal_type};
 use crate::transaction::{
-    ProposalBuilder, ProposalOptions, deserialize_transaction_request, execute_for_summary_at_tip,
-    proposal_auth_args, word_to_hex,
+    ProposalBuilder, ProposalCheck, ProposalDraft, ProposalOptions,
+    deserialize_transaction_request, execute_for_summary_at_tip, proposal_auth_args, word_to_hex,
 };
 
 impl MultisigClient {
@@ -341,9 +356,7 @@ impl MultisigClient {
         let sign_response = guardian_client
             .sign_delta_proposal(&account_id, proposal_id, signature)
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to sign proposal: {}", e))
-            })?;
+            .map_err(|e| MultisigError::guardian("failed to sign proposal", e))?;
 
         let updated_raw = sign_response
             .delta
@@ -530,6 +543,38 @@ impl MultisigClient {
         transaction_request_bytes: &[u8],
         proposal_type: &str,
     ) -> Result<Proposal> {
+        let draft = self
+            .draft_custom_transaction(transaction_request_bytes, proposal_type)
+            .await?;
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
+        let proposal = draft
+            .push(&mut guardian_client, self.key_manager.as_ref())
+            .await?;
+        self.known_proposals
+            .record(proposal.tx_summary.account_delta().id(), &proposal);
+        Ok(proposal)
+    }
+
+    /// Asks GUARDIAN whether a custom transaction would be accepted as a proposal: it is built
+    /// exactly as [`Self::propose_custom_transaction`] builds it, but nothing is stored. Mirrors
+    /// [`Self::check_transaction`] for the transactions the SDK does not model.
+    pub async fn check_custom_transaction(
+        &mut self,
+        transaction_request_bytes: &[u8],
+        proposal_type: &str,
+    ) -> Result<ProposalCheck> {
+        let draft = self
+            .draft_custom_transaction(transaction_request_bytes, proposal_type)
+            .await?;
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
+        draft.check(&mut guardian_client).await
+    }
+
+    async fn draft_custom_transaction(
+        &mut self,
+        transaction_request_bytes: &[u8],
+        proposal_type: &str,
+    ) -> Result<ProposalDraft> {
         let proposal_type = proposal_type.trim().to_lowercase();
         if proposal_type.is_empty() {
             return Err(MultisigError::InvalidConfig(
@@ -559,7 +604,6 @@ impl MultisigClient {
         let tx_request = deserialize_transaction_request(transaction_request_bytes)?;
         let tx_summary =
             execute_for_summary_at_tip(&mut self.miden_client, account_id, tx_request).await?;
-        let tx_commitment = tx_summary.to_commitment();
 
         let required_signatures = account.threshold()? as usize;
 
@@ -576,34 +620,13 @@ impl MultisigClient {
                 self.execution_mode
                     .attachment_of_bytes(transaction_request_bytes),
             )
-            .with_signature(self.key_manager.as_ref(), tx_commitment)
             .with_custom_metadata(proposal_type.to_string())
             .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
         let payload = payload.with_base_commitment(account.commitment());
-
-        let mut guardian_client = self.create_authenticated_guardian_client().await?;
-        let response = guardian_client
-            .push_delta_proposal(&account_id, nonce, &payload.to_json())
-            .await
-            .map_err(MultisigError::proposal_push)?;
-
         let proposal = Proposal::new(tx_summary, nonce, TransactionType::Custom, metadata);
-
-        if !proposal
-            .id
-            .trim_start_matches("0x")
-            .eq_ignore_ascii_case(response.commitment.trim_start_matches("0x"))
-        {
-            return Err(MultisigError::GuardianServer(format!(
-                "GUARDIAN returned proposal commitment {} but expected {}",
-                response.commitment, proposal.id
-            )));
-        }
-
-        self.known_proposals.record(account_id, &proposal);
-        Ok(proposal)
+        Ok(ProposalDraft::new(proposal, payload))
     }
 
     /// Assembles the validated execution advice for a threshold-met custom
@@ -791,6 +814,75 @@ impl MultisigClient {
         Ok(proposal)
     }
 
+    /// Asks GUARDIAN whether `transaction_type` would be accepted as a proposal: the
+    /// transaction is built exactly as [`Self::propose_transaction`] builds it, but nothing is
+    /// stored and no proposal slot is taken. A policy refusal is the same
+    /// [`MultisigError::ModuleDenied`] creation returns. Advisory: approval still decides,
+    /// and GUARDIAN rate limits checks per account and signer.
+    pub async fn check_transaction(
+        &mut self,
+        transaction_type: TransactionType,
+    ) -> Result<ProposalCheck> {
+        self.check_transaction_with_options(transaction_type, ProposalOptions::default())
+            .await
+    }
+
+    /// [`Self::check_transaction`] with per-proposal settings. See [`ProposalOptions`].
+    pub async fn check_transaction_with_options(
+        &mut self,
+        transaction_type: TransactionType,
+        options: ProposalOptions,
+    ) -> Result<ProposalCheck> {
+        self.sync().await?;
+        let account = self.require_account()?.clone();
+        self.ensure_key_scheme_matches(&account)?;
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
+        let node_rpc = self.node_rpc_client();
+        ProposalBuilder::new(transaction_type)
+            .with_options(options)
+            .with_execution_mode(self.execution_mode)
+            .check(
+                &mut self.miden_client,
+                &node_rpc,
+                &mut guardian_client,
+                &account,
+                self.key_manager.as_ref(),
+            )
+            .await
+    }
+
+    /// The policies GUARDIAN applies to this account, as far as its operator discloses them,
+    /// in the order they are evaluated.
+    pub async fn get_policies(&mut self) -> Result<Vec<Policy>> {
+        let account_id = self.require_account()?.id();
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
+        let response = guardian_client
+            .get_policies(&account_id)
+            .await
+            .map_err(|e| MultisigError::guardian("failed to get policies", e))?;
+        let json = |field: &str, text: Option<String>| -> Result<Option<serde_json::Value>> {
+            text.map(|text| {
+                serde_json::from_str(&text).map_err(|e| {
+                    MultisigError::GuardianServer(format!("policy {field} is not JSON: {e}"))
+                })
+            })
+            .transpose()
+        };
+        response
+            .policies
+            .into_iter()
+            .map(|policy| {
+                Ok(Policy {
+                    params: json("params", policy.params)?,
+                    account_layer: json("account_layer", policy.account_layer)?,
+                    module_id: policy.module_id,
+                    hooks: policy.hooks,
+                    description: policy.description,
+                })
+            })
+            .collect()
+    }
+
     /// Proposes a transaction with automatic fallback to offline mode.
     ///
     /// First attempts to create the proposal via GUARDIAN. If GUARDIAN is unavailable
@@ -835,7 +927,9 @@ impl MultisigClient {
             Err(
                 error @ (MultisigError::GuardianConnection(_)
                 | MultisigError::GuardianServer(_)
-                | MultisigError::GuardianProposalRefused { .. }),
+                | MultisigError::GuardianProposalRefused { .. }
+                | MultisigError::ModuleDenied { .. }
+                | MultisigError::ModuleUnavailable { .. }),
             ) => {
                 if transaction_type.supports_offline_execution() {
                     let exported = self.create_proposal_offline(transaction_type).await?;

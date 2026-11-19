@@ -299,6 +299,41 @@ for (const entry of page.items) {
 }
 ```
 
+### Policy Modules
+
+Manage the policy module instances the Guardian's catalog declares. Every
+write takes a reason and is validated by the module before it is stored.
+
+```ts
+const catalog = await client.listModules();
+// catalog.modules: [{ moduleId, scope, enabled, circuit, params, paramsDrift, ... }]
+// catalog.undeclared: stored instances the catalog no longer declares
+
+await client.setModuleGlobalParams('blocklist', { denylist: ['0x0a1b2c3d4e5f60718293a4b5c6d7e8'] }, 'OP-90'); // policies:write_global
+await client.setAccountModuleLayer(accountId, 'blocklist', { denylist: ['0x1c2d3e4f5a6b70819203b4c5d6e7f8'] }, 'OP-91'); // policies:write
+await client.removeAccountModuleLayer(accountId, 'blocklist', 'OP-92');
+await client.setAccountModules(accountId, [{ moduleId: 'treasury-allowlist', params: {} }], 'OP-93');
+await client.disableModule('risk-scorer', 'incident'); // policies:write or modules:disable
+await client.enableModule('risk-scorer', 'recovered'); // policies:write
+
+const modules = await client.getAccountModules(accountId); // evaluation order; orphaned entries are skipped
+const page = await client.getModuleParamsHistory('blocklist', { limit: 50 }); // newest first
+const older = await client.getModuleParamsHistory('blocklist', {
+  before: page.entries[page.entries.length - 1].id,
+});
+```
+
+Every params write takes an optional `{ expectedVersion }`: the catalog-wide
+`paramsVersion` from `listModules()` for a global write (any instance's global
+write or enable/disable moves it), the account's `accountParamsVersion` for a layer or
+an assignment. A write made after someone else changed the same params is then
+refused with 409 `GUARDIAN_MODULE_PARAMS_STALE` instead of replacing their change:
+
+```ts
+const { accountParamsVersion } = await client.getAccountModules(accountId);
+await client.setAccountModules(accountId, assignments, 'OP-94', { expectedVersion: accountParamsVersion });
+```
+
 ### Logout
 
 ```typescript
@@ -460,6 +495,11 @@ const { permissions } = await client.getSession();
 const canPause = permissions.includes(ACCOUNTS_PAUSE);
 const canRead = permissions.includes(DASHBOARD_READ);
 ```
+
+The constants cover every permission the server defines: `DASHBOARD_READ`,
+`ACCOUNTS_PAUSE`, `POLICIES_WRITE`, `POLICIES_WRITE_GLOBAL` (policy module
+global params), `MODULES_DISABLE` (disabling a module instance the catalog
+marks `operator_can_disable`) and `STATS_REFRESH`.
 
 The session endpoint re-reads permissions from the allowlist on every
 call, so allowlist edits take effect without re-login. The server is

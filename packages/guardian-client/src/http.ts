@@ -10,6 +10,7 @@ import {
 import type {
   AbandonCandidateResponse,
   AbandonStatus,
+  CheckProposalResult,
   ConfigureRequest,
   ConfigureResponse,
   CreateSessionRequest,
@@ -21,6 +22,7 @@ import type {
   HistoryOptions,
   HistoryPage,
   LookupResponse,
+  Policy,
   PubkeyResponse,
   PushDeltaResponse,
   SessionEndReason,
@@ -44,10 +46,12 @@ import type {
   ServerAbandonCandidateRequest,
   ServerAbandonCandidateResponse,
   ServerCanonicalNonceResponse,
+  ServerCheckProposalResponse,
   ServerDeltaObject,
   ServerDeltaProposalResponse,
   ServerHistoryPage,
   ServerLookupResponse,
+  ServerPoliciesResponse,
   ServerProposalsResponse,
   ServerPubkeyResponse,
   ServerStateObject,
@@ -67,6 +71,7 @@ import {
   fromServerDeltaObject,
   fromServerHistoryPage,
   fromServerLookupResponse,
+  fromServerPolicy,
   fromServerStateObject,
   fromServerStateTail,
   toServerConfigureRequest,
@@ -113,7 +118,33 @@ export interface GuardianErrorMeta {
    * `code === 'proposal_executes_locally'`: `switch_guardian` for a guardian switch.
    */
   reason?: LocalExecutionReason;
+  /**
+   * The policy module instance that refused. Present for `module_unavailable`, and for
+   * `module_denied` unless the instance reports generic denials.
+   */
+  module?: string;
+  /** Machine-readable denial reason; `policy_denied` for a generic denial. Only for `module_denied`. */
+  reasonCode?: string;
+  /** `global` or `account`: the parameter layer that denied. Only for a full `module_denied`. */
+  layer?: string;
+  /** The denying module's text for the requester, when the instance allows it. */
+  clientMessage?: string;
 }
+
+/**
+ * A refusal by one of the Guardian's policy modules. `module` is the operator-chosen instance
+ * id. A generic denial carries only the reason code `policy_denied`. A denial is final; an
+ * unavailable module is retryable. Mirrors the Rust client's `ModuleRefusal`.
+ */
+export type ModuleRefusal =
+  | {
+      kind: 'denied';
+      module: string | null;
+      reasonCode: string;
+      layer: string | null;
+      clientMessage: string | null;
+    }
+  | { kind: 'unavailable'; module: string | null };
 
 /** Why GUARDIAN refuses to execute a proposal and leaves it to local execution. */
 export type LocalExecutionReason = 'switch_guardian';
@@ -187,6 +218,10 @@ function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
     meta.blockingProposalId = rawMeta.blocking_proposal_id;
   }
   if (typeof rawMeta.proposal_type === 'string') meta.proposalType = rawMeta.proposal_type;
+  if (typeof rawMeta.module === 'string') meta.module = rawMeta.module;
+  if (typeof rawMeta.reason_code === 'string') meta.reasonCode = rawMeta.reason_code;
+  if (typeof rawMeta.layer === 'string') meta.layer = rawMeta.layer;
+  if (typeof rawMeta.client_message === 'string') meta.clientMessage = rawMeta.client_message;
   const reason = localExecutionReason(rawMeta.reason);
   if (reason !== undefined) meta.reason = reason;
   if (typeof rawMeta.paused_reason === 'string' || rawMeta.paused_reason === null) {
@@ -270,6 +305,34 @@ export class GuardianHttpError extends Error {
    */
   retryAfterSecs(): number | undefined {
     return this.headerRetryAfterSecs ?? this.meta?.retryAfterSecs;
+  }
+
+  /**
+   * The policy module refusal this error carries, or `null`: `module_denied` with its
+   * `reasonCode`, or `module_unavailable` with its `module`. A refusal missing the field it
+   * requires is not reported as one. Mirrors the Rust client's `ClientError::module_refusal`.
+   */
+  moduleRefusal(): ModuleRefusal | null {
+    const meta = this.meta;
+    if (meta === undefined) {
+      return null;
+    }
+    switch (this.code) {
+      case 'module_denied':
+        return meta.reasonCode === undefined
+          ? null
+          : {
+              kind: 'denied',
+              module: meta.module ?? null,
+              reasonCode: meta.reasonCode,
+              layer: meta.layer ?? null,
+              clientMessage: meta.clientMessage ?? null,
+            };
+      case 'module_unavailable':
+        return { kind: 'unavailable', module: meta.module ?? null };
+      default:
+        return null;
+    }
   }
 }
 
@@ -613,6 +676,40 @@ export class GuardianHttpClient {
   }
 
   /**
+   * Dry run of {@link pushDeltaProposal}: the same checks and proposal-creation
+   * policy modules, without storing a proposal or taking a slot
+   * (`POST /delta/proposal/check`). A refusal throws the same
+   * `GUARDIAN_MODULE_DENIED` / `GUARDIAN_MODULE_UNAVAILABLE` error creation
+   * would. Advisory: approval still decides. Rate limited per account and signer.
+   */
+  async checkDeltaProposal(request: DeltaProposalRequest): Promise<CheckProposalResult> {
+    const serverRequest = toServerDeltaProposalRequest(request);
+    const response = await this.fetchSigned('/delta/proposal/check', {
+      method: 'POST',
+      body: JSON.stringify(serverRequest),
+    }, request.accountId, RequestAuthPayload.forOperation('CheckDeltaProposal', serverRequest), SessionOperation.CheckDeltaProposal);
+    const server = (await response.json()) as ServerCheckProposalResponse;
+    if (server.allowed !== true) {
+      throw new Error('Invalid proposal check response: a passing check must be allowed');
+    }
+    return { allowed: true, complete: server.complete };
+  }
+
+  /**
+   * The policies the Guardian applies to the account, as far as its operator
+   * discloses them, in evaluation order (`GET /policies`).
+   */
+  async getPolicies(accountId: string): Promise<Policy[]> {
+    const requestQuery = { account_id: accountId };
+    const params = new URLSearchParams(requestQuery);
+    const response = await this.fetchAuthenticated(`/policies?${params}`, {
+      method: 'GET',
+    }, accountId, requestQuery, SessionOperation.GetPolicies);
+    const server = (await response.json()) as ServerPoliciesResponse;
+    return server.policies.map(fromServerPolicy);
+  }
+
+  /**
    * Ask Guardian to prove and submit a threshold-met proposal. Resolves once the request is
    * accepted; poll {@link getDeltaProposalExecution} for the outcome. Repeating the request while
    * the execution runs returns it with `newlyAccepted: false`.
@@ -924,6 +1021,9 @@ export class GuardianHttpClient {
     requestPayload: unknown,
     mode: AuthMode = 'wallet'
   ): Promise<Response> {
+    if (requestPayload instanceof RequestAuthPayload) {
+      throw new Error('fetchAuthenticated signs the request payload itself; a tagged payload goes through fetchSigned');
+    }
     return this.fetchSigned(path, init, accountId, RequestAuthPayload.fromRequest(requestPayload), mode);
   }
 

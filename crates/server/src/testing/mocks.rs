@@ -51,6 +51,10 @@ pub struct MockNetworkClient {
     /// `(account_id, final_state_commitment, from_block)` per search.
     pub find_transaction_ending_at_calls: Arc<StdMutex<Vec<(String, String, u32)>>>,
     pub account_nonce_responses: Arc<StdMutex<Vec<AccountNonceResult>>>,
+    pub module_account_view: Arc<StdMutex<Option<guardian_module_sdk::AccountView>>>,
+    pub module_projection: Arc<StdMutex<Option<guardian_module_sdk::MidenTransaction>>>,
+    /// Account views and projections built for policy modules.
+    pub module_decodes: Arc<std::sync::atomic::AtomicUsize>,
     /// Commitments of the decoded accounts passed to
     /// `verify_and_apply_delta_to_account`, one per call.
     pub verify_and_apply_delta_to_account_calls: Arc<StdMutex<Vec<String>>>,
@@ -93,6 +97,17 @@ impl MockNetworkClient {
             .lock()
             .unwrap()
             .push(response);
+        self
+    }
+
+    /// Every state decodes to `view` and every delta to `projection`.
+    pub fn with_module_views(
+        self,
+        view: guardian_module_sdk::AccountView,
+        projection: guardian_module_sdk::MidenTransaction,
+    ) -> Self {
+        *self.module_account_view.lock().unwrap() = Some(view);
+        *self.module_projection.lock().unwrap() = Some(projection);
         self
     }
 
@@ -232,6 +247,46 @@ impl MockNetworkClient {
 
 #[async_trait]
 impl NetworkClient for MockNetworkClient {
+    fn module_account_view(
+        &self,
+        _state_json: &serde_json::Value,
+    ) -> StdResult<crate::network::ModuleAccount, String> {
+        self.module_decodes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.module_account_view
+            .lock()
+            .unwrap()
+            .clone()
+            .map(|view| crate::network::ModuleAccount { view, nonce: 0 })
+            .ok_or_else(|| "no module account view configured".to_string())
+    }
+
+    fn module_account_state(
+        &self,
+        _state_json: &serde_json::Value,
+    ) -> StdResult<guardian_module_sdk::MidenAccountState, String> {
+        Ok(guardian_module_sdk::MidenAccountState::default())
+    }
+
+    fn module_transaction(
+        &self,
+        tx_summary: &serde_json::Value,
+        _initial_nonce: u64,
+    ) -> StdResult<crate::network::ModuleTransaction, String> {
+        self.module_decodes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let projection = self
+            .module_projection
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "no module projection configured".to_string())?;
+        Ok(crate::network::ModuleTransaction {
+            projection,
+            raw_tx_summary: serde_json::to_vec(tx_summary).map_err(|e| e.to_string())?,
+        })
+    }
+
     fn get_state_head(
         &self,
         account_id: &str,
@@ -348,6 +403,29 @@ impl NetworkClient for MockNetworkClient {
         let prev_state_json = prev_account.to_json();
         self.verify_delta(prev_proof, &prev_state_json, delta_payload)?;
         self.apply_delta(&prev_state_json, delta_payload)
+    }
+
+    fn verify_and_apply_delta_to_account_with_module_inputs(
+        &self,
+        prev_proof: &str,
+        prev_account: miden_protocol::account::Account,
+        delta_payload: &serde_json::Value,
+    ) -> StdResult<(AppliedState, crate::network::ModuleInputs), String> {
+        use guardian_shared::ToJson;
+        let prev_state_json = prev_account.to_json();
+        let applied =
+            self.verify_and_apply_delta_to_account(prev_proof, prev_account, delta_payload)?;
+        let before = self.module_account_view(&prev_state_json);
+        let transaction = before
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|before| self.module_transaction(delta_payload, before.nonce));
+        let inputs = crate::network::ModuleInputs {
+            before,
+            after: self.module_account_view(&applied.state_json),
+            transaction,
+        };
+        Ok((applied, inputs))
     }
 
     fn merge_deltas(
@@ -632,6 +710,8 @@ pub struct MockStorageBackend {
     /// Makes `admit_delta_proposal` report that the queue tail moved under
     /// the account lock (`ProposalWrite::TailMoved`).
     pub admit_tail_moved: Arc<std::sync::atomic::AtomicBool>,
+    /// Served by `viable_request_bytes`.
+    pub viable_request_bytes: Arc<std::sync::atomic::AtomicU64>,
     /// Stored commitments by account id, served by
     /// `pull_state_commitments_batch` (accounts not listed have no state).
     pub state_commitments: Arc<StdMutex<std::collections::HashMap<String, String>>>,
@@ -888,6 +968,12 @@ impl MockStorageBackend {
     pub fn with_admit_already_stored(self) -> Self {
         self.admit_already_stored
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        self
+    }
+
+    pub fn with_viable_request_bytes(self, bytes: u64) -> Self {
+        self.viable_request_bytes
+            .store(bytes, std::sync::atomic::Ordering::SeqCst);
         self
     }
 
@@ -1539,6 +1625,17 @@ impl StorageBackend for MockStorageBackend {
         self.submit_delta_proposal(&admission.commitment, &admission.proposal)
             .await?;
         Ok(crate::storage::ProposalWrite::Stored)
+    }
+
+    async fn viable_request_bytes(
+        &self,
+        _account_id: &str,
+        _prev_commitment: &str,
+        _viable_nonce: Option<u64>,
+    ) -> Result<u64, String> {
+        Ok(self
+            .viable_request_bytes
+            .load(std::sync::atomic::Ordering::SeqCst))
     }
 
     async fn pull_delta_proposal(

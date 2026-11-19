@@ -911,6 +911,51 @@ newest candidate held (issue #517).
   `GET /delta` for each `queue[].nonce`: it serves the candidate's payload,
   whose transaction summary lists its input notes.
 
+### Policy modules (0.19.0)
+
+Policy modules are off unless the operator configures a catalog, so a
+deployment without one behaves as before. With one:
+
+- **New error codes.** `GUARDIAN_MODULE_DENIED` (403, final) and
+  `GUARDIAN_MODULE_UNAVAILABLE` (503, retryable) on proposal creation, delta
+  push and registration; `GUARDIAN_EXECUTION_MODULE_DENIED` and
+  `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` as Guardian execution failure codes.
+  SDKs from 0.18.x surface the request codes as an untyped server error and
+  reject the two execution codes as unknown.
+- **Rolling back with a catalog.** A Guardian execution a module refuses is
+  stored with one of the two new execution failure codes, which servers up to
+  0.18.x cannot decode: after a rollback, the execution status of those
+  proposals (`GET /delta/proposal/execution`) fails with a storage error. To
+  roll back, first restart the new release without a catalog
+  (`GUARDIAN_MODULES_DISABLED=true` in production) or with
+  `GUARDIAN_PROVING_ENABLED=false`, so no new refusal is stored, then roll back
+  as usual. Outcomes stored before that stay unreadable to the older server.
+- **Breaking for Rust callers.**
+  - `ExecutionFailureCode` is no longer `Copy`, and has the two new variants
+    `ModuleDenied(ModuleDenial)` and `ModuleUnavailable { module }`.
+  - `MultisigError` has the new variants `ModuleDenied` and
+    `ModuleUnavailable`. A refusal that used to arrive as `GuardianServer` or
+    `GuardianProposalRefused` now arrives as one of them, so a `match` that
+    handled those two variants needs the new arms.
+  - Neither enum is `#[non_exhaustive]`, so an exhaustive `match` over either
+    stops compiling until the new variants are handled.
+- **New calls.** `get_policies` / `getPolicies`, `check_transaction` /
+  `checkTransaction`, Rust `check_custom_transaction`, session operations 15 (`GetPolicies`) and 16
+  (`CheckDeltaProposal`), and the operator client's module routes and the
+  `policies:write_global` and `modules:disable` permissions. An operator client
+  from 0.18.x fails to parse a session that holds either permission.
+- **Module authors.** `guardian.module.v1` is not frozen until the first
+  published `guardian-module-sdk` release; see
+  [RFC 0002](./rfcs/0002-guardian-modules.md), section 7.
+- **Custom server builds.** `ServerBuilder::from_env()` configures the server
+  from the environment as the `server` binary does, and a release attaches a
+  `custom-guardian-<tag>.tar.gz` template that registers extra module kinds
+  with `with_module_kind`. For crates embedding `guardian-server`,
+  `ServerBuilder::build` now returns `BuildError` instead of `String`;
+  `BuildError` is a `std::error::Error`, so map it with `.to_string()` where a
+  `String` error is still wanted. The
+  `custom_module_server` example is replaced by `examples/custom-guardian`.
+
 ### Open upstream items
 
 The facts below change independently of this repository. This list is the one

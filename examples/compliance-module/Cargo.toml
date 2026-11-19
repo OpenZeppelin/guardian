@@ -1,0 +1,23 @@
+[package]
+name = "guardian-compliance-module"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "A KYC and sanctions policy module for the Guardian, served over gRPC, reading its lists from a JSON file"
+
+[[bin]]
+name = "compliance-module"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+guardian-module-sdk = { path = "../../crates/guardian-module-sdk" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+tonic = { workspace = true, features = ["tls-ring"] }
+
+[dev-dependencies]
+guardian-module-sdk = { path = "../../crates/guardian-module-sdk", features = ["conformance"] }

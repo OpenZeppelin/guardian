@@ -14,6 +14,28 @@ let builder = ServerBuilder::new()
     .grpc(true, 50051);
 ```
 
+## Custom builds
+
+`ServerBuilder::from_env()` configures the server from the environment exactly
+as the `server` binary does; the binary is that call and `build`. A custom
+build adds its own policy module kinds and runs:
+
+```rust
+ServerBuilder::from_env()
+    .await?
+    .with_module_kind("acme-sanctions", Arc::new(acme_sanctions::Factory))
+    .build()
+    .await?
+    .run()
+    .await;
+```
+
+Builder methods called after `from_env` override what the environment set.
+This crate is not published to crates.io: depend on it at a release tag, from
+the `custom-guardian` template each release attaches (pinned to the release's
+`Cargo.lock`). See [`examples/custom-guardian`](../../examples/custom-guardian/README.md)
+and the [custom modules guide](../../docs/guides/policy-modules/custom.md).
+
 ## Configuration
 
 ### Environment Variables

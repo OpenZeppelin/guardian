@@ -593,6 +593,55 @@ executing the proposal verifies it first.
 > `newThreshold`) as positional parameters. Passing the old positional form
 > now throws at runtime instead of silently applying defaults.
 
+### Policy Modules: Rules and Checks
+
+A Guardian can run policy modules (spending caps, recipient and signer rules,
+screening) that refuse a proposal at creation or a transaction at approval.
+List the rules the operator discloses, and check a transaction before
+proposing it:
+
+```typescript
+const policies = await multisig.getPolicies();
+// [{ moduleId: 'caps', hooks: ['before_transaction_approved'], description: 'At most 5 per transaction' }]
+
+const check = await multisig.checkTransaction({
+  type: 'p2id',
+  recipientId,
+  faucetId,
+  amount: 1_000n,
+});
+// { allowed: true, complete }: complete is false when a module that opts out of checks was skipped
+```
+
+`checkTransaction` builds the transaction exactly as the matching
+`create*Proposal` method would, but stores nothing and takes no proposal slot.
+It takes one variant per typed creator (`p2id`, `addSigner`, `removeSigner`,
+`changeThreshold`, `updateProcedureThreshold`, `consumeNotes`, `custom`) with
+that method's arguments. The answer is advisory: approval still decides, and
+the Guardian rate limits checks per account and signer.
+
+A refusal, from a check, at creation or at approval, is a `GuardianHttpError`
+with a typed refusal:
+
+```typescript
+import { GuardianHttpError } from '@openzeppelin/miden-multisig-client';
+
+try {
+  await multisig.createP2idProposal(recipientId, faucetId, 1_000n);
+} catch (error) {
+  const refusal = error instanceof GuardianHttpError ? error.moduleRefusal() : null;
+  if (refusal?.kind === 'denied') {
+    // Final: { module, reasonCode, layer, clientMessage }; a generic denial has only reasonCode 'policy_denied'.
+  } else if (refusal?.kind === 'unavailable') {
+    // Retryable: a fail-closed module could not decide.
+  }
+}
+```
+
+A Guardian execution refused by a module ends `failed` with
+`GUARDIAN_EXECUTION_MODULE_DENIED` or `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE`,
+and the proposal is kept.
+
 ### Create a Proposal (Add Signer)
 
 ```typescript

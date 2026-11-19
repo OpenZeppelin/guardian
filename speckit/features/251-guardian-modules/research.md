@@ -92,8 +92,8 @@ This research was written before the prototype on `251-modules-prototype` and no
 
 ### D9. Execution requester (after PR #510)
 
-- **Decision**: the authenticated requester is stored on the durable execution reservation when an attempt is created, kept on repeated requests for an active attempt, and carried into `acknowledge_delta` and the stored delta.
-- **Rationale**: spec FR-033; restart safety.
+- **Decision**: the authenticated requester is carried on the execution job from the request that creates the attempt into `acknowledge_delta`; a repeated request for an active attempt joins it and keeps the original requester. It is not stored on the reservation (revised 2026-11-09, RFC revision 26).
+- **Rationale**: spec FR-033. Restart safety holds without storing it: the ack runs before the no-retry boundary, and an attempt interrupted before that boundary is never resumed (the startup reconciliation fails it as `GUARDIAN_EXECUTION_ABANDONED`).
 
 ### Network-tagged projections (2026-10-16)
 
@@ -178,8 +178,68 @@ At concurrency 8 (3 rounds x 1,600 pushes) the server is saturated at about 89 p
 - **SC-001** holds: no catalog is the baseline path (one `Option` check).
 - **SC-006** (at most 10 ms added at p99 for one in-process module) was borderline before the fixes (p99 +11 ms on the long runs) and holds after them (+1 to +4 ms, within noise). The remote module costs no more than in-process at p50 over loopback.
 - The cost is the request, not the module (an in-process evaluation is 0.2 µs). A release-build profile of the builders: `account_view` 1.3 ms per call, almost all of it decoding the account; the projection 2.4 µs. Each request built two views and repeated a proposal storage read.
-- Fixed (2026-10-16): account views are cached per replica by the state commitment the Guardian computed (stored tail, applied state, registration head; never a client value), bounded at 4,096 entries. A chained push reuses the previous push's `after` view, and a proposal's approval push reuses both views built at its creation. `push_delta` reads the matching proposal once for metadata and modules; a storage failure still reaches modules as a failure, not as "no proposer".
-- Left for M2a: the remaining `after` decode (about 1.3 ms) could come from the account `apply_delta` already decodes. Since #523 (`8c1e5d6f`) the push path calls `verify_and_apply_delta`, which decodes the base account once and applies the summary to it, so both views can be read from that decode by adding view fields to `AppliedState`; proposal creation still calls `verify_delta` alone and moves to `verify_and_apply_delta` when a module will be called (RFC revision 24, section 3.2). Re-measure on a quiet machine. Moving request assembly inside the reconstruction gate (revision 20 item 8) would put this cost into the contended section; measure throughput at concurrency 8 before and after.
+- Fixed (2026-10-16): account views are cached per replica by the state commitment the Guardian computed (stored tail, applied state, registration head; never a client value), bounded at 4,096 entries. A chained push reuses the previous push's `after` view, and a proposal's approval push reuses both views built at its creation. `push_delta` reads the matching proposal once for metadata and modules; a storage failure still reaches modules as a failure, not as "no proposer". Superseded 2026-11-10: the cache was removed once every view came from the request's own reconstruction decode (see "Module inputs from the reconstruction decode").
+- Left for M2a: the remaining `after` decode (about 1.3 ms) could come from the account `apply_delta` already decodes. Since #523 (`8c1e5d6f`) the push path calls `verify_and_apply_delta`, which decodes the base account once and applies the summary to it, so both views can be read from that decode by adding view fields to `AppliedState`; proposal creation still calls `verify_delta` alone and moves to `verify_and_apply_delta` when a module will be called (RFC revision 24, section 3.2). Re-measure on a quiet machine. Moving request assembly inside the reconstruction gate (revision 20 item 8) would put this cost into the contended section; measure throughput at concurrency 8 before and after. Done 2026-11-09 for both views and 2026-11-10 for the projection.
+
+### M2a end to end (2026-11-09)
+
+The loadgen `state-push` scenario no longer works since the multisig push gate (#536): a bare push is refused with "This transaction still needs more signatures". A new `proposal-push` scenario creates a proposal carrying the owner's approval (one-signer accounts) and then pushes the delta, so each operation runs both gate hooks, `before_proposal_created` and `before_transaction_approved`. Same setup as G3 otherwise: `examples/bench_server` release build, filesystem backend, canonicalization off, gRPC with Falcon auth, concurrency 1, 4 accounts. Three configurations: no catalog; one in-process `basic-policy` instance on both hooks (amount cap and signer rule); the same params served by `examples/policy-module` over loopback gRPC with a bearer token. No local node of the 0.17 line was available (the installed `miden-node` is 0.15.1), so the server connects to devnet RPC at startup only; nothing in the measured path calls the node. Latencies are server-side span times (`push_delta_proposal`, `push_delta`), 3,000 requests each.
+
+| Build | Config | proposal p50 | proposal p99 | push p50 | push p99 |
+|---|---|---|---|---|---|
+| before the fix below, fixed leg order | none | 20.8 ms | 44.5 ms | 28.1 ms | 56.4 ms |
+| | in-process | 24.9 ms (+4.1) | 61.7 ms | 29.4 ms (+1.3) | 74.0 ms |
+| | remote | 24.5 ms (+3.7) | 54.3 ms | 29.1 ms (+1.0) | 60.8 ms |
+| after the fix, leg order rotated per round | none | 21.9 ms | 96.7 ms | 29.7 ms | 108.8 ms |
+| | in-process | 21.5 ms | 86.5 ms | 28.7 ms | 107.0 ms |
+| | remote | 21.5 ms | 63.9 ms | 29.0 ms | 76.2 ms |
+
+- Fixed: with modules to run, proposal creation verified the delta (`verify_delta`) and then decoded and applied it again for the module views. It now decodes once (`apply_delta_with_module_inputs` with the tail commitment, which performs the same check), and keeps `verify_delta` alone when no module applies. The consistent +4 ms at the proposal median went away.
+- The p99 differences are the machine, not the modules: with a fixed order (none, in-process, remote) the in-process leg showed a p99 two to three times the baseline in every round, and with the order rotated the tail followed the position instead (the no-catalog leg in round 1 reached 315 ms client-side). CPU time on the request task (`time.busy`) differs by under 0.5 ms at p50 between configurations.
+- **SC-001** holds (no catalog is one `Option` check per request) and **SC-006** holds within this machine's noise; a quiet machine or the deployed bench would bound the p99 more tightly.
+- Not run here: the quickstart walk-through against a local node; it needs a 0.17-line `miden-node`.
+
+### Default-module copy at registration (2026-11-10)
+
+Every module write takes the `module_state_version` row lock. The copy a first registration writes held it across a transaction of ten round trips for three default modules (begin, version bump, the account check, one insert and one history row per module, commit), so registrations ran one at a time for that long, and operator writes waited behind them. The copy is now one call of `guardian_module_seed_assignment`, which takes the lock, checks the account and writes its rows and history inside one statement.
+
+Local A/B on the Postgres store alone: 600 copies of three default modules (32 denylist entries each), from 1, 8 and 32 tasks, against the local Postgres container, two runs per leg. This measures the store call, not a whole `/configure` request.
+
+| Leg | Concurrency | Copies per second | p50 | p99 |
+|---|---|---|---|---|
+| transaction of statements | 1 | 289, 343 | 3.2 ms, 2.7 ms | 6.7 ms, 6.5 ms |
+| transaction of statements | 8 | 378, 394 | 17.0 ms, 16.4 ms | 71 ms, 62 ms |
+| transaction of statements | 32 | 341, 388 | 67 ms, 60 ms | 360 ms, 324 ms |
+| one function call | 1 | 2036, 2833 | 0.45 ms, 0.31 ms | 1.1 ms, 1.0 ms |
+| one function call | 8 | 2591, 3397 | 1.8 ms, 1.4 ms | 47 ms, 18 ms |
+| one function call | 32 | 1752, 2212 | 10.6 ms, 8.8 ms | 98 ms, 89 ms |
+
+The copies still serialize on the one row, so throughput does not grow with concurrency; it is five to nine times higher because the lock is held for one statement. A per-account params version would remove the shared lock (not done). The startup report no longer loads every account's params either: it reads which module each account row names (`account_modules`), and the probe loop recounts it every minute so the over-budget and orphan gauges follow operator fixes.
+
+### Module inputs from the reconstruction decode (2026-11-10)
+
+The RFC said request assembly is bounded by the reconstruction task; it was not. At the transaction hooks the account views already came from the decode that verifies and applies the delta (seeded into a per-replica view cache), but the projection decoded the summary a second time on the async worker. At registration nothing ran in the reconstruction task: the initial state was decoded twice on the async worker (view, account state), and the stored state once more on a reconfiguration. Now the reconstruction decode also returns the projection (the chain fee is loaded before it), registration decodes each state once inside the task, request assembly only copies finished parts, and the view cache is gone. The ack path reads the plan first, so no inputs are built for an account no module applies to.
+
+Local A/B, release `examples/bench_server` before (`e502567c`) and after, filesystem backend, canonicalization off, gRPC with Falcon auth, devnet RPC at startup only. Catalog for the module legs: `signer-policy` (denylist) on all three gate hooks and `spending-limit` (a cap) on both transaction hooks, both `scope = all`. Workloads: loadgen `proposal-push` (creation then push, both transaction hooks) at concurrency 1 (4 accounts, 400 operations) and 8 (8 accounts, 800 operations), and `state-write` (repeated `/configure` on existing accounts, the registration hook with a stored state) at concurrency 8 (16 two-signer accounts, 480 operations). A fresh server per leg with a warm-up pass; three rounds, the leg order rotated per round; medians reported. Server CPU is the process CPU time over the measured run divided by operations, account seeding included.
+
+| Workload | Catalog | Build | p50 | p99 | ops/s | server CPU per op |
+|---|---|---|---|---|---|---|
+| proposal + push, c=1 | none | before | 36.9 ms | 56.1 ms | 26.8 | 31.30 ms |
+| | none | after | 37.1 ms | 61.0 ms | 26.7 | 31.65 ms |
+| | modules | before | 37.1 ms | 51.0 ms | 26.7 | 31.60 ms |
+| | modules | after | 36.9 ms | 54.0 ms | 27.0 | 31.48 ms |
+| proposal + push, c=8 | none | before | 140.1 ms | 174.0 ms | 56.2 | 31.49 ms |
+| | none | after | 142.2 ms | 177.2 ms | 55.8 | 31.60 ms |
+| | modules | before | 142.2 ms | 175.2 ms | 55.5 | 31.52 ms |
+| | modules | after | 136.2 ms | 173.8 ms | 61.6 | 31.38 ms |
+| configure, c=8 | none | before | 202.9 ms | 308.6 ms | 37.3 | 15.29 ms |
+| | none | after | 213.9 ms | 331.4 ms | 35.7 | 14.85 ms |
+| | modules | before | 215.6 ms | 353.9 ms | 35.3 | 17.88 ms |
+| | modules | after | 206.6 ms | 338.2 ms | 36.8 | 16.94 ms |
+
+- No regression: the no-catalog legs, whose code path did not change, differ between builds by as much as the module legs do, so the differences above are this laptop's noise. Within a leg the rounds spread wider than the before/after gaps (for example 56 to 69 ops/s for proposal and push at c=8 after, 16.6 to 19.2 ms CPU per configure before).
+- The module overhead is small against the request itself: a proposal and push costs about 31 ms of server CPU with or without modules (signature verification and delta application dominate), and modules add about 2.6 ms per configure before and 2.1 ms after. That difference is inside the noise of the no-catalog legs, so it shows no saving either way.
+- The intent of the change is structural and not shown by these numbers: no account or summary decode runs on an async worker any more, so a burst of registrations or large summaries waits for the reconstruction pool instead of occupying the runtime's workers. Registration with a module to call now takes a reconstruction slot like a push. Measuring the effect needs a load that saturates the async workers, which this machine does not reach before the CPU does.
 
 ### In-process custom kinds (2026-10-16)
 
@@ -271,7 +331,7 @@ Both reviewers accepted the design. Applied, still as revision 24:
 
 Two more reviews; one cited lines from before revision 24 (`checkProposal`, the `drift` example, "catalog params" in the hook table), all already fixed. Applied, still as revision 24:
 
-- **Delegation was visible only at creation.** `submitter_session` is always false at the ack, where rules must be enforced. `proposer_session` is now stored with the proposal, returned with the proposer by the `ProposalContext` lookup, and sent in `TransactionSubject`, `pending` and `CommitEvent`.
+- **Delegation was visible only at creation.** `submitter_session` was always false at the ack, where rules must be enforced, so revision 24 added `proposer_session`, stored with the proposal. Revised 2026-11-09 (RFC revision 27): since #580 `push_delta` and Guardian execution accept session credentials, so `submitter_session` is set at the ack; `proposer_session` was dropped, since a session key cannot approve a proposal and no catalog policy needs it.
 - **The dry run skipped the hook that matters.** It now also runs instances subscribed only to `before_transaction_approved`, marked with `HookRequest.dry_run`, and `complete` is derived from the catalog, so it no longer reveals that one account carries a hidden instance.
 - **Code allowlist grandfathering.** `code_check = "changed"` (default) keeps code an account already runs, documented as `signer_check = "added"` is; `code_check = "all"` checks the current code at every gate hook.
 - **Reassignment of a stateful module** after removal from an account enters `resync_required`, matching catalog removal and return. The counting model does not cover assignment changes (its SKILL.md says so); T096 extends it.

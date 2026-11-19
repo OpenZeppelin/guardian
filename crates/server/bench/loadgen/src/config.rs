@@ -9,6 +9,11 @@ pub enum Scenario {
     StateWrite,
     Mixed,
     StateSync,
+    /// Only `push_delta`, one chained delta per operation; isolates the push path.
+    StatePush,
+    /// A proposal carrying the owner's approval, then the `push_delta` it allows: the multisig
+    /// write path since pushes need a matching approved proposal. One signer per account.
+    ProposalPush,
     Canonicalization,
 }
 
@@ -84,6 +89,9 @@ impl RunConfig {
         }
         if self.signers_per_account == 0 {
             bail!("signers-per-account must be greater than 0");
+        }
+        if self.scenario == Scenario::ProposalPush && self.signers_per_account != 1 {
+            bail!("proposal-push needs --signers-per-account 1: only the owner can approve");
         }
         if self.ops_per_user == 0 {
             bail!("ops-per-user must be greater than 0");

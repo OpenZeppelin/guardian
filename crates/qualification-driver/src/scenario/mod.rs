@@ -3,6 +3,7 @@ pub mod error_envelope;
 pub mod identity;
 pub mod live;
 pub mod mixed_scheme;
+pub mod modules;
 pub mod queue;
 pub mod restart_handoff;
 pub mod signers;
@@ -371,6 +372,14 @@ impl Runner {
                 Action::ProcedureThresholdAssert => {
                     Some(live::assert_procedure_threshold(self).await)
                 }
+                Action::ModuleCapAssign => Some(modules::assign_cap(self).await),
+                Action::ModuleCapRefuses => Some(modules::assert_cap_refuses(self).await),
+                Action::ModuleRecipientAssign => {
+                    Some(modules::assign_recipient_denylist(self).await)
+                }
+                Action::ModuleRecipientRefuses => {
+                    Some(modules::assert_recipient_refuses(self).await)
+                }
                 _ => None,
             }
         } else {
@@ -409,6 +418,9 @@ impl Runner {
                     Some(mixed_scheme::assert_per_scheme_approvals(self).await)
                 }
                 Action::MixedSchemeGate => Some(mixed_scheme::assert_mixed_scheme_gate(self).await),
+                Action::ModuleRefusal => Some(modules::assert_refusal(self).await),
+                Action::ModuleUnavailable => Some(modules::assert_unavailable(self).await),
+                Action::ModuleBreakGlass => Some(modules::assert_break_glass(self).await),
                 _ => None,
             }
         };

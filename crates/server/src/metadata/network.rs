@@ -27,6 +27,17 @@ pub enum MidenNetworkType {
 }
 
 impl MidenNetworkType {
+    /// The network's name as stored and as policy modules receive it in `network_id`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MidenNetworkType::Local => "local",
+            MidenNetworkType::Devnet => "devnet",
+            MidenNetworkType::Testnet => "testnet",
+            MidenNetworkType::Cedar => "cedar",
+            MidenNetworkType::Mainnet => "mainnet",
+        }
+    }
+
     /// Bech32 human-readable prefix of Cedar addresses. Today the same string
     /// as the protocol's mainnet prefix, kept separate so Cedar stays on `mm`
     /// if mainnet moves.

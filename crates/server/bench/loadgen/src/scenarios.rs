@@ -48,6 +48,7 @@ pub struct UserContext {
     guardian_commitment: Word,
     signers_per_account: usize,
     auth: Option<Auth>,
+    approver: Auth,
     last_timestamp_ms: i64,
     pub client: LoadClient,
     pub accounts: Vec<AccountSeed>,
@@ -170,6 +171,54 @@ impl UserContext {
                     .await?;
                 ensure_http_success(response, "get_state").await?;
                 Ok(())
+            }
+        }
+    }
+
+    /// The owner's approval of `summary`, as proposal creation takes it.
+    fn approval(&self, summary: &TransactionSummary) -> Value {
+        let signature = self.approver.sign_word_hex(summary.to_commitment());
+        let signature = match &self.approver {
+            Auth::FalconRpoSigner(_) => {
+                serde_json::json!({ "scheme": "falcon", "signature": signature })
+            }
+            Auth::EcdsaSigner(signer) => serde_json::json!({
+                "scheme": "ecdsa",
+                "signature": signature,
+                "public_key": signer.public_key_hex(),
+            }),
+        };
+        serde_json::json!({ "signer_id": self.signer_commitment, "signature": signature })
+    }
+
+    async fn create_proposal(
+        &mut self,
+        account_id: &AccountId,
+        nonce: u64,
+        delta_payload: Value,
+    ) -> Result<()> {
+        match &mut self.client {
+            LoadClient::Grpc(client) => {
+                client
+                    .push_delta_proposal(account_id, nonce, delta_payload)
+                    .await?;
+                Ok(())
+            }
+            LoadClient::Http(_) => {
+                let payload = serde_json::json!({
+                    "account_id": account_id.to_string(),
+                    "nonce": nonce,
+                    "delta_payload": delta_payload,
+                });
+                let response = self
+                    .http_request_with_auth(
+                        Method::POST,
+                        "/delta/proposal",
+                        account_id,
+                        Some(payload),
+                    )
+                    .await?;
+                ensure_http_success(response, "push_delta_proposal").await
             }
         }
     }
@@ -414,18 +463,28 @@ pub async fn seed_accounts(config: &RunConfig) -> Result<Vec<UserContext>> {
 
     let mut user_contexts = Vec::with_capacity(users);
     for user_id in 0..users {
-        let (auth, commitment) = match config.auth_scheme {
+        let (auth, approver, commitment) = match config.auth_scheme {
             AuthScheme::Falcon => {
-                let signer = FalconRpoSigner::new(FalconSecretKey::new());
+                let key = FalconSecretKey::new();
+                let signer = FalconRpoSigner::new(key.clone());
                 let commitment =
                     commitment_hex_from_pubkey_hex(&signer.public_key_hex(), config.auth_scheme)?;
-                (Auth::FalconRpoSigner(signer), commitment)
+                (
+                    Auth::FalconRpoSigner(signer),
+                    Auth::FalconRpoSigner(FalconRpoSigner::new(key)),
+                    commitment,
+                )
             }
             AuthScheme::Ecdsa => {
-                let signer = EcdsaSigner::new(EcdsaSecretKey::new());
+                let key = EcdsaSecretKey::new();
+                let signer = EcdsaSigner::new(key.clone());
                 let commitment =
                     commitment_hex_from_pubkey_hex(&signer.public_key_hex(), config.auth_scheme)?;
-                (Auth::EcdsaSigner(signer), commitment)
+                (
+                    Auth::EcdsaSigner(signer),
+                    Auth::EcdsaSigner(EcdsaSigner::new(key)),
+                    commitment,
+                )
             }
         };
         let (client, user_auth) = build_client(config, auth).await?;
@@ -437,6 +496,7 @@ pub async fn seed_accounts(config: &RunConfig) -> Result<Vec<UserContext>> {
             guardian_commitment: guardian_commitment_word,
             signers_per_account,
             auth: user_auth,
+            approver,
             last_timestamp_ms: 0,
             client,
             accounts: Vec::new(),
@@ -549,6 +609,10 @@ async fn run_worker(config: &RunConfig, user: &mut UserContext) -> WorkerMetrics
                     run_read_operation(user, op_index, account_count).await
                 }
             }
+            Scenario::StatePush => run_push_state_operation(user, op_index, account_count).await,
+            Scenario::ProposalPush => {
+                run_proposal_push_operation(user, op_index, account_count).await
+            }
             Scenario::Canonicalization => {
                 run_canonicalization_operation(config, user, op_index, account_count).await
             }
@@ -582,9 +646,12 @@ async fn run_worker(config: &RunConfig, user: &mut UserContext) -> WorkerMetrics
 fn scenario_op_count(config: &RunConfig, account_count: usize) -> usize {
     match config.scenario {
         Scenario::Canonicalization => account_count,
-        Scenario::StateRead | Scenario::StateWrite | Scenario::Mixed | Scenario::StateSync => {
-            usize::try_from(config.ops_per_user).unwrap_or(0)
-        }
+        Scenario::StateRead
+        | Scenario::StateWrite
+        | Scenario::Mixed
+        | Scenario::StateSync
+        | Scenario::StatePush
+        | Scenario::ProposalPush => usize::try_from(config.ops_per_user).unwrap_or(0),
     }
 }
 
@@ -804,11 +871,53 @@ fn create_account_seed(
     })
 }
 
+async fn run_proposal_push_operation(
+    user: &mut UserContext,
+    op_index: usize,
+    account_count: usize,
+) -> Result<()> {
+    let account_index = op_index % account_count;
+    let (account_id, nonce, prev_commitment, summary) = {
+        let account = &user.accounts[account_index];
+        let nonce = account.next_nonce;
+        (
+            account.account_id,
+            nonce,
+            account.commitment.clone(),
+            delta_summary(&account.account_id, nonce)?,
+        )
+    };
+    let delta_payload = summary.to_json();
+    let proposal = serde_json::json!({
+        "tx_summary": delta_payload,
+        "metadata": { "proposal_type": "custom" },
+        "signatures": [user.approval(&summary)],
+    });
+    user.create_proposal(&account_id, nonce, proposal).await?;
+
+    let new_commitment = user
+        .push_state(&account_id, nonce, prev_commitment, delta_payload)
+        .await?;
+
+    if let Some(account) = user.accounts.get_mut(account_index) {
+        account.next_nonce = nonce + 1;
+        if let Some(commitment) = new_commitment {
+            account.commitment = commitment;
+        }
+    }
+
+    Ok(())
+}
+
 /// An empty transaction's summary that leaves the account at `nonce`, one past the state it
 /// builds on: a transaction increments the nonce by one, and GUARDIAN refuses a delta labelled
 /// with any nonce but the one it leaves the account at (issue #518). The nonce is also the
 /// salt, so every push on an account has a summary of its own.
 fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value> {
+    Ok(delta_summary(account_id, nonce)?.to_json())
+}
+
+fn delta_summary(account_id: &AccountId, nonce: u64) -> Result<TransactionSummary> {
     let account_delta = AccountDelta::new(
         account_id.to_owned(),
         AccountStoragePatch::default(),
@@ -834,7 +943,7 @@ fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value> {
             ZERO,
         ]),
     );
-    Ok(tx_summary.to_json())
+    Ok(tx_summary)
 }
 
 fn build_signer_commitments(

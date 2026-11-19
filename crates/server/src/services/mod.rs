@@ -43,6 +43,7 @@ mod get_delta_history;
 mod get_delta_proposal;
 mod get_delta_proposals;
 mod get_delta_since;
+mod get_policies;
 mod get_state;
 mod get_state_tail;
 mod lookup_account;
@@ -113,12 +114,14 @@ pub use get_delta_proposals::{
     GetDeltaProposalsParams, GetDeltaProposalsResult, get_delta_proposals,
 };
 pub use get_delta_since::{GetDeltaSinceParams, GetDeltaSinceResult, get_delta_since};
+pub use get_policies::{GetPoliciesParams, GetPoliciesResult, get_policies};
 pub use get_state::{GetStateParams, GetStateResult, get_state};
 pub use get_state_tail::{GetStateTailParams, QueuedCandidate, StateTail, get_state_tail};
 pub use lookup_account::{LookupAccountParams, LookupAccountResult, lookup_account};
 pub use push_delta::{PushDeltaParams, PushDeltaResult, push_delta};
 pub use push_delta_proposal::{
-    PushDeltaProposalParams, PushDeltaProposalResult, push_delta_proposal,
+    CheckProposalResult, PushDeltaProposalParams, PushDeltaProposalResult, check_proposal,
+    push_delta_proposal,
 };
 pub use revoke_all_sessions::{
     RevokeAllSessionsParams, RevokeAllSessionsResult, revoke_all_sessions,
@@ -370,6 +373,8 @@ impl SessionReadKind {
             | SessionOperation::GetDeltaProposal
             | SessionOperation::GetDeltaProposalExecution
             | SessionOperation::GetCurrentExecution
+            | SessionOperation::GetPolicies
+            | SessionOperation::CheckDeltaProposal
             | SessionOperation::PushDelta
             | SessionOperation::PushDeltaProposal
             | SessionOperation::SignDeltaProposal
@@ -1180,6 +1185,7 @@ mod tests {
         AppState {
             execution: Default::default(),
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(network),
