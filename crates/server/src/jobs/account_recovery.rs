@@ -512,7 +512,7 @@ async fn check_candidate(
                 "the configured node has no record of the account".into(),
             ));
         }
-        if candidate.legacy_network_label || candidate.stored_nonce == Some(0) {
+        if holds_first_state(state, candidate).await? {
             return Ok(RecoveryOutcome::Unchanged);
         }
     }
@@ -524,9 +524,15 @@ async fn check_candidate(
         candidate.canonical_nonce,
         candidate.canonical_commitment.as_deref(),
     ) else {
-        return Ok(RecoveryOutcome::Unresolved(
-            "no canonical history supplies a recovery target".into(),
-        ));
+        let reason = match chain {
+            StateVerification::Absent => {
+                "the configured node has no record of the account and no canonical history is held"
+            }
+            StateVerification::Match | StateVerification::Mismatch { .. } => {
+                "no canonical history supplies a recovery target"
+            }
+        };
+        return Ok(RecoveryOutcome::Unresolved(reason.into()));
     };
     if !matches!(&chain, StateVerification::Mismatch { on_chain } if on_chain == target) {
         return Ok(RecoveryOutcome::Retryable(
@@ -558,47 +564,14 @@ async fn check_candidate(
         ));
     }
 
-    let stored = if candidate.stored_nonce.is_none() {
-        match state.storage.pull_state(&candidate.account_id).await {
-            Ok(stored) if stored.commitment == candidate.stored_commitment => Some(stored),
-            Ok(_) => {
-                return Ok(RecoveryOutcome::Retryable(
-                    "stored commitment changed during recovery".into(),
-                ));
-            }
-            Err(reason) if is_record_corruption(&reason) => {
-                return Ok(RecoveryOutcome::Unresolved(reason));
-            }
-            Err(reason) => return Err(reason),
-        }
-    } else {
-        None
-    };
-    let stored_nonce = candidate
-        .stored_nonce
-        .and_then(|nonce| u64::try_from(nonce).ok());
     let network = state.network_client.clone();
     let account_id = candidate.account_id.clone();
     let target = target.to_owned();
     let proof = reconstructor()
-        .run_background(move || {
-            prove_recovery(
-                network.as_ref(),
-                &account_id,
-                &target,
-                deltas,
-                stored_nonce,
-                stored,
-            )
-        })
+        .run_background(move || prove_recovery(network.as_ref(), &account_id, &target, deltas))
         .await;
     let (applied, auth) = match proof {
-        Ok(Some(proof)) => proof,
-        Ok(None) => {
-            return Ok(RecoveryOutcome::Unresolved(
-                "the stored state is newer than the verified history".into(),
-            ));
-        }
+        Ok(proof) => proof,
         Err(ReconstructError::Operation(reason)) => return Ok(RecoveryOutcome::Unresolved(reason)),
         Err(ReconstructError::Task(reason)) => {
             return Err(format!("state reconstruction failed: {reason}"));
@@ -645,31 +618,31 @@ async fn check_candidate(
     })))
 }
 
+/// Whether the stored state is a first state, which stands without a record on the network.
+async fn holds_first_state(
+    state: &AppState,
+    candidate: &RecoveryCandidate,
+) -> Result<bool, String> {
+    if candidate.stored_nonce.is_some_and(|nonce| nonce != 0) {
+        return Ok(false);
+    }
+    match state.storage.pull_state(&candidate.account_id).await {
+        Ok(stored) => Ok(state
+            .network_client
+            .validate_first_state(&stored.state_json)
+            .is_ok()),
+        Err(reason) if is_record_corruption(&reason) => Ok(false),
+        Err(reason) => Err(reason),
+    }
+}
+
 fn prove_recovery(
     network: &dyn NetworkClient,
     account_id: &str,
     target: &str,
     deltas: Vec<DeltaObject>,
-    stored_nonce: Option<u64>,
-    stored: Option<crate::state_object::StateObject>,
-) -> Result<Option<(AppliedState, Auth)>, String> {
+) -> Result<(AppliedState, Auth), String> {
     let applied = reconstruct(network, account_id, target, deltas)?;
-    let nonce = match stored {
-        Some(stored) => {
-            let head = network.get_state_head(account_id, &stored.state_json)?;
-            if head.commitment != stored.commitment {
-                return Err("stored state does not match its recorded commitment".into());
-            }
-            head.nonce
-        }
-        None => stored_nonce,
-    }
-    .ok_or("stored state has no verifiable nonce")?;
-    let recovered_nonce = applied.nonce.ok_or("recovered state has no nonce")?;
-    if nonce > recovered_nonce {
-        return Ok(None);
-    }
-
     let binding = network
         .account_auth_binding(&applied.state_json)?
         .ok_or("missing account auth binding")?;
@@ -678,7 +651,7 @@ fn prove_recovery(
         .guardian_scheme
         .ok_or("missing on-chain Guardian signature scheme")?;
     let auth = recovered_auth(scheme, &applied)?;
-    Ok(Some((applied, auth)))
+    Ok((applied, auth))
 }
 
 fn reconstruct(

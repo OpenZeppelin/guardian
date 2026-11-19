@@ -20,7 +20,6 @@ use super::{Pool, lease_fence_is_current, lock_account_metadata};
 
 const UNSETTLED_ACCOUNT_WORK: &str = "
     CASE
-        WHEN m.paused_at IS NOT NULL THEN 'the account is paused'
         WHEN m.has_pending_candidate OR EXISTS (
             SELECT 1 FROM deltas pending WHERE pending.account_id = st.account_id
               AND pending.status_kind IN ('candidate', 'retained')
@@ -72,8 +71,6 @@ pub(crate) struct RecoveryCandidate {
     pub history_starts_at_nonce: Option<i64>,
     #[diesel(sql_type = Nullable<Text>)]
     pub history_base_commitment: Option<String>,
-    #[diesel(sql_type = Bool)]
-    pub legacy_network_label: bool,
     #[diesel(sql_type = Timestamptz)]
     state_updated_at: DateTime<Utc>,
     #[diesel(sql_type = BigInt)]
@@ -288,7 +285,7 @@ impl RecoveryStore {
             "SELECT st.account_id, st.nonce AS stored_nonce, st.commitment AS stored_commitment,
                     d.nonce AS canonical_nonce, ({UNSETTLED_ACCOUNT_WORK}) AS unsettled_work,
                     d.new_commitment AS canonical_commitment, st.updated_at AS state_updated_at,
-                    m.auth_version, m.network_config <> $2 AS legacy_network_label,
+                    m.auth_version,
                     first_held.nonce AS history_starts_at_nonce,
                     first_held.prev_commitment AS history_base_commitment
              {CANDIDATE_SOURCE}

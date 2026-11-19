@@ -392,6 +392,9 @@ record differs from its latest canonical delta, Guardian asks the configured
 Miden node for the account's current commitment.
 
 - If the stored record already matches the network, nothing changes.
+- If the configured node has no record of the account and Guardian holds no
+  canonical deltas for it, the stored record stands only when it is the
+  account's first state. Any other record is listed as unresolved.
 - If Guardian holds the account's canonical deltas from creation (up to 128),
   it rebuilds the account from them. When the result matches the network and
   is bound to this server's ACK key, Guardian stores it together with its
@@ -408,9 +411,9 @@ Every proposal a restore changes or removes is saved with the previous record
 in `account_recovery_backups.prior_proposals`. If the account's proposals
 cannot be read, the restore leaves them as they are.
 
-A paused account, or one with work in flight (a delta awaiting its on-chain
-outcome or a reserved execution), is deferred and checked again on a later
-startup.
+An account with work in flight (a delta awaiting its on-chain outcome or a
+reserved execution) is deferred and checked again on a later startup. A paused
+account is checked like any other, and stays paused.
 
 **How long it takes**
 
@@ -447,8 +450,9 @@ was checked and not brought up to date. `outcome` is `deferred` (a later
 startup checks it again) or `unresolved` (Guardian does not hold what it
 needs), and `reason` says why. When the canonical history held here does not reach back to the
 account's creation, `history_starts_at_nonce` and `history_base_commitment`
-show where it begins. An unresolved account is brought up to date the next
-time it is registered with its current state.
+show where it begins. An unresolved account the network has a
+record of is brought up to date the next time it is registered with its
+current state.
 
 A row is removed once its account is brought up to date or found unchanged. A
 row whose `stored_commitment` no longer matches the account's stored state is

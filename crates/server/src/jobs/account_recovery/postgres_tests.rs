@@ -121,15 +121,11 @@ async fn rejects_incomplete_history_and_commitment_mismatches() {
         reconstruct(&network, &account_id, target, deltas.clone()).unwrap(),
         expected
     );
-    assert!(
-        prove_recovery(&network, &account_id, target, deltas.clone(), Some(1), None)
+    assert_eq!(
+        prove_recovery(&network, &account_id, target, deltas.clone())
             .unwrap()
-            .is_some()
-    );
-    assert!(
-        prove_recovery(&network, &account_id, target, deltas.clone(), Some(3), None)
-            .unwrap()
-            .is_none()
+            .0,
+        expected
     );
     assert!(reconstruct(&network, &account_id, target, vec![deltas[0].clone()]).is_err());
     deltas[1].new_commitment = Some("wrong commitment".into());
@@ -181,10 +177,7 @@ async fn rebuilds_the_signer_set_under_each_scheme() {
             &account.id().to_hex(),
             &rebuilt.commitment,
             deltas,
-            Some(1),
-            None,
         )
-        .unwrap()
         .unwrap();
         assert_eq!(auth, expected);
     }
@@ -435,7 +428,6 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
     let candidate = candidates.pop().unwrap();
     assert_eq!(candidate.canonical_nonce, Some(2));
     assert_eq!(candidate.stored_nonce, None);
-    assert!(candidate.legacy_network_label);
 
     let mut absent = state.clone();
     absent.network_client = Arc::new(
@@ -453,35 +445,49 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
         .unwrap()
         .pop()
         .unwrap();
-    assert!(!undeployed.legacy_network_label);
-    undeployed.stored_nonce = Some(0);
     undeployed.canonical_nonce = None;
     undeployed.canonical_commitment = None;
-    assert!(matches!(
-        check_candidate(&absent, &undeployed).await.unwrap(),
-        RecoveryOutcome::Unchanged
-    ));
-    let mut labelled_without_history = store
-        .candidates(MidenNetworkType::Testnet, "", 10)
-        .await
-        .unwrap()
-        .pop()
-        .unwrap();
-    assert!(labelled_without_history.legacy_network_label);
-    labelled_without_history.stored_nonce = Some(5);
-    labelled_without_history.canonical_nonce = None;
-    labelled_without_history.canonical_commitment = None;
-    let mut still_absent = state.clone();
-    still_absent.network_client = Arc::new(
-        crate::testing::mocks::MockNetworkClient::new()
-            .with_verify_commitment(Ok(StateVerification::Absent)),
-    );
-    assert!(matches!(
-        check_candidate(&still_absent, &labelled_without_history)
+    let absent_with = |first_state: Result<(), String>| {
+        let mut absent = state.clone();
+        absent.network_client = Arc::new(
+            crate::testing::mocks::MockNetworkClient::new()
+                .with_verify_commitment(Ok(StateVerification::Absent))
+                .with_validate_first_state(first_state),
+        );
+        absent
+    };
+    for stored_nonce in [Some(0), None] {
+        undeployed.stored_nonce = stored_nonce;
+        assert!(matches!(
+            check_candidate(&absent_with(Ok(())), &undeployed)
+                .await
+                .unwrap(),
+            RecoveryOutcome::Unchanged
+        ));
+        assert!(matches!(
+            check_candidate(&absent_with(Err("nonce is 5, not 0".into())), &undeployed)
+                .await
+                .unwrap(),
+            RecoveryOutcome::Unresolved(reason) if reason.contains("no record of the account")
+        ));
+    }
+    for network_type in [MidenNetworkType::Local, MidenNetworkType::Testnet] {
+        let mut past_first_state = store
+            .candidates(network_type, "", 10)
             .await
-            .unwrap(),
-        RecoveryOutcome::Unchanged
-    ));
+            .unwrap()
+            .pop()
+            .unwrap();
+        past_first_state.stored_nonce = Some(5);
+        past_first_state.canonical_nonce = None;
+        past_first_state.canonical_commitment = None;
+        assert!(matches!(
+            check_candidate(&absent_with(Ok(())), &past_first_state)
+                .await
+                .unwrap(),
+            RecoveryOutcome::Unresolved(reason) if reason.contains("no record of the account")
+        ));
+    }
 
     {
         let mut conn = metadata.pool_handle().get().await.unwrap();
@@ -524,7 +530,7 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
     ahead.stored_nonce = Some(9);
     assert!(matches!(
         check_candidate(&state, &ahead).await.unwrap(),
-        RecoveryOutcome::Unresolved(reason) if reason.contains("newer than the verified history")
+        RecoveryOutcome::Verified(_)
     ));
     let pending = DeltaObject {
         nonce: 3,
@@ -828,6 +834,10 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
         .await
         .unwrap();
     store.leader.release(reviewing).await.unwrap();
+    metadata
+        .set_pause(account_id, state.clock.now(), "operator review")
+        .await
+        .unwrap();
 
     run_once(&state, &store, MidenNetworkType::Testnet)
         .await
@@ -931,14 +941,11 @@ async fn account_recovery_restores_verified_state_once_and_preserves_encrypted_e
             .commitment,
         target
     );
+    let restored_metadata = metadata.get_for_read(account_id).await.unwrap().unwrap();
+    assert_eq!(restored_metadata.auth, expected_auth);
     assert_eq!(
-        metadata
-            .get_for_read(account_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .auth,
-        expected_auth
+        restored_metadata.paused_reason.as_deref(),
+        Some("operator review")
     );
 
     #[derive(diesel::QueryableByName)]
