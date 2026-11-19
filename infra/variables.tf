@@ -570,6 +570,29 @@ variable "guardian_release_sweep_enabled" {
   default     = true
 }
 
+variable "guardian_startup_account_recovery" {
+  description = <<-EOT
+    Whether the server checks its account records before it opens its
+    listeners (GUARDIAN_STARTUP_ACCOUNT_RECOVERY): off, dry-run (reports what
+    it would change and writes nothing) or apply. Any value but off also
+    lengthens the container health check start period and the load balancer
+    grace period, so a task is not replaced while the check keeps the
+    listeners closed. For apply the operator arranges the rest: the server
+    skips the check unless it runs as a single task, and the deploy must not
+    overlap an older task. Before the deploy that turns this on, apply
+    server_autoscaling_enabled = false with server_desired_count = 0 and wait
+    for the tasks to stop, then deploy with server_desired_count = 1. Set it
+    back to off once the check has completed.
+  EOT
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "dry-run", "apply"], var.guardian_startup_account_recovery)
+    error_message = "guardian_startup_account_recovery must be off, dry-run or apply."
+  }
+}
+
 variable "guardian_block_watch_enabled" {
   description = <<-EOT
     Whether block watch runs (GUARDIAN_BLOCK_WATCH_ENABLED): the committed-block

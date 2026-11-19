@@ -54,6 +54,11 @@ pub struct ServerHandle {
     pub(crate) stats_leader: std::sync::Arc<dyn crate::coordination::LeaderElector>,
     /// Single-owner lease for the chain-driven release sweep (issue #434).
     pub(crate) release_sweep_leader: std::sync::Arc<dyn crate::coordination::LeaderElector>,
+    #[cfg(feature = "postgres")]
+    pub(crate) account_recovery: Option<(
+        std::sync::Arc<crate::storage::postgres::recovery::RecoveryStore>,
+        crate::metadata::MidenNetworkType,
+    )>,
     pub(crate) startup_info: StartupInfo,
     pub(crate) cors_layer: Option<CorsLayer>,
     pub(crate) rate_limit_config: Option<RateLimitConfig>,
@@ -65,7 +70,89 @@ pub struct ServerHandle {
     pub(crate) grpc_port: u16,
 }
 
+/// Whether the server checks its account records at startup, and whether that check writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupRecoveryMode {
+    Off,
+    DryRun,
+    Apply,
+}
+
+impl std::str::FromStr for StartupRecoveryMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim() {
+            "off" => Ok(Self::Off),
+            "dry-run" => Ok(Self::DryRun),
+            "apply" => Ok(Self::Apply),
+            other => Err(format!("must be off, dry-run or apply, got {other:?}")),
+        }
+    }
+}
+
+#[cfg(feature = "postgres")]
+#[derive(Debug, thiserror::Error)]
+pub enum StartupRecoveryError {
+    #[error("Another process already holds the account recovery lease")]
+    LeaseBusy,
+    #[error("Could not establish exclusive account recovery: {0}")]
+    LeaseUnavailable(String),
+    #[error("{0}")]
+    Incomplete(String),
+}
+
+#[cfg(feature = "postgres")]
+impl From<String> for StartupRecoveryError {
+    fn from(reason: String) -> Self {
+        Self::Incomplete(reason)
+    }
+}
+
 impl ServerHandle {
+    /// Recover accounts once before a stop-before-start deployment opens its listeners.
+    #[cfg(feature = "postgres")]
+    pub async fn recover_accounts_on_startup(
+        &self,
+        mode: StartupRecoveryMode,
+    ) -> Result<(), StartupRecoveryError> {
+        if mode == StartupRecoveryMode::Off {
+            return Ok(());
+        }
+        let (store, network_type) = self
+            .account_recovery
+            .as_ref()
+            .ok_or_else(|| "Account recovery requires shared Postgres storage".to_owned())?;
+        let single_replica = crate::middleware::rate_limit::max_replicas_from_env()? == 1;
+        let canonicalizes = self.app_state.canonicalization.is_some();
+        match mode {
+            StartupRecoveryMode::Off => Ok(()),
+            StartupRecoveryMode::DryRun => {
+                if !single_replica {
+                    tracing::warn!(
+                        "Dry run: apply would be skipped because GUARDIAN_MAX_REPLICAS exceeds 1"
+                    );
+                }
+                if !canonicalizes {
+                    tracing::warn!("Dry run: apply would not run without canonicalization");
+                }
+                crate::jobs::account_recovery::dry_run(&self.app_state, store, *network_type).await
+            }
+            StartupRecoveryMode::Apply if !single_replica => {
+                tracing::warn!(
+                    "Skipping startup account recovery because GUARDIAN_MAX_REPLICAS exceeds 1"
+                );
+                Ok(())
+            }
+            StartupRecoveryMode::Apply if !canonicalizes => Err(StartupRecoveryError::Incomplete(
+                "Account recovery requires canonicalization".into(),
+            )),
+            StartupRecoveryMode::Apply => {
+                crate::jobs::account_recovery::run_once(&self.app_state, store, *network_type).await
+            }
+        }
+    }
+
     /// Run the server with the configured settings
     pub async fn run(self) {
         self.startup_info.log();
@@ -820,4 +907,19 @@ fn start_session_sweep_worker(state: AppState) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod startup_recovery_mode_tests {
+    use super::StartupRecoveryMode;
+
+    #[test]
+    fn the_mode_has_three_values_and_takes_no_boolean() {
+        assert_eq!("off".parse(), Ok(StartupRecoveryMode::Off));
+        assert_eq!(" dry-run ".parse(), Ok(StartupRecoveryMode::DryRun));
+        assert_eq!("apply".parse(), Ok(StartupRecoveryMode::Apply));
+        for rejected in ["true", "false", "", "Apply"] {
+            assert!(rejected.parse::<StartupRecoveryMode>().is_err());
+        }
+    }
 }

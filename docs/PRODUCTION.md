@@ -350,6 +350,191 @@ Two Guardian-specific caveats when restoring from a backup:
 The verification and restore procedure is in
 [`runbooks/backup-restore.md`](./runbooks/backup-restore.md).
 
+### Startup account recovery
+
+Guardian can check its stored Miden account records against the Miden network
+when it starts, and bring a record back in line with the account's canonical
+history when the two disagree. `GUARDIAN_STARTUP_ACCOUNT_RECOVERY` selects
+the mode: `off` (the default), `dry-run` or `apply`. It needs a Guardian
+backed by Postgres. With the bundled Compose files, set it in `.env`.
+
+**Previewing with a dry run**
+
+Start Guardian once with `GUARDIAN_STARTUP_ACCOUNT_RECOVERY=dry-run` first. A
+dry run performs the same checks, logs what `apply` would do with each
+account, and writes nothing: no account record, no report row and no
+progress. It takes no lease, so it runs with any number of replicas, and it
+checks from the first account each time. It names each proposal a restore
+would change, and says so when `apply` would not run here (more than one
+replica, or the check already completed). The final log line counts the
+accounts that would be restored (`restorable`), deferred (`retryable`) and
+left unresolved (`unresolved`). A dry run stops after 5 minutes like `apply`;
+that line then shows `stopped_early` and how many accounts it did not reach
+(`remaining`).
+
+**Applying**
+
+- Set `GUARDIAN_STARTUP_ACCOUNT_RECOVERY=apply` on a single Guardian instance.
+- Stop the old Guardian process before the new one starts. Rolling
+  deployments overlap old and new servers even with a target of one instance,
+  so do not use `apply` for those.
+- Guardian skips `apply` when `GUARDIAN_MAX_REPLICAS` exceeds `1`.
+- On the AWS stack in `infra/`, set Terraform variable
+  `guardian_startup_account_recovery` to `"dry-run"` or `"apply"` for that one
+  deploy. It passes the mode to the task and lengthens the container health
+  check start period and the load balancer grace period, so the task is not
+  replaced while its listeners are closed. For `apply`, running a single task
+  and keeping older tasks from running during the deploy remain manual steps.
+  Terraform sets the task count and autoscaling, so make them through its
+  variables: first apply `server_autoscaling_enabled = false` with
+  `server_desired_count = 0` and wait for the tasks to stop, then apply
+  `guardian_startup_account_recovery = "apply"` with
+  `server_desired_count = 1`. Leave `guardian_max_replicas` unset or at `1`
+  for that deploy. Stopping a task or scaling the service outside
+  Terraform is not enough, because the service or the next deploy starts a
+  replacement. Once the check has completed, set the mode back to `"off"`
+  and restore the usual task count and autoscaling.
+
+**What it does**
+
+The check runs before the API listeners open. For each account whose stored
+record differs from its latest canonical delta, Guardian asks the configured
+Miden node for the account's current commitment. It covers accounts recorded
+for the configured network and accounts recorded as `local` or `devnet`, which
+is how an account registered without a network is stored.
+
+- If the stored record already matches the network, nothing changes.
+- If the configured node has no record of the account and Guardian holds no
+  canonical deltas for it, the stored record stands only when it is the
+  account's first state. Any other record is listed as unresolved.
+- If the network is past the canonical deltas Guardian holds and no delta in
+  flight ends at the network's state, the account is listed as unresolved. If
+  the configured node reports an earlier state of the account, the account is
+  deferred.
+- If Guardian holds the account's canonical deltas from creation, it rebuilds
+  the account from them. An account whose history takes more than a minute to
+  rebuild is listed as unresolved. When the result matches the network and
+  is bound to this server's ACK key, Guardian stores it together with its
+  nonce and the account metadata derived from it. The same transaction saves
+  the previous record in `account_recovery_backups`; encrypted state keeps its
+  original ciphertext.
+- Otherwise the account is left unchanged and listed in
+  `account_recovery_pending`.
+
+A restore also reviews the account's pending proposals against the signers of
+the restored state. A proposal that one of those signers proposed or approved
+stays, keeping only their approvals. Any other pending proposal is removed,
+except one whose transaction summary cannot be read, which stays as it is.
+Every proposal a restore changes or removes is saved with the previous record
+in `account_recovery_backups.prior_proposals`. If the account's proposals
+cannot be read, the restore leaves them as they are.
+
+An account with work in flight (a delta awaiting its on-chain outcome or a
+reserved execution) is deferred and checked again on a later startup. Work
+counts when it starts from the account's latest canonical state, or when it is
+a delta that ends at the network's current state. A paused account is checked
+like any other, and stays paused.
+
+**How long it takes**
+
+- Guardian checks accounts for up to 5 minutes and lets a write in progress
+  finish. The listeners can stay closed for about 6 minutes: the 5-minute
+  budget, up to 35 seconds waiting for the recovery lease, and the final
+  writes. Allow for that in any startup health check or grace period.
+- The check stops for this startup after three account checks in a row fail,
+  for example while the Miden node is unreachable.
+- In `apply`, Guardian records where it stopped in
+  `account_recovery_startup.resume_after`, and the next startup in `apply`
+  continues from there.
+- The check completes when a pass reaches the last account without deferring
+  any. A pass can span several startups: one that stops early keeps its
+  position and its counts. A pass that deferred an account is followed by a
+  new pass from the first account. On completion Guardian records how many
+  accounts it could not bring up to date in
+  `account_recovery_startup.unresolved_accounts`, and later startups skip the
+  check. Until then, each startup in `apply` runs it again.
+- An account Guardian holds canonical deltas for, but the configured node has
+  no record of, is deferred. It keeps the check open until the node knows the
+  account or the account is released.
+
+**If it cannot run**
+
+In `apply`, Guardian exits before opening its listeners if another process
+holds the recovery lease, or if it cannot confirm it holds the lease alone. It
+first waits up to 35 seconds for a lease a stopped process left behind. Any
+other error, and any error in a dry run, is logged, and Guardian opens its
+listeners without finishing the check.
+
+**Reviewing the result**
+
+After `apply`, `account_recovery_pending` has one row for each account that
+was checked and not brought up to date. `outcome` is `deferred` (a later
+startup checks it again) or `unresolved` (Guardian does not hold what it
+needs), and `reason` says why. When the canonical history held here does not
+reach back to the account's creation, `history_starts_at_nonce` and
+`history_base_commitment` show where it begins.
+
+An unresolved account the network has a record of is brought up to date the
+next time it is registered with its current state. One the network has no
+record of cannot be registered again while its stored state remains. Remove
+that row with the statement below and keep its output, which is the removed
+row. It removes the row only while it still holds the `stored_commitment`
+listed for the account in `account_recovery_pending`. The account's next
+registration with its first state is then accepted:
+
+```sql
+DELETE FROM states
+WHERE account_id = '<account id>' AND commitment = '<stored_commitment>'
+RETURNING to_jsonb(states);
+```
+
+A row is removed once its account is brought up to date or found unchanged. A
+row whose `stored_commitment` no longer matches the account's stored state is
+out of date. Export the current list with:
+
+```sql
+SELECT jsonb_agg(to_jsonb(p) ORDER BY p.account_id)
+FROM account_recovery_pending p
+JOIN states st ON st.account_id = p.account_id
+              AND st.commitment = p.stored_commitment;
+```
+
+To put back the record a restore replaced, use its row in
+`account_recovery_backups`. The first statement changes the state only while
+the account still holds the restored commitment:
+
+```sql
+BEGIN;
+UPDATE states st
+SET state_json = b.prior_state->'state_json',
+    commitment = b.prior_state->>'commitment',
+    nonce = (b.prior_state->>'nonce')::bigint,
+    updated_at = now()
+FROM account_recovery_backups b
+WHERE b.id = <backup id> AND st.account_id = b.account_id
+  AND st.commitment = b.recovered_commitment;
+UPDATE account_metadata m SET auth = b.prior_auth, updated_at = now()
+FROM account_recovery_backups b
+WHERE b.id = <backup id> AND m.account_id = b.account_id;
+INSERT INTO delta_proposals
+SELECT p.* FROM account_recovery_backups b,
+     jsonb_populate_recordset(NULL::delta_proposals, b.prior_proposals) p
+WHERE b.id = <backup id>
+ON CONFLICT (account_id, commitment) DO UPDATE
+    SET status = EXCLUDED.status, status_kind = EXCLUDED.status_kind,
+        status_timestamp = EXCLUDED.status_timestamp,
+        delta_payload = EXCLUDED.delta_payload;
+COMMIT;
+```
+
+To run the check again after it completed, remove its completion record and
+restart Guardian:
+
+```sql
+DELETE FROM account_recovery_startup
+WHERE network_config->>'network_type' = '<configured network>';
+```
+
 ## Storage encryption
 
 Guardian can encrypt the sensitive stored payloads (account state, delta and

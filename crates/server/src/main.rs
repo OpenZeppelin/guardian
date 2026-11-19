@@ -10,9 +10,34 @@ use server::network::{NetworkType, RpcSettings};
 use std::env;
 use std::path::PathBuf;
 
+#[cfg(feature = "postgres")]
+use server::builder::handle::StartupRecoveryError;
+use server::builder::handle::StartupRecoveryMode;
+
+const STARTUP_RECOVERY_ENV: &str = "GUARDIAN_STARTUP_ACCOUNT_RECOVERY";
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
+
+    let startup_recovery = match env::var(STARTUP_RECOVERY_ENV) {
+        Ok(value) => value
+            .parse::<StartupRecoveryMode>()
+            .unwrap_or_else(|error| {
+                eprintln!("{STARTUP_RECOVERY_ENV} {error}");
+                std::process::exit(2);
+            }),
+        Err(env::VarError::NotPresent) => StartupRecoveryMode::Off,
+        Err(env::VarError::NotUnicode(_)) => {
+            eprintln!("{STARTUP_RECOVERY_ENV} must be valid UTF-8");
+            std::process::exit(2);
+        }
+    };
+    #[cfg(not(feature = "postgres"))]
+    if startup_recovery != StartupRecoveryMode::Off {
+        eprintln!("Account recovery requires a Postgres build");
+        std::process::exit(2);
+    }
 
     let keystore_path: PathBuf = env::var("GUARDIAN_KEYSTORE_PATH")
         .unwrap_or_else(|_| "/var/guardian/keystore".to_string())
@@ -39,7 +64,7 @@ async fn main() {
 
     let release_sweep = server::release_sweep::ReleaseSweepConfig::from_env()
         .expect("Invalid release sweep configuration");
-    ServerBuilder::new()
+    let server = ServerBuilder::new()
         .with_logging(LoggingConfig::default())
         .network(network_type)
         .with_rpc(RpcSettings::from_env(network_type).expect("Invalid RPC configuration"))
@@ -81,7 +106,24 @@ async fn main() {
         .cors(cors_layer)
         .build()
         .await
-        .expect("Failed to build server")
-        .run()
-        .await;
+        .expect("Failed to build server");
+
+    #[cfg(feature = "postgres")]
+    {
+        match server.recover_accounts_on_startup(startup_recovery).await {
+            Ok(()) => {}
+            Err(error @ StartupRecoveryError::Incomplete(_)) => {
+                tracing::error!(%error, "Startup account recovery did not finish; serving without it");
+            }
+            Err(
+                error @ (StartupRecoveryError::LeaseBusy
+                | StartupRecoveryError::LeaseUnavailable(_)),
+            ) => {
+                tracing::error!(%error, "Cannot serve while account recovery may be active elsewhere");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    server.run().await;
 }

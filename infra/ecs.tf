@@ -203,6 +203,10 @@ resource "aws_ecs_task_definition" "server" {
             value = tostring(var.guardian_release_sweep_enabled)
           },
           {
+            name  = "GUARDIAN_STARTUP_ACCOUNT_RECOVERY"
+            value = var.guardian_startup_account_recovery
+          },
+          {
             name  = "GUARDIAN_BLOCK_WATCH_TRANSPORT"
             value = var.guardian_block_watch_transport
           },
@@ -421,8 +425,8 @@ resource "aws_ecs_task_definition" "server" {
           command     = ["CMD", "/healthcheck"]
           interval    = 30
           timeout     = 5
-          retries     = 3
-          startPeriod = 10
+          retries     = local.server_health_check_retries
+          startPeriod = local.server_health_check_start_period_seconds
         }
 
         logConfiguration = {
@@ -460,7 +464,7 @@ resource "aws_ecs_service" "server" {
     }
   }
 
-  health_check_grace_period_seconds = 30
+  health_check_grace_period_seconds = local.server_health_check_grace_period_seconds
 
   network_configuration {
     subnets          = local.subnet_ids
