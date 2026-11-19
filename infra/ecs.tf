@@ -425,7 +425,7 @@ resource "aws_ecs_task_definition" "server" {
           command     = ["CMD", "/healthcheck"]
           interval    = 30
           timeout     = 5
-          retries     = 3
+          retries     = local.server_health_check_retries
           startPeriod = local.server_health_check_start_period_seconds
         }
 

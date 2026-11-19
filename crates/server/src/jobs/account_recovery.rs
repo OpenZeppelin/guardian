@@ -371,6 +371,8 @@ async fn run(
                         summary.restorable += 1;
                         tracing::info!(
                             account_id = %candidate.account_id,
+                            stored_nonce = ?candidate.stored_nonce,
+                            restored_nonce = ?candidate.canonical_nonce,
                             proposals_changed = restoration.changed_proposals().count(),
                             "Dry run: the account would be restored"
                         );
@@ -393,6 +395,8 @@ async fn run(
                                 summary.restored += 1;
                                 tracing::info!(
                                     account_id = %candidate.account_id,
+                                    stored_nonce = ?candidate.stored_nonce,
+                                    restored_nonce = ?candidate.canonical_nonce,
                                     proposals_changed = restoration.changed_proposals().count(),
                                     "Restored chain-verified account state and signers"
                                 );

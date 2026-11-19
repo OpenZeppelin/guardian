@@ -367,7 +367,10 @@ progress. It takes no lease, so it runs with any number of replicas, and it
 checks from the first account each time. It names each proposal a restore
 would change, and says so when `apply` would not run here (more than one
 replica, or the check already completed). The final log line counts the
-accounts that would be restored (`restorable`), deferred and left unresolved.
+accounts that would be restored (`restorable`), deferred (`retryable`) and
+left unresolved (`unresolved`). A dry run stops after 5 minutes like `apply`;
+that line then shows `stopped_early` and how many accounts it did not reach
+(`remaining`).
 
 **Applying**
 
@@ -386,7 +389,8 @@ accounts that would be restored (`restorable`), deferred and left unresolved.
   variables: first apply `server_autoscaling_enabled = false` with
   `server_desired_count = 0` and wait for the tasks to stop, then apply
   `guardian_startup_account_recovery = "apply"` with
-  `server_desired_count = 1`. Stopping a task or scaling the service outside
+  `server_desired_count = 1`. Leave `guardian_max_replicas` unset or at `1`
+  for that deploy. Stopping a task or scaling the service outside
   Terraform is not enough, because the service or the next deploy starts a
   replacement. Once the check has completed, set the mode back to `"off"`
   and restore the usual task count and autoscaling.
@@ -395,7 +399,9 @@ accounts that would be restored (`restorable`), deferred and left unresolved.
 
 The check runs before the API listeners open. For each account whose stored
 record differs from its latest canonical delta, Guardian asks the configured
-Miden node for the account's current commitment.
+Miden node for the account's current commitment. It covers accounts recorded
+for the configured network and accounts recorded as `local` or `devnet`, which
+is how an account registered without a network is stored.
 
 - If the stored record already matches the network, nothing changes.
 - If the configured node has no record of the account and Guardian holds no
@@ -491,6 +497,34 @@ SELECT jsonb_agg(to_jsonb(p) ORDER BY p.account_id)
 FROM account_recovery_pending p
 JOIN states st ON st.account_id = p.account_id
               AND st.commitment = p.stored_commitment;
+```
+
+To put back the record a restore replaced, use its row in
+`account_recovery_backups`. The first statement changes the state only while
+the account still holds the restored commitment:
+
+```sql
+BEGIN;
+UPDATE states st
+SET state_json = b.prior_state->'state_json',
+    commitment = b.prior_state->>'commitment',
+    nonce = (b.prior_state->>'nonce')::bigint,
+    updated_at = now()
+FROM account_recovery_backups b
+WHERE b.id = <backup id> AND st.account_id = b.account_id
+  AND st.commitment = b.recovered_commitment;
+UPDATE account_metadata m SET auth = b.prior_auth, updated_at = now()
+FROM account_recovery_backups b
+WHERE b.id = <backup id> AND m.account_id = b.account_id;
+INSERT INTO delta_proposals
+SELECT p.* FROM account_recovery_backups b,
+     jsonb_populate_recordset(NULL::delta_proposals, b.prior_proposals) p
+WHERE b.id = <backup id>
+ON CONFLICT (account_id, commitment) DO UPDATE
+    SET status = EXCLUDED.status, status_kind = EXCLUDED.status_kind,
+        status_timestamp = EXCLUDED.status_timestamp,
+        delta_payload = EXCLUDED.delta_payload;
+COMMIT;
 ```
 
 To run the check again after it completed, remove its completion record and

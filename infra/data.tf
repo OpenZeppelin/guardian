@@ -169,9 +169,10 @@ locals {
   # Account recovery keeps the listeners closed for about 6 minutes at most:
   # a 5-minute scan budget, up to 35 seconds waiting for a lease a stopped
   # task left behind, and the writes in progress when the budget ends. 300 is
-  # the longest container start period ECS accepts; the health check's three
-  # retries at 30 seconds cover the remainder.
+  # the longest container start period ECS accepts; five health check retries
+  # at 30 seconds cover the remainder with a margin.
   server_health_check_start_period_seconds = var.guardian_startup_account_recovery == "off" ? 10 : 300
+  server_health_check_retries              = var.guardian_startup_account_recovery == "off" ? 3 : 5
   server_health_check_grace_period_seconds = var.guardian_startup_account_recovery == "off" ? 30 : 420
 
   effective_server_desired_count             = var.server_desired_count != null ? var.server_desired_count : (local.is_prod ? 2 : 1)
