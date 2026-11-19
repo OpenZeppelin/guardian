@@ -20,6 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
+| 0.19.1 | 0.18 (Rust), 0.17 (TypeScript) | `=0.18.0` | `=0.18.0` | `0.17.8` (exact) |
 | 0.19.0 | 0.18 (Rust), 0.17 (TypeScript) | `=0.18.0` | `=0.18.0` | `0.17.8` (exact) |
 | 0.18.3 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.2 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
@@ -31,6 +32,8 @@ elsewhere and link here:
 | 0.14.x | 0.14 | n/a | `0.14.x` | `^0.14.0` |
 | 0.13.x | 0.13 | n/a | `0.13.0` | `^0.13.0` |
 | 0.12.x | 0.12 | n/a | `0.12.5` | `^0.12.5` |
+
+0.19.1 keeps the 0.19.0 pins.
 
 0.18.2 and 0.18.3 keep the 0.18.1 pins.
 
@@ -136,6 +139,25 @@ be reproduced: `TransactionRequest` serialization changed and the auth arg commi
 Execute or cancel every pending proposal on the rc version, have GUARDIAN drop any that
 cannot be executed, then recreate the account on 0.17.0. Recreating the account does not
 clear proposals served for the old one.
+
+**Upgrading from 0.19.0 to 0.19.1: startup account recovery.** The Miden pins, the
+`auth_tx` procedure root, stored account data, existing contracts and the wire contract
+are unchanged, so accounts and stores carry over and 0.19.0 SDKs keep working against a
+0.19.1 server. The SDK packages change in version only. The release is a server image:
+
+- **Startup account recovery (#607).** An optional check, off by default, that runs
+  before the API listeners open. It compares each stored account record with the
+  network and brings a record that differs in line with the account's canonical
+  delta history. Set `GUARDIAN_STARTUP_ACCOUNT_RECOVERY` to `dry-run` to preview and
+  to `apply` to write. It needs the Postgres backend. See
+  [Startup account recovery](./PRODUCTION.md#startup-account-recovery).
+- **Postgres migrations.** Three additive migrations create
+  `account_recovery_backups`, `account_recovery_startup` and
+  `account_recovery_pending`. They run at startup in every mode and no data reset
+  runs.
+- **Terraform.** The AWS stack gains `guardian_startup_account_recovery` (default
+  `"off"`), which passes the mode to the task and lengthens its health check
+  timings while the check is on.
 
 **Upgrading from 0.18.3 to 0.19.0: accounts that mix Falcon and ECDSA cosigners (issue #563).**
 GUARDIAN can now register and operate a guarded multisig whose approvers use
