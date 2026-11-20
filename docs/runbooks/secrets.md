@@ -413,9 +413,10 @@ SP 800-38D, a single key must encrypt fewer than ~2³² records (about 4 billion
 before nonce-collision probability becomes non-negligible — and a collision
 under one key is catastrophic, not graceful.
 
-Each state, delta, and proposal write is one encryption under the **active**
-key. Treat 2³² as a per-key budget: [rotate](#rotation) the active key well
-before any single `active` kid reaches ~1 billion writes (2³⁰, a ~4× margin),
+Each state and proposal write is one encryption under the **active** key. A
+delta write is up to two: its payload and, when it has one, its dashboard
+metadata. Treat 2³² as a per-key budget: [rotate](#rotation) the active key well
+before any single `active` kid reaches ~1 billion encryptions (2³⁰, a ~4× margin),
 or on a calendar cadence sized to the deployment's write rate. Rotation only
 repoints `active` — old records keep decrypting under their original kid — so
 the budget resets with each rotation. If 2³² is unreachable for the
