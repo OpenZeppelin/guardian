@@ -7,6 +7,9 @@ use chrono::{DateTime, Utc};
 use super::cipher::StorageCipher;
 use super::envelope::RecordAad;
 use crate::delta_object::{DeltaObject, DeltaStatus};
+use crate::delta_summary::{
+    StoredDeltaMetadata, plain_metadata_from_value, plain_metadata_to_value,
+};
 use crate::state_object::{StateHead, StateObject};
 use crate::storage::{
     AbandonIntent, AccountDeltaCursor, AccountProposalCursor, CandidatePromotion,
@@ -72,10 +75,64 @@ impl EncryptedStorage {
             .cipher
             .encrypt(&aad, &delta.delta_payload)
             .map_err(|e| e.to_string())?;
+        let metadata = match &delta.metadata {
+            Some(StoredDeltaMetadata::Plain(metadata)) => Some(self.seal_metadata(
+                &delta.account_id,
+                delta.nonce,
+                &plain_metadata_to_value(metadata),
+            )?),
+            Some(StoredDeltaMetadata::Sealed(envelope)) => {
+                Some(StoredDeltaMetadata::Sealed(envelope.clone()))
+            }
+            None => None,
+        };
         Ok(DeltaObject {
             delta_payload: payload,
+            metadata,
             ..delta.clone()
         })
+    }
+
+    fn seal_metadata(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        metadata: &serde_json::Value,
+    ) -> Result<StoredDeltaMetadata, String> {
+        let aad = RecordAad::DeltaMetadata { account_id, nonce };
+        self.cipher
+            .encrypt(&aad, metadata)
+            .map(StoredDeltaMetadata::Sealed)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Metadata written before this layer sealed it is still plain in the
+    /// store and is returned as stored. A sealed value that does not open is
+    /// reported and left out, so the delta is still served with its payload.
+    fn open_metadata(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        metadata: Option<StoredDeltaMetadata>,
+    ) -> Option<StoredDeltaMetadata> {
+        match metadata {
+            Some(StoredDeltaMetadata::Sealed(envelope)) => {
+                let aad = RecordAad::DeltaMetadata { account_id, nonce };
+                match self.cipher.decrypt(&aad, &envelope) {
+                    Ok(value) => plain_metadata_from_value(value).map(Into::into),
+                    Err(error) => {
+                        tracing::error!(
+                            account_id,
+                            nonce,
+                            %error,
+                            "Stored delta metadata does not open; serving the delta without it"
+                        );
+                        None
+                    }
+                }
+            }
+            plain => plain,
+        }
     }
 
     fn decrypt_delta(&self, mut delta: DeltaObject) -> Result<DeltaObject, String> {
@@ -89,6 +146,7 @@ impl EncryptedStorage {
                 .map_err(|e| e.to_string())?
         };
         delta.delta_payload = payload;
+        delta.metadata = self.open_metadata(&delta.account_id, delta.nonce, delta.metadata.take());
         Ok(delta)
     }
 
@@ -685,6 +743,7 @@ impl StorageBackend for EncryptedStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::delta_summary::DeltaMetadata;
     use crate::storage::encryption::cipher::Aes256GcmCipher;
     use crate::storage::encryption::key_provider::{InMemoryKeyProvider, StorageKeyProvider};
     use crate::storage::encryption::marker::{EncryptionMarker, MarkerStore, apply_startup_guard};
@@ -1053,5 +1112,228 @@ mod tests {
 
         assert!(fs.pull_all_delta_proposals("acct1").await.is_err());
         assert!(fs.pull_pending_proposals("acct1").await.is_err());
+    }
+
+    fn delta_metadata() -> DeltaMetadata {
+        plain_metadata_from_value(json!({
+            "category": "asset_transfer",
+            "assets": [{ "asset_id": "0xfaucet", "kind": "fungible", "amount": "-250000" }],
+            "counterparty": { "account_id": "0xrecipient", "direction": "out" },
+            "note_counts": { "input": 0, "output": 1 },
+            "proposal": { "proposal_type": "p2id", "description": "quarterly transfer" }
+        }))
+        .expect("metadata parses")
+    }
+
+    fn delta_with_metadata(account: &str, nonce: u64) -> DeltaObject {
+        DeltaObject {
+            account_id: account.to_string(),
+            nonce,
+            delta_payload: json!({ "move": nonce }),
+            status: DeltaStatus::canonical("2026-11-19T10:00:00Z".to_string()),
+            metadata: Some(delta_metadata().into()),
+            ..Default::default()
+        }
+    }
+
+    fn is_sealed(delta: &DeltaObject) -> bool {
+        matches!(delta.metadata, Some(StoredDeltaMetadata::Sealed(_)))
+    }
+
+    #[tokio::test]
+    async fn delta_metadata_is_sealed_at_rest_and_roundtrips() {
+        let (_dir, fs) = fs_backend().await;
+        let inner: Arc<dyn StorageBackend> = Arc::new(fs);
+        let enc = encrypted(inner.clone());
+
+        enc.submit_delta(&delta_with_metadata("acct1", 1))
+            .await
+            .unwrap();
+
+        let raw = inner.pull_delta("acct1", 1).await.unwrap();
+        assert!(is_sealed(&raw));
+        let stored = serde_json::to_string(&raw).unwrap();
+        for plain in [
+            "0xrecipient",
+            "-250000",
+            "quarterly transfer",
+            "asset_transfer",
+        ] {
+            assert!(!stored.contains(plain), "{plain} is stored in the clear");
+        }
+        assert_eq!(
+            enc.pull_delta("acct1", 1).await.unwrap().plain_metadata(),
+            Some(&delta_metadata())
+        );
+    }
+
+    #[tokio::test]
+    async fn sealed_delta_metadata_is_served_only_for_its_own_delta() {
+        let (_dir, fs) = fs_backend().await;
+        let inner: Arc<dyn StorageBackend> = Arc::new(fs);
+        let enc = encrypted(inner.clone());
+
+        enc.submit_delta(&delta_with_metadata("acct1", 1))
+            .await
+            .unwrap();
+        enc.submit_delta(&delta_with_metadata("acct1", 2))
+            .await
+            .unwrap();
+
+        let first = inner.pull_delta("acct1", 1).await.unwrap();
+        let mut second = inner.pull_delta("acct1", 2).await.unwrap();
+        for foreign in [
+            first.metadata.clone().expect("sealed metadata"),
+            StoredDeltaMetadata::Sealed(first.delta_payload.clone()),
+        ] {
+            second.metadata = Some(foreign);
+            inner.submit_delta(&second).await.unwrap();
+
+            let served = enc.pull_delta("acct1", 2).await.unwrap();
+            assert_eq!(served.delta_payload, json!({ "move": 2 }));
+            assert_eq!(served.metadata, None);
+            assert_eq!(enc.pull_deltas_after("acct1", 1).await.unwrap().len(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn stored_plain_delta_metadata_is_read_as_stored() {
+        let (_dir, fs) = fs_backend().await;
+        let inner: Arc<dyn StorageBackend> = Arc::new(fs);
+        let enc = encrypted(inner.clone());
+
+        let mut stored = enc.encrypt_delta(&delta_with_metadata("acct1", 1)).unwrap();
+        stored.metadata = Some(delta_metadata().into());
+        inner.submit_delta(&stored).await.unwrap();
+        enc.submit_delta(&delta_with_metadata("acct1", 2))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            enc.pull_delta("acct1", 1).await.unwrap().plain_metadata(),
+            Some(&delta_metadata())
+        );
+
+        assert!(!is_sealed(&inner.pull_delta("acct1", 1).await.unwrap()));
+        assert!(is_sealed(&inner.pull_delta("acct1", 2).await.unwrap()));
+    }
+
+    #[cfg(feature = "postgres")]
+    mod postgres {
+        use super::*;
+        use crate::storage::EVERY_ARCHIVED_DELTA;
+        use crate::storage::encryption::is_envelope;
+        use crate::storage::postgres::PostgresService;
+        use crate::testing::pg::test_database_url;
+        use diesel::sql_types::{BigInt, Jsonb, Nullable, Text};
+        use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+
+        async fn insert_account(conn: &mut AsyncPgConnection, account_id: &str) {
+            diesel::sql_query(
+                "INSERT INTO account_metadata \
+                 (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+                 VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), false)",
+            )
+            .bind::<Text, _>(account_id)
+            .execute(conn)
+            .await
+            .expect("insert metadata row");
+        }
+
+        #[derive(diesel::QueryableByName)]
+        struct StoredMetadata {
+            #[diesel(sql_type = Nullable<Jsonb>)]
+            metadata: Option<serde_json::Value>,
+        }
+
+        async fn stored_metadata(
+            conn: &mut AsyncPgConnection,
+            table: &str,
+            account_id: &str,
+            nonce: i64,
+        ) -> serde_json::Value {
+            diesel::sql_query(format!(
+                "SELECT metadata FROM {table} WHERE account_id = $1 AND nonce = $2"
+            ))
+            .bind::<Text, _>(account_id)
+            .bind::<BigInt, _>(nonce)
+            .get_result::<StoredMetadata>(conn)
+            .await
+            .expect("stored row")
+            .metadata
+            .expect("stored metadata")
+        }
+
+        #[tokio::test]
+        #[ignore]
+        async fn delta_metadata_is_sealed_in_the_column_and_stored_plain_values_are_read() {
+            let url = test_database_url().await;
+            let service = PostgresService::new(&url, 4).await.expect("storage");
+            let account_id = format!("0xsealed{}", Utc::now().timestamp_micros());
+            let mut conn = AsyncPgConnection::establish(&url).await.expect("conn");
+            insert_account(&mut conn, &account_id).await;
+
+            let inner: Arc<dyn StorageBackend> = Arc::new(service);
+            let enc = encrypted(inner.clone());
+            let plain = plain_metadata_to_value(&delta_metadata());
+
+            enc.submit_delta(&delta_with_metadata(&account_id, 1))
+                .await
+                .unwrap();
+            let stored = stored_metadata(&mut conn, "deltas", &account_id, 1).await;
+            assert!(is_envelope(&stored), "{stored}");
+            assert_eq!(
+                enc.pull_delta(&account_id, 1)
+                    .await
+                    .unwrap()
+                    .plain_metadata(),
+                Some(&delta_metadata())
+            );
+
+            let mut legacy = enc
+                .encrypt_delta(&delta_with_metadata(&account_id, 2))
+                .unwrap();
+            legacy.metadata = Some(delta_metadata().into());
+            inner.submit_delta(&legacy).await.unwrap();
+            diesel::sql_query(
+                "INSERT INTO superseded_deltas \
+                 (account_id, nonce, prev_commitment, new_commitment, delta_payload, ack_sig, \
+                  status, status_kind, status_timestamp, metadata, superseded_at) \
+                 SELECT account_id, nonce, prev_commitment, new_commitment, delta_payload, \
+                        ack_sig, status, status_kind, status_timestamp, metadata, now() \
+                 FROM deltas WHERE account_id = $1",
+            )
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .expect("archive row");
+            assert_eq!(
+                stored_metadata(&mut conn, "deltas", &account_id, 2).await,
+                plain
+            );
+            assert_eq!(
+                enc.pull_delta(&account_id, 2)
+                    .await
+                    .unwrap()
+                    .plain_metadata(),
+                Some(&delta_metadata())
+            );
+
+            assert!(is_envelope(
+                &stored_metadata(&mut conn, "superseded_deltas", &account_id, 1).await
+            ));
+            assert_eq!(
+                stored_metadata(&mut conn, "superseded_deltas", &account_id, 2).await,
+                plain
+            );
+            let archived = enc
+                .pull_superseded_deltas(&account_id, EVERY_ARCHIVED_DELTA)
+                .await
+                .unwrap();
+            assert_eq!(archived.len(), 2);
+            for archived in &archived {
+                assert_eq!(archived.delta.plain_metadata(), Some(&delta_metadata()));
+            }
+        }
     }
 }
