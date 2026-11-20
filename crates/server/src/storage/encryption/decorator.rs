@@ -1197,6 +1197,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delta_with_incomplete_stored_metadata_is_served_without_it() {
+        let (_dir, fs) = fs_backend().await;
+        let inner: Arc<dyn StorageBackend> = Arc::new(fs);
+        let enc = encrypted(inner.clone());
+
+        enc.submit_delta(&delta_with_metadata("acct1", 1))
+            .await
+            .unwrap();
+        let mut stored = inner.pull_delta("acct1", 1).await.unwrap();
+        let Some(StoredDeltaMetadata::Sealed(mut envelope)) = stored.metadata.take() else {
+            panic!("metadata is stored sealed");
+        };
+        envelope.as_object_mut().unwrap().remove("ct");
+        stored.metadata = Some(StoredDeltaMetadata::Sealed(envelope));
+        inner.submit_delta(&stored).await.unwrap();
+
+        let served = enc.pull_delta("acct1", 1).await.unwrap();
+        assert_eq!(served.delta_payload, json!({ "move": 1 }));
+        assert_eq!(served.metadata, None);
+        assert_eq!(enc.pull_deltas_after("acct1", 1).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn stored_plain_delta_metadata_is_read_as_stored() {
         let (_dir, fs) = fs_backend().await;
         let inner: Arc<dyn StorageBackend> = Arc::new(fs);

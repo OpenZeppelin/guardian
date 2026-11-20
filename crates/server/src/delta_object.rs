@@ -487,15 +487,9 @@ impl<'de> Deserialize<'de> for DeltaObject {
         }
 
         let helper = DeltaObjectHelper::deserialize(deserializer)?;
-        let metadata = match helper.metadata {
-            Some(value) if crate::storage::encryption::is_envelope(&value) => {
-                Some(crate::delta_summary::StoredDeltaMetadata::Sealed(value))
-            }
-            Some(value) => Some(crate::delta_summary::StoredDeltaMetadata::Plain(
-                serde_json::from_value(value).map_err(serde::de::Error::custom)?,
-            )),
-            None => None,
-        };
+        let metadata = helper
+            .metadata
+            .and_then(crate::delta_summary::metadata_from_value);
 
         let status = if let Some(status) = helper.status {
             status
