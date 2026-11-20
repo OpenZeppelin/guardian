@@ -1048,6 +1048,9 @@ behavior.
 | `guardian_execution_oldest_reservation_age_seconds` | gauge | — |
 | `guardian_execution_observation_outage_seconds` | gauge | — |
 | `guardian_execution_records_pruned_total` | counter | none |
+| `guardian_execution_batches_total` | counter | `outcome` (`accepted`/`unknown`/`refused`/`not_built`/`prover_busy`) |
+| `guardian_execution_batched_transactions_total` | counter | `outcome` (same values) |
+| `guardian_execution_batch_proving_duration_seconds` | histogram (5 ms to 20 min) | — |
 | `guardian_db_pool_connections_max` / `_connections` / `_connections_available` / `_pending_acquires` | gauges | `pool` (`storage`/`metadata`; postgres builds) |
 | `guardian_canonicalization_runs_total` | counter | `outcome` (`completed`/`partial`/`cancelled`/`error`) |
 | `guardian_canonicalization_run_duration_seconds` | histogram | — |

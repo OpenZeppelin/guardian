@@ -1737,3 +1737,317 @@ mod threshold {
         assert_eq!(of("switch_guardian"), Some(1));
     }
 }
+
+/// Batched submission (#239) through the whole attempt: two guarded multisig accounts on one chain,
+/// each with a threshold-signed proposal, reproduced, executed, proved locally, sealed against a key
+/// the chain's validator attests and handed to one batcher, which lands both in one block.
+mod batched {
+    use std::collections::BTreeMap;
+    use std::num::NonZeroU32;
+    use std::time::Duration;
+
+    use guardian_shared::{ProposalSignature, SignatureScheme, ToJson};
+    use miden_client::rpc::encryption::{
+        AttestedTransactionEncryptionKey, ValidatorAttestation, attestation_commitment,
+    };
+    use miden_client::transaction::TransactionRequestBuilder;
+    use miden_confidential_contracts::multisig_guardian::{
+        MultisigGuardianBuilder, MultisigGuardianConfig,
+    };
+    use miden_protocol::account::{Account, AccountType};
+    use miden_protocol::crypto::SequentialCommit;
+    use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey;
+    use miden_protocol::crypto::dsa::eddsa_25519_sha512::KeyExchangeKey;
+    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+    use miden_protocol::transaction::TransactionSummary;
+    use miden_protocol::utils::serde::Serializable;
+    use miden_protocol::{Felt, Word};
+    use miden_standards::account::auth::{AuthGuardedMultisig, MultisigAuthArgs};
+    use miden_standards::code_builder::CodeBuilder;
+    use miden_tx::{LocalTransactionProver, TransactionExecutorError};
+
+    use super::*;
+    use crate::delta_object::CosignerSignature;
+    use crate::network::miden::execution::MidenExecutor;
+    use crate::network::miden::execution::batch::BatchSettings;
+    use crate::network::miden::execution::test_node::TestNode;
+    use crate::services::execute_proposal::{
+        ExecutionAttempt, ExecutionInput, ProposalExecutor, SendWindow, SubmissionOutcome,
+    };
+    use crate::services::execution_codec::TransactionRequestEnvelope;
+
+    const BOUND: u32 = 3;
+    /// The wire value of the one IES scheme the client accepts; the client keeps its enum private.
+    const X25519_XCHACHA20_POLY1305: u32 = 1;
+
+    /// A guarded 2-of-2 account's guardian-key rotation, signed by both cosigners. The rotation
+    /// needs only the cosigners' signatures.
+    struct Signed {
+        account: Account,
+        input: ExecutionInput,
+    }
+
+    struct Fixture {
+        rpc: Arc<MockRpcApi>,
+        node: Arc<TestNode>,
+        signed: Vec<Signed>,
+    }
+
+    fn rotation(account_seed: u8) -> (Account, Vec<SecretKey>, MultisigAuthArgs, Word) {
+        let cosigners: Vec<SecretKey> = (0..2).map(|_| SecretKey::new()).collect();
+        let config = MultisigGuardianConfig::new(
+            2,
+            cosigners
+                .iter()
+                .map(|key| key.public_key().to_commitment())
+                .collect(),
+            SecretKey::new().public_key().to_commitment(),
+        )
+        .with_account_type(AccountType::Public)
+        .with_signature_scheme(SignatureScheme::Falcon);
+        // An existing account's id is read from its seed, so each account gets its own.
+        let account = MultisigGuardianBuilder::new(config)
+            .with_seed([account_seed; 32])
+            .build_existing()
+            .unwrap();
+        let auth_args = MultisigAuthArgs::new(
+            BlockNumber::from(BOUND),
+            Word::from([Felt::new_unchecked(u64::from(account_seed)); 4]),
+        )
+        .with_approval_expiration_delta(NonZeroU32::new(1_000).unwrap())
+        .unwrap();
+        let commitment = auth_args.to_commitment();
+        (account, cosigners, auth_args, commitment)
+    }
+
+    fn rotation_script() -> miden_protocol::transaction::TransactionScript {
+        let new_guardian = SecretKey::new().public_key().to_commitment();
+        let scheme_id = SignatureScheme::Falcon.auth_scheme_id();
+        CodeBuilder::new()
+            .with_dynamically_linked_package(AuthGuardedMultisig::code())
+            .unwrap()
+            .compile_tx_script(format!(
+                "@transaction_script\npub proc main\n    push.{new_guardian}\n    push.{scheme_id}\n    call.::miden::standards::components::auth::guarded_multisig::update_guardian_public_key\n    drop\n    dropw\nend"
+            ))
+            .unwrap()
+    }
+
+    async fn fixture(accounts: u8) -> Fixture {
+        let rotations: Vec<_> = (0..accounts)
+            .map(|seed| (rotation(seed + 1), rotation_script()))
+            .collect();
+        let validator = SigningKey::new();
+        let mut chain = MockChainBuilder::with_accounts(
+            rotations.iter().map(|((account, ..), _)| account.clone()),
+        )
+        .unwrap()
+        .validator_signing_keys(vec![validator.clone()])
+        .build()
+        .unwrap();
+        chain.prove_until_block(BlockNumber::from(BOUND)).unwrap();
+
+        let mut signed = Vec::new();
+        for ((account, cosigners, auth_args, commitment), script) in rotations {
+            let summary: TransactionSummary = match chain
+                .build_transaction(account.id())
+                .authenticator(None)
+                .tx_script(script.clone())
+                .add_advice_map_entry(commitment, auth_args.to_elements())
+                .auth_args(commitment)
+                .build()
+                .unwrap()
+                .execute()
+                .await
+                .unwrap_err()
+            {
+                TransactionExecutorError::Unauthorized(summary) => *summary,
+                error => panic!("expected the unsigned abort: {error:?}"),
+            };
+            let request = TransactionRequestBuilder::new()
+                .custom_script(script)
+                .auth_args(&auth_args)
+                .block_numbers([BlockNumber::from(BOUND)])
+                .build()
+                .unwrap()
+                .to_bytes();
+            let message = summary.to_commitment();
+            let cosigner_signatures = cosigners
+                .iter()
+                .map(|key| CosignerSignature {
+                    signer_id: format!(
+                        "0x{}",
+                        hex::encode(key.public_key().to_commitment().to_bytes())
+                    ),
+                    signature: ProposalSignature::Falcon {
+                        signature: format!("0x{}", hex::encode(key.sign(message).to_bytes())),
+                    },
+                    timestamp: "2026-11-16T12:00:00Z".to_string(),
+                })
+                .collect();
+            let input = ExecutionInput {
+                account_id: account.id().to_hex(),
+                state_json: account.to_json(),
+                proposal_payload: serde_json::json!({
+                    "tx_summary": summary.to_json(),
+                    // The executor runs any proposal it is handed; refusing a switch is the
+                    // request service's rule, and a rotation needs no acknowledgment.
+                    "metadata": { "proposal_type": "switch_guardian" },
+                    "transaction_request": TransactionRequestEnvelope::seal(&request),
+                }),
+                cosigner_signatures,
+            };
+            signed.push(Signed { account, input });
+        }
+
+        let rpc = Arc::new(MockRpcApi::new(chain));
+        rpc.advance_blocks(20);
+        let (genesis, _) = rpc
+            .get_block_header_by_number(Some(BlockNumber::GENESIS), false)
+            .await
+            .unwrap();
+        let public_key = KeyExchangeKey::with_rng(&mut rand::rng())
+            .public_key()
+            .to_bytes();
+        let key_id = vec![9];
+        let attestation = attestation_commitment(
+            X25519_XCHACHA20_POLY1305,
+            &key_id,
+            genesis.commitment(),
+            &public_key,
+            None,
+        );
+        let node = Arc::new(TestNode::serving_key(
+            rpc.clone(),
+            AttestedTransactionEncryptionKey {
+                scheme: X25519_XCHACHA20_POLY1305,
+                key_id,
+                public_key,
+                attestations: vec![ValidatorAttestation {
+                    validator_key: validator.public_key(),
+                    signature: validator.sign(attestation),
+                }],
+                next_key: None,
+            },
+        ));
+        let ids: std::collections::BTreeSet<_> =
+            signed.iter().map(|signed| signed.account.id()).collect();
+        assert_eq!(
+            ids.len(),
+            signed.len(),
+            "every proposal is for its own account"
+        );
+        Fixture { rpc, node, signed }
+    }
+
+    impl Fixture {
+        fn executor(&self, settings: Option<BatchSettings>) -> MidenExecutor {
+            let executor = MidenExecutor::new(
+                self.node.clone(),
+                Arc::new(LocalTransactionProver::default()),
+            );
+            match settings {
+                Some(settings) => {
+                    executor.with_batching(settings, tokio_util::sync::CancellationToken::new())
+                }
+                None => executor,
+            }
+        }
+
+        /// Takes every proposal to the boundary: reproduced, executed, proved and sealed.
+        async fn ready(
+            &self,
+            executor: &MidenExecutor,
+        ) -> Vec<(Box<dyn ExecutionAttempt>, String)> {
+            let mut ready = Vec::new();
+            for signed in &self.signed {
+                let mut attempt = Arc::new(executor.clone())
+                    .select_signatures(signed.input.clone())
+                    .unwrap()
+                    .prepare()
+                    .await
+                    .unwrap();
+                let executed = attempt.execute(None).await.unwrap();
+                attempt.prove().await.unwrap();
+                attempt.seal().await.unwrap();
+                ready.push((attempt, executed.final_account_commitment));
+            }
+            ready
+        }
+
+        async fn landed(&self) -> BTreeMap<String, String> {
+            self.rpc.prove_block();
+            let (tip, _) = self
+                .rpc
+                .get_block_header_by_number(None, false)
+                .await
+                .unwrap();
+            let (block, _) = self
+                .rpc
+                .get_block_by_number(tip.block_num(), false)
+                .await
+                .unwrap();
+            block
+                .body()
+                .updated_accounts()
+                .iter()
+                .map(|update| {
+                    (
+                        update.account_id().to_hex(),
+                        guardian_shared::hex::IntoHex::into_hex(update.final_state_commitment()),
+                    )
+                })
+                .collect()
+        }
+    }
+
+    #[tokio::test]
+    async fn two_accounts_proposals_executed_by_guardian_land_in_one_batch() {
+        let f = fixture(2).await;
+        let executor = f.executor(Some(BatchSettings {
+            max_transactions: 4,
+            window: Duration::from_secs(2),
+        }));
+        let mut ready = f.ready(&executor).await;
+        let expected: BTreeMap<String, String> = f
+            .signed
+            .iter()
+            .zip(&ready)
+            .map(|(signed, (_, commitment))| (signed.account.id().to_hex(), commitment.clone()))
+            .collect();
+
+        // The longest send time the worker hands over, enough to wait out the window and keep
+        // the build, the batch send and each transaction's own send after a refusal.
+        let (second, first) = ready.split_at_mut(1);
+        let (a, b) = tokio::join!(
+            first[0].0.submit(SendWindow::MAX_SEND),
+            second[0].0.submit(SendWindow::MAX_SEND)
+        );
+        assert_eq!(
+            (a, b),
+            (SubmissionOutcome::Accepted, SubmissionOutcome::Accepted)
+        );
+        let batches = f.rpc.submitted_batch_sealed_inputs();
+        assert_eq!(batches.len(), 1, "the two attempts shared one batch");
+        assert_eq!(batches[0].len(), 2);
+        assert_eq!(
+            f.landed().await,
+            expected,
+            "both accounts moved in one block"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_batching_each_attempt_sends_its_transaction_alone() {
+        let f = fixture(2).await;
+        let executor = f.executor(None);
+        let mut ready = f.ready(&executor).await;
+        for (attempt, _) in &mut ready {
+            assert_eq!(
+                attempt.submit(Duration::from_secs(30)).await,
+                SubmissionOutcome::Accepted
+            );
+        }
+        assert!(f.rpc.submitted_batch_sealed_inputs().is_empty());
+        assert_eq!(f.landed().await.len(), 2);
+    }
+}
