@@ -27,13 +27,13 @@ The multisig sdk has as peer dependency on the miden-sdk, you will need to insta
 
 **TypeScript (npm)**
 ```bash
-npm install @openzeppelin/miden-multisig-client@0.19.0-rc.2 @miden-sdk/miden-sdk@0.17.8
+npm install @openzeppelin/miden-multisig-client@0.19.1 @miden-sdk/miden-sdk@0.17.8
 ```
 
 **Rust (Cargo.toml)**
 ```toml
 [dependencies]
-miden-multisig-client = "=0.19.0-rc.2"
+miden-multisig-client = "=0.19.1"
 miden-client = "=0.18.0"
 ```
 
@@ -2597,7 +2597,7 @@ The exact versions for each Guardian release are in
 [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#support-matrix); they are not
 repeated here so there is one place to update.
 
-The pins are deliberate. From Guardian 0.19.0-rc.2 the Rust pin is on Miden 0.18 and
+The pins are deliberate. From Guardian 0.19.0 the Rust pin is on Miden 0.18 and
 the npm pin on Miden 0.17, two lines whose guarded-multisig component is the same.
 Nothing at build time verifies the npm SDK's embedded miden-standards builds the same
 account as the Rust pin, so the CI parity gates

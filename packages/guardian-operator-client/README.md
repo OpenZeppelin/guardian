@@ -114,7 +114,7 @@ detects guardian switches: the configured `transportMode` (`auto`, `stream` or
 holding the release sweep lease runs the feed, so only it reports the live
 `transport`, `chainTip` and `lagBlocks`; they are `null` elsewhere. The field
 is `null` when block watch is disabled and absent on servers that predate it
-(before 0.19.0-rc.2).
+(before 0.19.0).
 
 ### Aggregate Stats (Assets Under Guard)
 

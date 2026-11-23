@@ -548,6 +548,11 @@ impl ServerBuilder {
         let module_store = coordination
             .as_ref()
             .and_then(|handles| handles.module_store.clone());
+        #[cfg(feature = "postgres")]
+        let account_recovery = coordination
+            .as_ref()
+            .and_then(|handles| handles.account_recovery.clone())
+            .map(|store| (store, crate::metadata::MidenNetworkType::from(network_type)));
         // Fail closed before anything else: the Postgres backend must never fall
         // back to per-process coordination (AlwaysLeader + in-memory sessions),
         // which would let every replica run canonicalization and split auth
@@ -847,6 +852,8 @@ impl ServerBuilder {
             leader,
             stats_leader,
             release_sweep_leader,
+            #[cfg(feature = "postgres")]
+            account_recovery,
             startup_info,
             cors_layer: self.cors_layer,
             rate_limit_config: Some(rate_limit_config),

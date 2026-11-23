@@ -72,6 +72,8 @@ pub struct CoordinationHandles {
     pub stats_leader: Arc<dyn LeaderElector>,
     /// Single-owner lease for the chain-driven release sweep (issue #434).
     pub release_sweep_leader: Arc<dyn LeaderElector>,
+    #[cfg(feature = "postgres")]
+    pub(crate) account_recovery: Option<Arc<crate::storage::postgres::recovery::RecoveryStore>>,
     /// Account-scoped leases that fence Guardian executions (issue #254).
     pub execution_leases: Arc<dyn ExecutionLeases>,
     /// Shared publication store for the `/dashboard/stats` aggregate.
@@ -114,6 +116,8 @@ impl CoordinationHandles {
                 RELEASE_SWEEP_LEASE,
                 "single-process",
             )),
+            #[cfg(feature = "postgres")]
+            account_recovery: None,
             execution_leases: Arc::new(InMemoryExecutionLeases::new()),
             stats_store: Arc::new(InMemoryStatsStore::new()),
             block_watch_store: Arc::new(InMemoryBlockWatchStore::new()),
@@ -158,7 +162,14 @@ impl CoordinationHandles {
             release_sweep_leader: Arc::new(PgLeaseElector::new(
                 pool.clone(),
                 RELEASE_SWEEP_LEASE,
-                holder_id,
+                holder_id.clone(),
+            )),
+            account_recovery: Some(Arc::new(
+                crate::storage::postgres::recovery::RecoveryStore::new(
+                    pool.clone(),
+                    cipher.clone(),
+                    holder_id,
+                ),
             )),
             execution_leases: Arc::new(PgExecutionLeases::new(pool.clone())),
             stats_store: Arc::new(PgStatsStore::new(pool.clone(), cipher)),

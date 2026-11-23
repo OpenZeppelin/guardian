@@ -17,7 +17,7 @@ boundary: the Miden client sends the genesis commitment with every request,
 so a version mismatch surfaces as a gRPC rejection when connecting or
 syncing, not as silent corruption. Point the client at a node running the
 line this build pins. Node 0.18 is the exception: it serves 0.17 clients as
-well, so from Guardian 0.19.0-rc.2 the server and the Rust SDK (Miden 0.18)
+well, so from Guardian 0.19.0 the server and the Rust SDK (Miden 0.18)
 and the TypeScript SDK (web SDK 0.17.8) all point at a node on 0.18. The
 [compatibility matrix](./MIDEN_COMPATIBILITY.md#support-matrix) lists that
 line and the public networks running it; a local `miden-node` from that
@@ -698,7 +698,7 @@ is older and the chain cannot be read to decide, the request fails with
 
 The `SwitchGuardian` transaction was submitted and the client already
 points at the new Guardian, but registering there failed. With SDKs
-0.18.3 and earlier against a Guardian 0.19.0-rc.1 or later, the cause is
+0.18.3 and earlier against a Guardian 0.19.0 or later, the cause is
 almost always `state_not_on_chain`: those SDKs register right after
 submitting the switch, before the transaction lands, and do not retry.
 The newer SDKs wait for the chain before registering, so they rarely hit
@@ -828,7 +828,7 @@ once come back synchronously and create nothing.
   changed the serialization. A proposal created by an SDK on a different `miden-client` than the
   server may not decode, or may decode to a different transaction, which execution refuses
   before proving. Create the proposal with an SDK whose `miden-client` writes the layout the
-  server reads, or execute the proposal from an SDK. From 0.19.0-rc.2 the Rust SDK and the
+  server reads, or execute the proposal from an SDK. From 0.19.0 the Rust SDK and the
   server are on Miden 0.18 and the TypeScript SDK on 0.17; the two layouts differ only for a
   public foreign account declaration, which a custom proposal can carry, so create such a
   proposal with the Rust SDK or execute it from an SDK (see
