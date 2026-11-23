@@ -13,7 +13,7 @@ crates/server/src/network/miden/execution/attempt.rs classify_submission_error 7
 crates/server/src/network/miden/execution/attempt.rs send_transaction cc30d3054c35b15b
 crates/server/src/network/miden/execution/attempt.rs send_batch 10fc125d6904219d
 crates/server/src/network/miden/execution/attempt.rs of_error c8a9fe4f63f3e84f
-crates/server/src/network/miden/execution/batch.rs send_built 4ceaaf5efa536be8
+crates/server/src/network/miden/execution/batch.rs send_built 00b5201f347e5c04
 crates/server/src/network/miden/execution/batch.rs send_alone f9685c5c8d5605b6
 crates/shared/src/execution.rs ends_proposal eda192d5bc234edd
 crates/server/src/coordination/execution_leases.rs attempt 7c6506df2503b815

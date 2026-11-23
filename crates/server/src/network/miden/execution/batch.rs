@@ -30,7 +30,8 @@
 //!
 //! - A transaction without the time to wait for a batch, a group that cannot become a batch (one
 //!   member, no chain view, a batch that does not assemble, prove or finish in its members' time,
-//!   the batch prover busy, a planned stop) is sent one transaction at a time, as without batching.
+//!   the batch prover busy for all of its build time, a planned stop) is sent one transaction at a
+//!   time, as without batching.
 //! - A batch the node refused definitely was never admitted, so none of its transactions is in
 //!   flight. Each is then sent alone and judged on its own answer, whatever the batch was refused
 //!   for, so a transaction the node refuses does not cost the other accounts their proposals.
@@ -224,9 +225,10 @@ pub(crate) struct Batcher {
     shutdown: CancellationToken,
     collecting: Mutex<Collecting>,
     /// One batch proof at a time per process. Proving runs on the blocking pool and the real
-    /// kernel will use every core, so a batch that finds the prover busy is sent one transaction at
-    /// a time instead of queueing behind another while its members' send windows run down. The
-    /// proof itself holds the permit, so a proof its members stopped waiting for still counts.
+    /// kernel will use every core, so a batch that finds the prover busy waits for it, but only
+    /// within its build time; one still waiting when that runs out is sent one transaction at a
+    /// time. The proof itself holds the permit, so a proof its members stopped waiting for still
+    /// counts.
     proving: Arc<tokio::sync::Semaphore>,
     /// Runs on the blocking pool when a batch proof starts, before it proves.
     #[cfg(test)]
@@ -238,7 +240,7 @@ pub(crate) struct Batcher {
 enum NotBuilt {
     #[error("the chain view for the batch could not be read: {0}")]
     ChainView(String),
-    #[error("another batch is being proved")]
+    #[error("another batch was being proved for all of this batch's build time")]
     ProverBusy,
     #[error("the batch does not assemble: {0}")]
     Assembly(String),
@@ -246,7 +248,10 @@ enum NotBuilt {
     Proving(String),
     #[error("the batch was not built within the {0:?} its members could spare")]
     OutOfTime(Duration),
-    #[error("the batch was built, but a member's send window ran out first")]
+    #[error(
+        "the batch was built, but its members no longer have the time for a batch send and their \
+         own send after a refusal"
+    )]
     NoTimeToSend,
     #[error("the process is stopping")]
     Stopping,
@@ -411,13 +416,31 @@ impl Batcher {
 
     /// Builds the batch of `group`, whose members all had at least [`AFTER_WINDOW`] left at `now`,
     /// and sends it. The build may take only what leaves every member the batch send and its own
-    /// send after a refusal. A member too close to its expiration at the tip the batch is built at
-    /// is sent alone as soon as the tip is read, while the others' batch is proved.
+    /// send after a refusal. It first takes the batch prover, then reads the tip, so a member's
+    /// expiration headroom is measured just before the proof rather than before a wait for another
+    /// batch's proof. A member too close to its expiration there is sent alone as soon as the tip
+    /// is read, while the others' batch is proved.
     async fn build_and_send(&self, genesis: &BlockHeader, group: Vec<Waiting>, now: Instant) {
         let spare =
             least_left(&group, now).saturating_sub(MIN_BATCH_SEND.saturating_add(RESEND_RESERVE));
         let build_by = now + spare;
         let started = Instant::now();
+        // A burst of executions fills several batches at once; the next one waits for the prover
+        // rather than giving up on batching while its members still have build time.
+        let permit = match self
+            .within(build_by, spare, self.proving.clone().acquire_owned())
+            .await
+        {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(closed)) => {
+                let reason = NotBuilt::Proving(format!("the batch prover is closed: {closed}"));
+                return self.not_built(reason, group).await;
+            }
+            Err(NotBuilt::OutOfTime(_)) => {
+                return self.not_built(NotBuilt::ProverBusy, group).await;
+            }
+            Err(reason) => return self.not_built(reason, group).await,
+        };
         let tracked: BTreeSet<BlockNumber> = group
             .iter()
             .map(|waiting| waiting.member.proven.ref_block_num())
@@ -457,23 +480,21 @@ impl Batcher {
         }
         tokio::join!(
             self.send_each_alone(short),
-            self.prove_and_send(&view, eligible, build_by, spare, started)
+            self.prove_and_send(&view, eligible, permit, build_by, spare, started)
         );
     }
 
-    /// Assembles and proves the batch of `group` at the chain view's tip by `build_by`, and sends
-    /// it.
+    /// Assembles and proves the batch of `group` at the chain view's tip by `build_by`, holding
+    /// the batch prover's `permit`, and sends it.
     async fn prove_and_send(
         &self,
         view: &ChainView,
         group: Vec<Waiting>,
+        permit: tokio::sync::OwnedSemaphorePermit,
         build_by: Instant,
         spare: Duration,
         started: Instant,
     ) {
-        let Ok(permit) = self.proving.clone().try_acquire_owned() else {
-            return self.not_built(NotBuilt::ProverBusy, group).await;
-        };
         let transactions: Vec<Arc<ProvenTransaction>> = group
             .iter()
             .map(|waiting| waiting.member.proven.clone())
@@ -561,12 +582,15 @@ impl Batcher {
         built_in: Duration,
         proved_in: Duration,
     ) {
-        // The build ended with at least MIN_BATCH_SEND beyond the reserve left (`build_by`), short
-        // of timer slop, so only a send window that ran out regardless leaves nothing to wait.
+        // `build_by` leaves the batch send its time, but a finished proof is still taken when the
+        // task resumes after it (a paused VM, a starved runtime). A batch send with less than its
+        // time would likely end unanswered, and then no member is sent again, so each is sent
+        // alone instead with the time it still has.
         let wait = least_left(&members, Instant::now()).saturating_sub(RESEND_RESERVE);
-        let Some(deadline) = SendWindow::deadline_after_boundary(wait) else {
+        if wait < MIN_BATCH_SEND {
             return self.not_built(NotBuilt::NoTimeToSend, members).await;
-        };
+        }
+        let deadline = wait.min(SendWindow::MAX_SEND);
         let sealed: Vec<SealedTransactionInputs> = members
             .iter()
             .map(|waiting| waiting.member.sealed.clone())
@@ -743,8 +767,9 @@ mod tests {
     use miden_standards::code_builder::CodeBuilder;
 
     use super::{
-        AFTER_WINDOW, BatchSettings, Batcher, MIN_BUILD, MIN_EXPIRATION_HEADROOM_BLOCKS, Member,
-        OpenBatch, RESEND_RESERVE, Waiting,
+        AFTER_WINDOW, BatchSettings, Batcher, MIN_BATCH_SEND, MIN_BUILD,
+        MIN_EXPIRATION_HEADROOM_BLOCKS, Member, OpenBatch, RESEND_RESERVE, Waiting,
+        build_chain_view_from, prove_batch,
     };
     use crate::network::miden::execution::test_node::TestNode;
     use crate::services::execute_proposal::SendWindow;
@@ -1562,13 +1587,13 @@ mod tests {
     }
 
     /// A batch proof outlasting its build's time is not cancelled: its members are sent alone, and
-    /// the proof keeps the prover until it ends, so the next group is sent alone as well rather
-    /// than proved beside it.
+    /// the proof keeps the prover until it ends, so the next group waits for it only through its
+    /// own build time and is then sent alone, never proved beside it.
     #[tokio::test]
     async fn a_batch_proof_its_members_stopped_waiting_for_keeps_the_prover_until_it_ends() {
         let f = fixture(4).await;
         let (mut a, mut b) = (f.member(0).await, f.member(1).await);
-        let (c, d) = (f.member(2).await, f.member(3).await);
+        let (mut c, mut d) = (f.member(2).await, f.member(3).await);
         let expected: BTreeSet<_> = [&a, &b, &c, &d].map(final_commitment).into();
         let window = Duration::from_millis(100);
         let batcher = f.batcher(4, window);
@@ -1587,6 +1612,8 @@ mod tests {
         );
         assert_eq!(held.started(), 1, "their batch proof started and is held");
 
+        let send_by = Instant::now() + window + AFTER_WINDOW + Duration::from_secs(1);
+        (c.send_by, d.send_by) = (send_by, send_by);
         let (third, fourth) = tokio::time::timeout(Duration::from_secs(20), async {
             tokio::join!(batcher.submit(&f.genesis, c), batcher.submit(&f.genesis, d))
         })
@@ -1614,5 +1641,160 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(10), freed)
             .await
             .expect("the prover is free once the held proof ends");
+    }
+
+    /// A burst fills several batches at once. The next batch waits for the prover within its
+    /// build time instead of sending its members alone at once.
+    #[tokio::test]
+    async fn a_batch_finding_the_prover_busy_waits_for_it_within_its_build_time() {
+        let f = fixture(4).await;
+        let (a, b) = (f.member(0).await, f.member(1).await);
+        let (c, d) = (f.member(2).await, f.member(3).await);
+        let expected: BTreeSet<_> = [&a, &b, &c, &d].map(final_commitment).into();
+        let batcher = f.batcher(4, Duration::from_millis(100));
+        let held = hold_proofs(&batcher);
+        let (first, first_answers) = open_batch(&f.genesis, vec![a, b]);
+        let (second, second_answers) = open_batch(&f.genesis, vec![c, d]);
+        let one = tokio::spawn({
+            let batcher = batcher.clone();
+            async move { batcher.send(first).await }
+        });
+        let proving = async {
+            while held.started() == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(8), proving)
+            .await
+            .expect("the first batch proof started");
+        let two = tokio::spawn({
+            let batcher = batcher.clone();
+            async move { batcher.send(second).await }
+        });
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            f.node.single_sends().is_empty(),
+            "the second batch waits for the prover rather than sending alone"
+        );
+        assert_eq!(held.started(), 1, "and does not prove beside the first");
+
+        held.release();
+        one.await.unwrap();
+        two.await.unwrap();
+        for answer in first_answers.into_iter().chain(second_answers) {
+            assert_eq!(answer.await.unwrap(), SubmissionOutcome::Accepted);
+        }
+        assert_eq!(held.started(), 2);
+        assert_eq!(
+            f.rpc.submitted_batch_sealed_inputs().len(),
+            2,
+            "two batches"
+        );
+        assert!(f.node.single_sends().is_empty());
+        let landed: BTreeSet<_> = f.commit_block().await.into_iter().collect();
+        assert_eq!(landed, expected);
+    }
+
+    /// A finished proof taken after the task resumed late (a paused VM, a starved runtime) leaves
+    /// the batch send less than its time. Each member is then sent alone with the time it still
+    /// has, rather than in a batch send likely to end unanswered and never be sent again.
+    #[tokio::test]
+    async fn a_batch_built_too_late_for_its_send_sends_each_member_alone() {
+        let f = fixture(2).await;
+        let (mut a, mut b) = (f.member(0).await, f.member(1).await);
+        let expected: BTreeSet<_> = [&a, &b].map(final_commitment).into();
+        let tracked: BTreeSet<BlockNumber> =
+            [a.proven.ref_block_num(), b.proven.ref_block_num()].into();
+        let view = build_chain_view_from(f.rpc.as_ref(), &f.genesis, &tracked)
+            .await
+            .unwrap();
+        let (proposed, proven) = prove_batch(
+            vec![a.proven.clone(), b.proven.clone()],
+            view.reference_header().clone(),
+            view.blockchain().clone(),
+        )
+        .unwrap();
+        // A second short of the batch send's time beyond the resend reserve.
+        let send_by = Instant::now() + RESEND_RESERVE + MIN_BATCH_SEND - Duration::from_secs(1);
+        (a.send_by, b.send_by) = (send_by, send_by);
+        let batcher = f.batcher(4, Duration::from_millis(100));
+        let (open, answers) = open_batch(&f.genesis, vec![a, b]);
+        batcher
+            .send_built(
+                proposed,
+                proven,
+                open.waiting,
+                Duration::ZERO,
+                Duration::ZERO,
+            )
+            .await;
+        for answer in answers {
+            assert_eq!(answer.await.unwrap(), SubmissionOutcome::Accepted);
+        }
+        assert!(
+            f.rpc.submitted_batch_sealed_inputs().is_empty(),
+            "no batch was sent"
+        );
+        assert_eq!(f.node.single_sends().len(), 2, "each was sent alone");
+        let landed: BTreeSet<_> = f.commit_block().await.into_iter().collect();
+        assert_eq!(landed, expected);
+    }
+
+    /// A batch waiting for the prover measures its members' expiration headroom once it has the
+    /// prover, at the tip it is then built at, not at a tip read before the wait: a member that
+    /// lost its headroom while the chain moved on is sent alone.
+    #[tokio::test]
+    async fn expiration_headroom_is_measured_after_waiting_for_the_prover() {
+        let f = fixture(5).await;
+        let (a, b) = (f.member(0).await, f.member(1).await);
+        let (c, d) = (f.member(2).await, f.member(3).await);
+        let tip = |blocks: u32| BlockNumber::from(3 + blocks);
+        // Enough headroom at the tip the members were proved at, not two blocks later.
+        let near = f
+            .member_expiring_in(4, (MIN_EXPIRATION_HEADROOM_BLOCKS + 1) as u16)
+            .await;
+        assert!(near.has_headroom_at(tip(0)) && !near.has_headroom_at(tip(2)));
+        let expected: BTreeSet<_> = [&a, &b, &c, &d, &near].map(final_commitment).into();
+        let batcher = f.batcher(4, Duration::from_millis(100));
+        let held = hold_proofs(&batcher);
+        let (first, first_answers) = open_batch(&f.genesis, vec![a, b]);
+        let (second, second_answers) = open_batch(&f.genesis, vec![c, d, near]);
+        let one = tokio::spawn({
+            let batcher = batcher.clone();
+            async move { batcher.send(first).await }
+        });
+        let proving = async {
+            while held.started() == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(8), proving)
+            .await
+            .expect("the first batch proof started");
+        let two = tokio::spawn({
+            let batcher = batcher.clone();
+            async move { batcher.send(second).await }
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        // The chain moves on while the second batch waits for the prover.
+        f.rpc.prove_block();
+        f.rpc.prove_block();
+
+        held.release();
+        one.await.unwrap();
+        two.await.unwrap();
+        for answer in first_answers.into_iter().chain(second_answers) {
+            assert_eq!(answer.await.unwrap(), SubmissionOutcome::Accepted);
+        }
+        let batches = f.rpc.submitted_batch_sealed_inputs();
+        assert_eq!(batches.len(), 2);
+        assert_eq!(
+            batches[1].len(),
+            2,
+            "the member short of headroom left the batch"
+        );
+        assert_eq!(f.node.single_sends().len(), 1, "and was sent alone");
+        let landed: BTreeSet<_> = f.commit_block().await.into_iter().collect();
+        assert_eq!(landed, expected);
     }
 }

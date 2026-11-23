@@ -75,9 +75,11 @@ pub enum BatchOutcome {
     /// The node refused the batch, whatever for; each transaction was then sent alone.
     Refused,
     /// No batch was sent (no chain view, a batch that did not assemble or prove in its members'
-    /// time, a planned stop); each transaction was sent alone.
+    /// time, a batch built too late for its send); each transaction was sent alone. A planned stop
+    /// is not counted.
     NotBuilt,
-    /// Another batch was being proved; each transaction was sent alone.
+    /// Another batch was being proved for all of this batch's build time; each transaction was sent
+    /// alone.
     ProverBusy,
 }
 

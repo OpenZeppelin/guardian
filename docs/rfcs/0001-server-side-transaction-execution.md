@@ -614,10 +614,12 @@ The batch is a delivery mechanism; what this RFC fixes per execution does not ch
   consumes an unauthenticated note. Guardian holds one execution per account, so every account
   appears at most once in a batch.
 - **Fallback.** A group of one, a chain view that cannot be read, a batch that does not assemble,
-  prove or finish within its members' time, a batch proof already running in the process, or a
-  planned stop sends every member alone, as without batching. A stop sends the transactions still
-  collecting, or whose batch is still being built, alone at once, since a stop gives sends a few
-  seconds that a build could use up; a batch already sent is left to its answer.
+  prove or finish within its members' time, a batch proof still running in the process when the
+  build time runs out (a batch waits for the prover within its build time), a build that ends
+  without the batch send's time left (a task resumed late), or a planned stop sends every member
+  alone, as without batching. A stop sends the transactions still collecting, or whose batch is
+  still being built, alone at once, since a stop gives sends a few seconds that a build could use
+  up; a batch already sent is left to its answer.
 
 Two departures from the rest of this RFC: the batch proof is computed in the Guardian process (no
 remote batch prover client exists upstream yet; `miden-client` 0.18 has only

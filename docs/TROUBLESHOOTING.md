@@ -873,7 +873,7 @@ once come back synchronously and create nothing.
   so lower it. "Guardian did not send these transactions as a batch; sending each alone" names why
   no batch was sent: the chain view, assembly or proving failed, the build ran past the time that
   leaves its transactions the batch send and their own send after a refusal, or another batch was
-  being proved. A planned stop sends collecting and building batches' transactions alone and logs
+  being proved for all of its build time (a batch waits for the prover within that time). A planned stop sends collecting and building batches' transactions alone and logs
   "the process is stopping" at info; it is not counted.
   `guardian_execution_batches_total` counts each group by outcome. A transaction that consumes an
   unauthenticated note, expires within 8 blocks of the tip, or reaches the batcher with less than
