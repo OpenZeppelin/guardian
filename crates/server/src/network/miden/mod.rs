@@ -1,6 +1,7 @@
 pub mod account_inspector;
 pub mod block_feed;
 pub mod execution;
+pub mod module_views;
 
 use crate::metadata::auth::{Auth, Credentials};
 use crate::network::miden::account_inspector::{
@@ -32,6 +33,87 @@ use miden_standards::account::auth::AuthGuardedMultisig;
 /// Miden network client for fetching on-chain account data
 pub struct MidenNetworkClient {
     client: MidenRpcClient,
+    /// The chain's fee faucet and the largest fee a transaction can owe, as last read by
+    /// [`NetworkClient::load_fee_faucet`].
+    fee: FeeCache,
+}
+
+/// How long a failed chain fee read waits before the next request tries again.
+const CHAIN_FEE_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The chain fee as last read, refreshed by one request at a time. Requests read on a
+/// transaction's path before the module evaluation budget starts, so a refresh in flight or one
+/// that just failed never makes another request wait on the network while a value is known.
+#[derive(Default)]
+struct FeeCache {
+    /// The last successful read and when it was made.
+    value: std::sync::RwLock<Option<(module_views::ChainFee, std::time::Instant)>>,
+    /// No read is tried before this, after one failed.
+    retry_at: std::sync::Mutex<Option<std::time::Instant>>,
+    /// Held by the request refreshing.
+    refreshing: tokio::sync::Mutex<()>,
+}
+
+/// What a request does about the chain fee.
+enum FeeRead {
+    /// The cached value is current, or a refresh is in flight or cooling down after a failure
+    /// and a value is known: use it.
+    Cached,
+    /// Nothing is known and the last read failed moments ago.
+    CoolingDown,
+    /// This request reads it.
+    Refresh,
+}
+
+impl FeeCache {
+    fn get(&self) -> Option<module_views::ChainFee> {
+        self.value
+            .read()
+            .ok()
+            .and_then(|fee| fee.as_ref().map(|(fee, _)| *fee))
+    }
+
+    fn known(&self) -> Option<std::time::Duration> {
+        self.value
+            .read()
+            .ok()
+            .and_then(|fee| fee.as_ref().map(|(_, at)| at.elapsed()))
+    }
+
+    fn cooling_down(&self) -> bool {
+        self.retry_at
+            .lock()
+            .ok()
+            .and_then(|retry_at| *retry_at)
+            .is_some_and(|retry_at| std::time::Instant::now() < retry_at)
+    }
+
+    fn plan(&self) -> FeeRead {
+        let age = self.known();
+        if age.is_some_and(|age| age < module_views::CHAIN_FEE_TTL) {
+            return FeeRead::Cached;
+        }
+        match (age.is_some(), self.cooling_down()) {
+            (true, true) => FeeRead::Cached,
+            (false, true) => FeeRead::CoolingDown,
+            (_, false) => FeeRead::Refresh,
+        }
+    }
+
+    fn store(&self, fee: module_views::ChainFee) {
+        if let Ok(mut value) = self.value.write() {
+            *value = Some((fee, std::time::Instant::now()));
+        }
+        if let Ok(mut retry_at) = self.retry_at.lock() {
+            *retry_at = None;
+        }
+    }
+
+    fn failed(&self) {
+        if let Ok(mut retry_at) = self.retry_at.lock() {
+            *retry_at = Some(std::time::Instant::now() + CHAIN_FEE_RETRY);
+        }
+    }
 }
 
 impl MidenNetworkClient {
@@ -55,7 +137,10 @@ impl MidenNetworkClient {
             )
             .increment(1);
         }));
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            fee: FeeCache::default(),
+        })
     }
 
     /// Builds a client without contacting the network or loading TLS roots, for
@@ -67,7 +152,10 @@ impl MidenNetworkClient {
     pub(crate) fn lazy_for_test(network: NetworkType) -> Self {
         let client = MidenRpcClient::lazy_unconnected(network.rpc_endpoint())
             .expect("lazy client construction is infallible for a valid endpoint");
-        Self { client }
+        Self {
+            client,
+            fee: FeeCache::default(),
+        }
     }
 
     /// True when an on-chain commitment is the empty-word digest the Miden
@@ -292,6 +380,11 @@ impl MidenNetworkClient {
         Ok(account)
     }
 
+    /// The chain fee [`NetworkClient::load_fee_faucet`] last loaded, if any.
+    fn chain_fee(&self) -> Option<module_views::ChainFee> {
+        self.fee.get()
+    }
+
     fn ensure_prev_commitment(account: &Account, prev_commitment: &str) -> Result<(), String> {
         let current_commitment = account.to_commitment();
         let current_commitment_hex = format!("0x{}", hex::encode(current_commitment.as_bytes()));
@@ -314,6 +407,54 @@ impl MidenNetworkClient {
         prev_account: Result<Account, String>,
         tx_summary: &TransactionSummary,
     ) -> Result<AppliedState, String> {
+        Ok(Self::applied_state(&Self::applied_account(
+            prev_account,
+            tx_summary,
+        )?))
+    }
+
+    fn applied_state(account: &Account) -> AppliedState {
+        let inspector = MidenAccountInspector::new(account);
+        AppliedState {
+            commitment: format!("0x{}", hex::encode(account.to_commitment().as_bytes())),
+            nonce: Some(account.nonce().as_canonical_u64()),
+            cosigners: inspector.extract_chain_cosigners(),
+            guardian_commitment: inspector.extract_guardian_public_key(),
+            state_json: account.to_json(),
+        }
+    }
+
+    /// Verifies (when `prev_commitment` is given) and applies `delta_payload` to `account`, with
+    /// what policy modules receive about it built from the same decode.
+    fn apply_to_account_with_module_inputs(
+        &self,
+        prev_commitment: Option<&str>,
+        account: Account,
+        delta_payload: &serde_json::Value,
+    ) -> Result<(AppliedState, crate::network::ModuleInputs), String> {
+        let tx_summary = TransactionSummary::from_json(delta_payload)?;
+        if let Some(prev_commitment) = prev_commitment {
+            Self::ensure_prev_commitment(&account, prev_commitment)?;
+        }
+        let before = module_views::module_account_of(&account);
+        let transaction = module_views::module_transaction_of(
+            &tx_summary,
+            account.nonce().as_canonical_u64(),
+            self.chain_fee(),
+        );
+        let applied = Self::applied_account(Ok(account), &tx_summary)?;
+        let inputs = crate::network::ModuleInputs {
+            before,
+            after: module_views::module_account_of(&applied),
+            transaction,
+        };
+        Ok((Self::applied_state(&applied), inputs))
+    }
+
+    fn applied_account(
+        prev_account: Result<Account, String>,
+        tx_summary: &TransactionSummary,
+    ) -> Result<Account, String> {
         let account_delta = tx_summary.account_delta();
 
         // An undecodable prior state skips the ID check: a creation delta then builds the
@@ -388,15 +529,7 @@ impl MidenNetworkClient {
             )?;
             account
         };
-
-        let inspector = MidenAccountInspector::new(&account);
-        Ok(AppliedState {
-            commitment: format!("0x{}", hex::encode(account.to_commitment().as_bytes())),
-            nonce: Some(account.nonce().as_canonical_u64()),
-            cosigners: inspector.extract_chain_cosigners(),
-            guardian_commitment: inspector.extract_guardian_public_key(),
-            state_json: account.to_json(),
-        })
+        Ok(account)
     }
 }
 
@@ -550,6 +683,25 @@ impl NetworkClient for MidenNetworkClient {
         let tx_summary = TransactionSummary::from_json(delta_payload)?;
         Self::ensure_prev_commitment(&prev_account, prev_commitment)?;
         Self::apply_summary(Ok(prev_account), &tx_summary)
+    }
+
+    fn apply_delta_with_module_inputs(
+        &self,
+        prev_commitment: Option<&str>,
+        prev_state_json: &serde_json::Value,
+        delta_payload: &serde_json::Value,
+    ) -> Result<(AppliedState, crate::network::ModuleInputs), String> {
+        let account = Account::from_json(prev_state_json)?;
+        self.apply_to_account_with_module_inputs(prev_commitment, account, delta_payload)
+    }
+
+    fn verify_and_apply_delta_to_account_with_module_inputs(
+        &self,
+        prev_commitment: &str,
+        prev_account: Account,
+        delta_payload: &serde_json::Value,
+    ) -> Result<(AppliedState, crate::network::ModuleInputs), String> {
+        self.apply_to_account_with_module_inputs(Some(prev_commitment), prev_account, delta_payload)
     }
 
     fn merge_deltas(
@@ -914,6 +1066,95 @@ impl NetworkClient for MidenNetworkClient {
         Ok(Some(MidenAccountInspector::new(&account).auth_binding()))
     }
 
+    fn module_account_view(
+        &self,
+        state_json: &serde_json::Value,
+    ) -> Result<crate::network::ModuleAccount, String> {
+        module_views::module_account_of(&Account::from_json(state_json)?)
+    }
+
+    fn module_account_state(
+        &self,
+        state_json: &serde_json::Value,
+    ) -> Result<guardian_module_sdk::MidenAccountState, String> {
+        module_views::account_state(state_json)
+    }
+
+    fn module_account_inputs(
+        &self,
+        state_json: &serde_json::Value,
+    ) -> crate::network::ModuleAccountInputs {
+        match Account::from_json(state_json) {
+            Ok(account) => crate::network::ModuleAccountInputs {
+                view: module_views::module_account_of(&account),
+                state: module_views::account_state_of(&account),
+            },
+            Err(error) => crate::network::ModuleAccountInputs {
+                view: Err(error.clone()),
+                state: Err(error),
+            },
+        }
+    }
+
+    fn module_transaction(
+        &self,
+        tx_summary: &serde_json::Value,
+        initial_nonce: u64,
+    ) -> Result<crate::network::ModuleTransaction, String> {
+        module_views::module_transaction(tx_summary, initial_nonce, self.chain_fee())
+    }
+
+    async fn load_fee_faucet(&self) -> Result<(), String> {
+        let unknown = || "the chain's fee asset is unknown; the last read failed".to_string();
+        let _refreshing = match self.fee.plan() {
+            FeeRead::Cached => return Ok(()),
+            FeeRead::CoolingDown => return Err(unknown()),
+            FeeRead::Refresh if self.fee.known().is_some() => {
+                match self.fee.refreshing.try_lock() {
+                    Ok(guard) => guard,
+                    Err(_) => return Ok(()),
+                }
+            }
+            FeeRead::Refresh => self.fee.refreshing.lock().await,
+        };
+        match self.fee.plan() {
+            FeeRead::Cached => return Ok(()),
+            FeeRead::CoolingDown => return Err(unknown()),
+            FeeRead::Refresh => {}
+        }
+        let read = async {
+            let chain = self
+                .client
+                .get_chain_fee(RpcReadMode::Configured)
+                .await
+                .map_err(|e| format!("cannot read the chain's fee asset: {e}"))?;
+            let word = Word::try_from(chain.asset_id.as_str())
+                .map_err(|e| format!("fee asset id is not a word: {e}"))?;
+            let faucet = AssetId::try_from(word)
+                .map_err(|e| format!("fee asset id does not decode: {e}"))?
+                .faucet_id();
+            Ok::<_, String>(module_views::ChainFee::new(
+                faucet,
+                chain.verification_base_fee,
+            ))
+        };
+        match read.await {
+            Ok(fee) => {
+                self.fee.store(fee);
+                Ok(())
+            }
+            Err(error) => {
+                self.fee.failed();
+                if self.fee.known().is_some() {
+                    tracing::warn!(%error, "Chain fee not refreshed; keeping the last value read");
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
     async fn should_update_auth(
         &self,
         state_json: &serde_json::Value,
@@ -1041,6 +1282,69 @@ mod tests {
     use miden_protocol::utils::serde::Serializable;
 
     use super::*;
+
+    fn fee() -> module_views::ChainFee {
+        module_views::ChainFee::new(
+            AccountId::from_hex(&history_account_id()).expect("account id"),
+            100,
+        )
+    }
+
+    #[test]
+    fn the_fee_cache_refreshes_once_stale_and_waits_out_a_failure() {
+        let cache = FeeCache::default();
+        assert!(matches!(cache.plan(), FeeRead::Refresh));
+        cache.failed();
+        assert!(
+            matches!(cache.plan(), FeeRead::CoolingDown),
+            "nothing known and a read just failed: no request tries again yet"
+        );
+        cache.store(fee());
+        assert!(matches!(cache.plan(), FeeRead::Cached));
+        if let Ok(mut value) = cache.value.write() {
+            *value = Some((
+                fee(),
+                std::time::Instant::now() - module_views::CHAIN_FEE_TTL,
+            ));
+        }
+        assert!(matches!(cache.plan(), FeeRead::Refresh));
+        cache.failed();
+        assert!(
+            matches!(cache.plan(), FeeRead::Cached),
+            "a stale value is used while a failed refresh cools down"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_fee_read_is_not_tried_again_by_the_next_request() {
+        let (client, _) = history_client(7, Vec::new()).await;
+        let first = client.load_fee_faucet().await.unwrap_err();
+        assert!(
+            first.contains("cannot read the chain's fee asset"),
+            "{first}"
+        );
+        let second = client.load_fee_faucet().await.unwrap_err();
+        assert!(
+            second.contains("the last read failed"),
+            "the second request does not call the node: {second}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_does_not_wait_for_a_refresh_in_flight_when_a_value_is_known() {
+        let (client, _) = history_client(7, Vec::new()).await;
+        if let Ok(mut value) = client.fee.value.write() {
+            *value = Some((
+                fee(),
+                std::time::Instant::now() - module_views::CHAIN_FEE_TTL,
+            ));
+        }
+        let _refreshing = client.fee.refreshing.lock().await;
+        let started = std::time::Instant::now();
+        client.load_fee_faucet().await.unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+        assert!(client.chain_fee().is_some());
+    }
 
     #[test]
     fn test_network_type_rpc_endpoint() {
@@ -1545,7 +1849,13 @@ mod tests {
         let client = MidenRpcClient::connect(endpoint)
             .await
             .expect("the scripted node accepts connections");
-        (MidenNetworkClient { client }, requests)
+        (
+            MidenNetworkClient {
+                client,
+                fee: FeeCache::default(),
+            },
+            requests,
+        )
     }
 
     fn history_account_id() -> String {
@@ -2269,6 +2579,58 @@ mod tests {
     /// `AppliedState` instead of decoding the stored blob again (issue
     /// #328), so they must equal what a fresh decode of that blob reads.
     #[tokio::test]
+    async fn module_views_from_the_apply_decode_match_separate_decodes() {
+        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
+        let account_json: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON).unwrap();
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::DELTA_1_JSON).unwrap();
+        let delta_payload = &delta_fixture["delta_payload"];
+        let prev_commitment = format!(
+            "0x{}",
+            hex::encode(
+                Account::from_json(&account_json)
+                    .unwrap()
+                    .to_commitment()
+                    .as_bytes()
+            )
+        );
+
+        let (applied, views) = client
+            .apply_delta_with_module_inputs(Some(&prev_commitment), &account_json, delta_payload)
+            .unwrap();
+        assert_eq!(
+            applied,
+            client
+                .verify_and_apply_delta(&prev_commitment, &account_json, delta_payload)
+                .unwrap()
+        );
+        assert!(views.before.is_ok());
+        assert_eq!(views.before, client.module_account_view(&account_json));
+        assert_eq!(
+            views.transaction,
+            client.module_transaction(delta_payload, views.before.as_ref().unwrap().nonce),
+            "the projection from the apply decode is the one a separate decode builds"
+        );
+        // The fixture delta adds an approver key without its scheme entry, which the standard
+        // multisig always writes, so both paths must refuse the resulting view alike.
+        assert_eq!(views.after, client.module_account_view(&applied.state_json));
+        let (unverified, _) = client
+            .apply_delta_with_module_inputs(None, &account_json, delta_payload)
+            .unwrap();
+        assert_eq!(unverified, applied);
+        assert!(
+            client
+                .apply_delta_with_module_inputs(
+                    Some("0xnot_the_base"),
+                    &account_json,
+                    delta_payload
+                )
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn verify_and_apply_delta_matches_separate_passes() {
         let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
         let account_json: serde_json::Value =
@@ -2460,6 +2822,16 @@ mod tests {
                 .verify_and_apply_delta(&stored_commitment, &stored_json, payload)
                 .map(|_| ()),
             client.verify_delta(&stored_commitment, &stored_json, payload),
+            client
+                .apply_delta_with_module_inputs(Some(&stored_commitment), &stored_json, payload)
+                .map(|_| ()),
+            client
+                .verify_and_apply_delta_to_account_with_module_inputs(
+                    &stored_commitment,
+                    stored.clone(),
+                    payload,
+                )
+                .map(|_| ()),
             client.apply_delta(&stored_json, payload).map(|_| ()),
         ] {
             let error = refused.expect_err("another account's delta must be refused");
