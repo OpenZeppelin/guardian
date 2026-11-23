@@ -11,7 +11,7 @@ use crate::config::execution::{ExecutionConfig, ExecutionUnavailable};
 use crate::coordination::{ExecutionLeases, InMemoryExecutionLeases, release_quietly};
 use crate::delta_object::DeltaStatus;
 use crate::error::{GuardianError, LocalExecutionReason, Result};
-use crate::metadata::auth::Credentials;
+use crate::metadata::auth::{Credentials, RequestAuthFormat};
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::execution_status::ExecutionEnvelope;
 use crate::services::resolve_account_allowing_session;
@@ -346,6 +346,8 @@ pub async fn request_execution(
         nonce: proposal.nonce,
         base_commitment: proposal.prev_commitment,
         scheme: resolved.metadata.auth.guardian_scheme(),
+        requester: resolved.signer_commitment.clone(),
+        requester_session: credentials.auth_format() == RequestAuthFormat::Session,
         fence,
         lease,
         elector,

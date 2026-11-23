@@ -412,6 +412,16 @@ pub struct DeltaObject {
 }
 
 impl DeltaObject {
+    /// The delta as a client may see it: the policy module evaluation trace
+    /// (`metadata.modules`) is for operators only, since it names instances an
+    /// account's cosigners may not be told about.
+    pub fn without_module_trace(mut self) -> Self {
+        if let Some(metadata) = self.metadata.as_mut() {
+            metadata.modules = None;
+        }
+        self
+    }
+
     /// Return the multisig proposal type tag carried by this delta.
     ///
     /// Reads from the typed `metadata.proposal` block when present.
@@ -666,6 +676,7 @@ mod tests {
                     proposal_type: "p2id".to_string(),
                     ..ProposalMetadata::default()
                 }),
+                modules: None,
             }),
             ..Default::default()
         };
@@ -710,6 +721,7 @@ mod tests {
                     proposal_type: "p2id".to_string(),
                     ..ProposalMetadata::default()
                 }),
+                modules: None,
             }),
             delta_payload: serde_json::json!({
                 "metadata": { "proposal_type": "add_signer" }
@@ -872,6 +884,36 @@ mod tests {
         let delta: DeltaObject = serde_json::from_str(json).unwrap();
         assert!(delta.status.is_candidate());
         assert_eq!(delta.status.timestamp(), "");
+    }
+
+    #[test]
+    fn clients_get_deltas_without_the_module_trace() {
+        let delta: DeltaObject = serde_json::from_value(serde_json::json!({
+            "account_id": "0x123",
+            "nonce": 1,
+            "prev_commitment": "0xabc",
+            "new_commitment": "0xdef",
+            "delta_payload": {},
+            "ack_sig": null,
+            "metadata": {
+                "category": "asset_transfer",
+                "proposal": { "proposal_type": "p2id" },
+                "modules": {
+                    "catalog_hash": "0xc1",
+                    "params_version": 3,
+                    "account_params_version": 1,
+                    "failed_open": [{ "module_id": "screening", "layer": "global", "failure": "timeout" }],
+                    "signed_at": "2026-11-09T00:00:00Z",
+                    "submitter": "0xs1",
+                    "proposer": ""
+                }
+            }
+        }))
+        .unwrap();
+        assert!(delta.metadata.as_ref().unwrap().modules.is_some());
+        let shown = serde_json::to_value(delta.without_module_trace()).unwrap();
+        assert!(shown["metadata"].get("modules").is_none(), "{shown}");
+        assert_eq!(shown["metadata"]["proposal"]["proposal_type"], "p2id");
     }
 
     #[test]

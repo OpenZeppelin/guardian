@@ -159,6 +159,19 @@ pub const DASHBOARD_STATS_REFRESH_FAILURES_TOTAL: &str =
 pub const DASHBOARD_STATS_REFRESH_DURATION_SECONDS: &str =
     "guardian_dashboard_stats_refresh_duration_seconds";
 
+// --- Policy modules -------------------------------------------------------
+
+pub const MODULE_EVALUATE_DURATION_SECONDS: &str = "guardian_module_evaluate_duration_seconds";
+pub const MODULE_FAIL_OPEN_TOTAL: &str = "guardian_module_fail_open_total";
+pub const MODULE_REQUEST_REFUSED_TOTAL: &str = "guardian_module_request_refused_total";
+pub const MODULE_UP: &str = "guardian_module_up";
+pub const MODULE_CIRCUIT_OPEN: &str = "guardian_module_circuit_open";
+pub const MODULE_ENABLED: &str = "guardian_module_enabled";
+pub const MODULE_CONFIG_DRIFT: &str = "guardian_module_config_drift";
+pub const MODULE_CATALOG_INFO: &str = "guardian_module_catalog_info";
+pub const MODULE_OVER_BUDGET_ACCOUNTS: &str = "guardian_module_over_budget_accounts";
+pub const MODULE_ORPHANED_ASSIGNMENTS: &str = "guardian_module_orphaned_assignments";
+
 // --- Build identity ------------------------------------------------------
 
 pub const BUILD_INFO: &str = "guardian_build_info";
@@ -183,6 +196,10 @@ pub const LABEL_PROFILE: &str = "profile";
 pub const LABEL_PHASE: &str = "phase";
 pub const LABEL_CREDENTIAL: &str = "credential";
 pub const LABEL_REASON: &str = "reason";
+/// A policy module instance id; bounded by the operator's catalog.
+pub const LABEL_MODULE: &str = "module";
+/// The loaded module catalog's hash; one value per deploy.
+pub const LABEL_CATALOG_HASH: &str = "catalog_hash";
 
 /// The closed value set for `LABEL_TRANSPORT`: the request transports,
 /// and the block transports of block watch (`stream`, `poll`).
@@ -211,6 +228,8 @@ pub const LABEL_ALLOWLIST: &[&str] = &[
     LABEL_PHASE,
     LABEL_CREDENTIAL,
     LABEL_REASON,
+    LABEL_MODULE,
+    LABEL_CATALOG_HASH,
 ];
 
 /// Metric type, mirroring the Prometheus instrument kinds in use.
@@ -742,6 +761,66 @@ pub const REGISTRY: &[MetricDef] = &[
         help: "Wall-clock duration of one /dashboard/stats aggregate refresh \
                (metadata walk, batched state reads, vault decoding).",
     },
+    MetricDef {
+        name: MODULE_EVALUATE_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[LABEL_MODULE, LABEL_OUTCOME],
+        help: "Policy module evaluations in seconds, by instance and outcome (allow, deny, error, skipped).",
+    },
+    MetricDef {
+        name: MODULE_FAIL_OPEN_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_MODULE],
+        help: "Policy module evaluations skipped under on_error = allow, by instance; counted at the skip, dry-run checks included, whether or not the request is approved.",
+    },
+    MetricDef {
+        name: MODULE_REQUEST_REFUSED_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_MODULE, LABEL_REASON],
+        help: "Requests refused without calling a policy module, whatever its on_error, because the Guardian could not build them (reason unavailable) or they exceed the size cap (reason too_large), by instance.",
+    },
+    MetricDef {
+        name: MODULE_UP,
+        kind: MetricKind::Gauge,
+        labels: &[LABEL_MODULE],
+        help: "1 when the instance's last health probe succeeded, 0 when it failed.",
+    },
+    MetricDef {
+        name: MODULE_CIRCUIT_OPEN,
+        kind: MetricKind::Gauge,
+        labels: &[LABEL_MODULE],
+        help: "1 while the instance's circuit breaker is open on this replica.",
+    },
+    MetricDef {
+        name: MODULE_ENABLED,
+        kind: MetricKind::Gauge,
+        labels: &[LABEL_MODULE],
+        help: "1 when the instance is enabled, 0 when an operator disabled it.",
+    },
+    MetricDef {
+        name: MODULE_CONFIG_DRIFT,
+        kind: MetricKind::Gauge,
+        labels: &[LABEL_MODULE],
+        help: "1 when the catalog's enabled flag or params differ from the stored runtime values.",
+    },
+    MetricDef {
+        name: MODULE_CATALOG_INFO,
+        kind: MetricKind::Gauge,
+        labels: &[LABEL_CATALOG_HASH],
+        help: "The module catalog this replica loaded (constant 1).",
+    },
+    MetricDef {
+        name: MODULE_OVER_BUDGET_ACCOUNTS,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "Accounts whose stored modules could exceed the evaluation budget, found at startup.",
+    },
+    MetricDef {
+        name: MODULE_ORPHANED_ASSIGNMENTS,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "Stored account module rows naming an instance the catalog no longer declares, found at startup.",
+    },
 ];
 
 /// Bound the `route` label to the axum route template. Templates like
@@ -797,6 +876,8 @@ const KNOWN_GRPC_METHODS: &[(&str, &str)] = &[
     ("guardian.Guardian", "CreateSession"),
     ("guardian.Guardian", "RevokeSession"),
     ("guardian.Guardian", "RevokeAllSessions"),
+    ("guardian.Guardian", "GetPolicies"),
+    ("guardian.Guardian", "CheckDeltaProposal"),
     // Served alongside Guardian via tonic-reflection (v1 and v1alpha).
     (
         "grpc.reflection.v1.ServerReflection",
@@ -946,16 +1027,16 @@ mod tests {
     }
 
     /// The CloudWatch export re-lists the metric inventory by hand
-    /// (`infra/observability.tf`); a block watch metric missing there
+    /// (`infra/observability.tf`); a block watch or module metric missing there
     /// would never reach CloudWatch, and its histogram would be exported
     /// with lifetime totals unless it is delta-converted too.
     #[test]
-    fn block_watch_metrics_are_exported_to_cloudwatch() {
+    fn block_watch_and_module_metrics_are_exported_to_cloudwatch() {
         let terraform = include_str!("../../../../infra/observability.tf");
-        for def in REGISTRY
-            .iter()
-            .filter(|def| def.name.starts_with("guardian_block_watch_"))
-        {
+        for def in REGISTRY.iter().filter(|def| {
+            def.name.starts_with("guardian_block_watch_")
+                || def.name.starts_with("guardian_module_")
+        }) {
             assert!(
                 terraform.contains(&format!("\"^{}$\"", def.name)),
                 "{} is not selected by an ADOT metric declaration",

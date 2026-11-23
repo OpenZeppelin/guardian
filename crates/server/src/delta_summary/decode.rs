@@ -10,10 +10,15 @@ use super::ProposalMetadata;
 /// Decode a [`TransactionSummary`] from a persisted `delta_payload`.
 ///
 /// Handles both shapes: the multisig wrapper `{ tx_summary: {data},
-/// metadata, signatures? }` and the raw `{ data: base64 }`. Returns a
-/// short stable token string on failure.
+/// metadata, signatures? }` and the raw `{ data: base64 }`. A top-level
+/// `data` wins, as it does where the delta is verified and acked, so an
+/// extra `tx_summary` key cannot change what is shown. Returns a short
+/// stable token string on failure.
 pub fn decode_transaction_summary(payload: &Value) -> Result<TransactionSummary, &'static str> {
-    let candidate = payload.get("tx_summary").unwrap_or(payload);
+    let candidate = match payload.get("data") {
+        Some(_) => payload,
+        None => payload.get("tx_summary").unwrap_or(payload),
+    };
     TransactionSummary::from_json(candidate).map_err(classify_decode_error)
 }
 
