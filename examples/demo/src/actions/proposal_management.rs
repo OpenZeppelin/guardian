@@ -594,7 +594,7 @@ async fn action_execute_proposal(
 
 /// What the caller can do after a failed execution. Follows the failure code: whether the
 /// proposal is still stored does not say whether executing it again can succeed.
-fn failed_execution_advice(code: ExecutionFailureCode) -> &'static str {
+fn failed_execution_advice(code: &ExecutionFailureCode) -> &'static str {
     match code {
         ExecutionFailureCode::ChainBehind
         | ExecutionFailureCode::NodeUnavailable
@@ -638,6 +638,12 @@ fn failed_execution_advice(code: ExecutionFailureCode) -> &'static str {
         | ExecutionFailureCode::CandidateDiscarded
         | ExecutionFailureCode::Expired => {
             "The transaction was sent and did not land: create and sign a new proposal."
+        }
+        ExecutionFailureCode::ModuleDenied(_) => {
+            "A GUARDIAN policy refused the transaction: it cannot be executed as it stands."
+        }
+        ExecutionFailureCode::ModuleUnavailable { .. } => {
+            "A GUARDIAN policy module could not decide: execute it again shortly."
         }
     }
 }
@@ -693,7 +699,7 @@ async fn execute_through_guardian(
         }
         ExecutionState::Failed => {
             if let Some(error) = &finished.error {
-                print_info(failed_execution_advice(error.code));
+                print_info(failed_execution_advice(&error.code));
             }
             Err("GUARDIAN could not execute the proposal".to_string())
         }

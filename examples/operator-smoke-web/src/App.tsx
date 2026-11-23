@@ -9,6 +9,13 @@ import {
   type DashboardDeltaDetail,
   type DashboardDeltaEntry,
   type DashboardGlobalDeltaEntry,
+  type AccountModules,
+  type ModuleAssignment,
+  type ModuleCatalog,
+  type ModuleCircuit,
+  type ModuleInstance,
+  type ModuleParams,
+  type ModuleParamsHistoryEntry,
   type OperatorChallenge,
   type VerifyOperatorResponse,
 } from '@openzeppelin/guardian-operator-client';
@@ -29,12 +36,12 @@ function normalizeError(error: unknown): string {
     // `GUARDIAN_ACCOUNT_PAUSED`, client surfaces `account_paused`
     // with `pausedAt` / `pausedReason`).
     if (data?.code === 'account_paused') {
-      return `[${data.code}] ${base} (pausedAt=${data.pausedAt ?? 'null'}, pausedReason=${data.pausedReason ?? 'null'})`;
+      return `HTTP ${error.status} [${data.code}] ${base} (pausedAt=${data.pausedAt ?? 'null'}, pausedReason=${data.pausedReason ?? 'null'})`;
     }
     if (data?.code) {
-      return `[${data.code}] ${base}`;
+      return `HTTP ${error.status} [${data.code}] ${base}`;
     }
-    return base;
+    return `HTTP ${error.status} ${base}`;
   }
 
   if (error instanceof Error) {
@@ -190,6 +197,52 @@ function normalizeHex(value: string | null | undefined): string {
   return (value ?? '').trim().toLowerCase();
 }
 
+const MODULE_CIRCUIT_BADGE: Record<ModuleCircuit, string> = {
+  closed: 'success',
+  half_open: 'warning',
+  open: 'warning',
+};
+
+function parseJsonText(text: string, label: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`${label} is not valid JSON: ${detail}`);
+  }
+}
+
+function requireJsonObject(value: unknown, label: string): ModuleParams {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${label} must be a JSON object`);
+  }
+  return value as ModuleParams;
+}
+
+function parseParamsJson(text: string, label: string): ModuleParams {
+  return requireJsonObject(parseJsonText(text, label), label);
+}
+
+function parseAssignmentJson(text: string): ModuleAssignment[] {
+  const value = parseJsonText(text, 'Assignment');
+  if (!Array.isArray(value)) {
+    throw new Error('Assignment must be a JSON array of { "moduleId": ..., "params": {...} }');
+  }
+  return value.map((entry, index) => {
+    const record = requireJsonObject(entry, `Assignment entry ${index}`);
+    const moduleId = record.moduleId;
+    if (typeof moduleId !== 'string' || moduleId.trim().length === 0) {
+      throw new Error(`Assignment entry ${index}: moduleId must be a non-empty string`);
+    }
+    const params = requireJsonObject(record.params, `Assignment entry ${index}: params`);
+    return { moduleId: moduleId.trim(), params };
+  });
+}
+
+function formatOptionalParams(params: ModuleParams | null): string {
+  return params === null ? 'null' : formatJson(params);
+}
+
 export default function App() {
   const { session, sessionError, generate, clear, signWordHex } = useLocalFalconSigner();
   const [guardianBaseUrl, setGuardianBaseUrl] = useState(DEFAULT_GUARDIAN_BASE_URL);
@@ -228,6 +281,20 @@ export default function App() {
     null,
   );
 
+  const [moduleCatalog, setModuleCatalog] = useState<ModuleCatalog | null>(null);
+  const [moduleReason, setModuleReason] = useState('smoke-test');
+  const [historyModuleId, setHistoryModuleId] = useState('');
+  const [historyLimit, setHistoryLimit] = useState('20');
+  const [historyEntries, setHistoryEntries] = useState<ModuleParamsHistoryEntry[]>([]);
+  const [historyLoadedFor, setHistoryLoadedFor] = useState<string | null>(null);
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [accountModules, setAccountModules] = useState<AccountModules | null>(null);
+  const [globalParamsModuleId, setGlobalParamsModuleId] = useState('');
+  const [globalParamsJson, setGlobalParamsJson] = useState('{}');
+  const [layerModuleId, setLayerModuleId] = useState('');
+  const [layerParamsJson, setLayerParamsJson] = useState('{}');
+  const [assignmentJson, setAssignmentJson] = useState('[]');
+
   const client = useMemo(
     () =>
       new GuardianOperatorHttpClient({
@@ -263,6 +330,7 @@ export default function App() {
       setAccounts([]);
       setAccount(null);
       resetPagination();
+      resetModules();
       return nextSession;
     });
   }
@@ -276,6 +344,7 @@ export default function App() {
       setAccounts([]);
       setAccount(null);
       resetPagination();
+      resetModules();
       return nextSession;
     });
   }
@@ -525,6 +594,179 @@ export default function App() {
     setPagedPageCount(0);
   }
 
+  function requireAccountId(): string {
+    const id = accountId.trim();
+    if (!id) throw new Error('Account ID is required');
+    return id;
+  }
+
+  function requireModuleReason(): string {
+    const reason = moduleReason.trim();
+    if (!reason) throw new Error('Reason is required');
+    return reason;
+  }
+
+  function requireModuleId(value: string): string {
+    const moduleId = value.trim();
+    if (!moduleId) throw new Error('Module ID is required');
+    return moduleId;
+  }
+
+  function parseHistoryLimit(): number {
+    const parsed = Number.parseInt(historyLimit, 10);
+    if (!Number.isFinite(parsed) || parsed < 1 || parsed > 1000) {
+      throw new Error('History limit must be an integer from 1 to 1000');
+    }
+    return parsed;
+  }
+
+  function replaceCatalogInstance(instance: ModuleInstance) {
+    setModuleCatalog((current) =>
+      current
+        ? {
+            ...current,
+            modules: current.modules.map((entry) =>
+              entry.moduleId === instance.moduleId ? instance : entry,
+            ),
+          }
+        : current,
+    );
+  }
+
+  function selectModule(instance: ModuleInstance) {
+    setHistoryModuleId(instance.moduleId);
+    setGlobalParamsModuleId(instance.moduleId);
+    setGlobalParamsJson(formatJson(instance.params));
+    if (instance.scope === 'all') {
+      setLayerModuleId(instance.moduleId);
+    }
+  }
+
+  function resetModuleHistory() {
+    setHistoryEntries([]);
+    setHistoryLoadedFor(null);
+    setHistoryHasMore(false);
+  }
+
+  function resetModules() {
+    setModuleCatalog(null);
+    setAccountModules(null);
+    resetModuleHistory();
+  }
+
+  async function listModules() {
+    await runAction('listModules', async () => {
+      const catalog = await client.listModules();
+      setModuleCatalog(catalog);
+      return catalog;
+    });
+  }
+
+  async function enableModule(moduleId: string) {
+    await runAction(`enableModule(${moduleId})`, async () => {
+      const instance = await client.enableModule(moduleId, requireModuleReason());
+      replaceCatalogInstance(instance);
+      return instance;
+    });
+  }
+
+  async function disableModule(moduleId: string) {
+    await runAction(`disableModule(${moduleId})`, async () => {
+      const instance = await client.disableModule(moduleId, requireModuleReason());
+      replaceCatalogInstance(instance);
+      return instance;
+    });
+  }
+
+  async function loadModuleHistory() {
+    await runAction('getModuleParamsHistory', async () => {
+      const moduleId = requireModuleId(historyModuleId);
+      const limit = parseHistoryLimit();
+      const page = await client.getModuleParamsHistory(moduleId, { limit });
+      setHistoryEntries(page.entries);
+      setHistoryLoadedFor(moduleId);
+      setHistoryHasMore(page.entries.length === limit);
+      return page;
+    });
+  }
+
+  async function loadOlderModuleHistory() {
+    const last = historyEntries[historyEntries.length - 1];
+    await runAction(`getModuleParamsHistory(before=${last?.id ?? 'none'})`, async () => {
+      if (!historyLoadedFor || !last) {
+        throw new Error('Load the newest history page first');
+      }
+      const limit = parseHistoryLimit();
+      const page = await client.getModuleParamsHistory(historyLoadedFor, {
+        before: last.id,
+        limit,
+      });
+      setHistoryEntries((prev) => [...prev, ...page.entries]);
+      setHistoryHasMore(page.entries.length === limit);
+      return page;
+    });
+  }
+
+  async function getAccountModules() {
+    await runAction('getAccountModules', async () => {
+      const modules = await client.getAccountModules(requireAccountId());
+      setAccountModules(modules);
+      return modules;
+    });
+  }
+
+  async function setModuleGlobalParams() {
+    await runAction('setModuleGlobalParams', async () => {
+      const moduleId = requireModuleId(globalParamsModuleId);
+      const params = parseParamsJson(globalParamsJson, 'Global params');
+      const instance = await client.setModuleGlobalParams(moduleId, params, requireModuleReason());
+      replaceCatalogInstance(instance);
+      return instance;
+    });
+  }
+
+  async function setAccountModuleLayer() {
+    await runAction('setAccountModuleLayer', async () => {
+      const id = requireAccountId();
+      const moduleId = requireModuleId(layerModuleId);
+      const params = parseParamsJson(layerParamsJson, 'Account layer params');
+      const modules = await client.setAccountModuleLayer(id, moduleId, params, requireModuleReason());
+      setAccountModules(modules);
+      return modules;
+    });
+  }
+
+  async function removeAccountModuleLayer() {
+    await runAction('removeAccountModuleLayer', async () => {
+      const id = requireAccountId();
+      const moduleId = requireModuleId(layerModuleId);
+      const modules = await client.removeAccountModuleLayer(id, moduleId, requireModuleReason());
+      setAccountModules(modules);
+      return modules;
+    });
+  }
+
+  async function setAccountModuleAssignment() {
+    await runAction('setAccountModules', async () => {
+      const id = requireAccountId();
+      const assignment = parseAssignmentJson(assignmentJson);
+      const modules = await client.setAccountModules(id, assignment, requireModuleReason());
+      setAccountModules(modules);
+      return modules;
+    });
+  }
+
+  function copyAssignmentFromAccount() {
+    if (!accountModules) {
+      setUiError('Load account modules first');
+      return;
+    }
+    const assignment: ModuleAssignment[] = accountModules.modules
+      .filter((entry) => entry.scope !== 'all')
+      .map((entry) => ({ moduleId: entry.moduleId, params: entry.params ?? {} }));
+    setAssignmentJson(formatJson(assignment));
+  }
+
   async function logout() {
     await runAction('logout', async () => {
       const response = await client.logout();
@@ -532,6 +774,7 @@ export default function App() {
       setAccounts([]);
       setAccount(null);
       resetPagination();
+      resetModules();
       setChallenge(null);
       return response;
     });
@@ -803,6 +1046,361 @@ export default function App() {
           ) : (
             <p className="hint">No account list loaded yet.</p>
           )}
+        </section>
+
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Policy modules</h2>
+            <span className={`badge ${moduleCatalog ? 'success' : 'neutral'}`}>
+              {moduleCatalog
+                ? `${moduleCatalog.modules.length} instances · paramsVersion ${moduleCatalog.paramsVersion}`
+                : 'not loaded'}
+            </span>
+          </div>
+
+          <p className="hint">
+            RFC 0002 / issue #251. Reads need <code>dashboard:read</code>. Account layers,
+            assignments and enable need <code>policies:write</code>; global params need{' '}
+            <code>policies:write_global</code>; disable takes <code>policies:write</code> or{' '}
+            <code>modules:disable</code>. Account calls use the <strong>Account ID</strong> from
+            the Accounts panel, and every write sends the reason below.
+          </p>
+
+          <label>
+            <span>Reason (required for every write)</span>
+            <input
+              value={moduleReason}
+              onChange={(event) => setModuleReason(event.target.value)}
+              placeholder="why?"
+            />
+          </label>
+          <div className="actions">
+            <button onClick={() => void listModules()}>Load catalog</button>
+            <button onClick={() => void getAccountModules()}>Load account modules</button>
+          </div>
+
+          <h3>Catalog</h3>
+          {moduleCatalog ? (
+            <>
+              <div className="status-grid compact">
+                <div>
+                  <span className="label">Catalog hash</span>
+                  <code className="wrap">{moduleCatalog.catalogHash}</code>
+                </div>
+                <div>
+                  <span className="label">paramsVersion</span>
+                  <strong>{moduleCatalog.paramsVersion}</strong>
+                </div>
+                <div>
+                  <span className="label">Undeclared instances</span>
+                  <strong>{moduleCatalog.undeclared.length}</strong>
+                </div>
+              </div>
+              <p className="hint">
+                Enable, disable and global params writes update the card in place; reload the
+                catalog to see the new <code>paramsVersion</code>.
+              </p>
+              <div className="delta-list">
+                {moduleCatalog.modules.map((instance) => (
+                  <article className="delta-card" key={instance.moduleId}>
+                    <header className="delta-card-header">
+                      <code>{instance.moduleId}</code>
+                      <span className={`badge ${instance.enabled ? 'success' : 'warning'}`}>
+                        {instance.enabled ? 'enabled' : 'disabled'}
+                      </span>
+                    </header>
+                    <div className="status-grid compact">
+                      <div>
+                        <span className="label">Kind</span>
+                        <strong>{instance.kind}</strong>
+                      </div>
+                      <div>
+                        <span className="label">Scope</span>
+                        <strong>{instance.scope}</strong>
+                      </div>
+                      <div>
+                        <span className="label">Hooks</span>
+                        <strong>{instance.hooks.join(', ')}</strong>
+                      </div>
+                      <div>
+                        <span className="label">Circuit</span>
+                        <strong>
+                          <span className={`badge ${MODULE_CIRCUIT_BADGE[instance.circuit]}`}>
+                            {instance.circuit}
+                          </span>
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="label">Enabled drift</span>
+                        <strong>
+                          {instance.enabledDrift
+                            ? `yes (catalog says ${instance.catalogEnabled ? 'enabled' : 'disabled'})`
+                            : 'no'}
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="label">Params drift</span>
+                        <strong>{instance.paramsDrift ? 'yes' : 'no'}</strong>
+                      </div>
+                      <div>
+                        <span className="label">Operator can disable</span>
+                        <strong>{instance.operatorCanDisable ? 'yes' : 'no'}</strong>
+                      </div>
+                      <div>
+                        <span className="label">Build</span>
+                        <strong>{instance.build ?? <em className="muted">startup checks failed</em>}</strong>
+                      </div>
+                    </div>
+                    <details className="delta-debug">
+                      <summary>Global params</summary>
+                      <pre className="result-box">{formatJson(instance.params)}</pre>
+                    </details>
+                    <div className="actions">
+                      <button onClick={() => void enableModule(instance.moduleId)}>Enable</button>
+                      <button onClick={() => void disableModule(instance.moduleId)}>Disable</button>
+                      <button onClick={() => selectModule(instance)}>Use in forms</button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+              {moduleCatalog.undeclared.length > 0 ? (
+                <ul>
+                  {moduleCatalog.undeclared.map((entry) => (
+                    <li key={entry.moduleId}>
+                      undeclared <code>{entry.moduleId}</code> · stored{' '}
+                      {entry.enabled ? 'enabled' : 'disabled'} · never evaluated
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </>
+          ) : (
+            <p className="hint">Click <strong>Load catalog</strong> to list the module instances.</p>
+          )}
+
+          <h3>Params history</h3>
+          <div className="form-grid">
+            <label>
+              <span>Module ID</span>
+              <input
+                value={historyModuleId}
+                onChange={(event) => setHistoryModuleId(event.target.value)}
+                placeholder="caps"
+              />
+            </label>
+            <label>
+              <span>Limit (1 to 1000)</span>
+              <input
+                value={historyLimit}
+                onChange={(event) => setHistoryLimit(event.target.value)}
+                placeholder="20"
+              />
+            </label>
+          </div>
+          <div className="actions">
+            <button onClick={() => void loadModuleHistory()}>Load newest</button>
+            <button onClick={() => void loadOlderModuleHistory()} disabled={!historyHasMore}>
+              Load older
+            </button>
+            <button onClick={() => resetModuleHistory()}>Reset</button>
+          </div>
+          <p className="hint">
+            Module: <code>{historyLoadedFor ?? 'none'}</code>; entries loaded:{' '}
+            <code>{historyEntries.length}</code>; next <code>before</code>:{' '}
+            <code>{historyHasMore ? historyEntries[historyEntries.length - 1]?.id : 'null'}</code>
+          </p>
+          {historyEntries.length > 0 ? (
+            <div className="delta-list">
+              {historyEntries.map((entry) => (
+                <article className="delta-card" key={entry.id}>
+                  <header className="delta-card-header">
+                    <span className="delta-summary-line">
+                      #{entry.id} · {entry.accountId ? 'account' : 'global'}
+                    </span>
+                    <span className="badge neutral">version {entry.version}</span>
+                  </header>
+                  <div className="status-grid compact">
+                    {entry.accountId ? (
+                      <div>
+                        <span className="label">Account</span>
+                        <code className="wrap">{entry.accountId}</code>
+                      </div>
+                    ) : null}
+                    <div>
+                      <span className="label">Operator</span>
+                      <code className="wrap">{entry.operator}</code>
+                    </div>
+                    <div>
+                      <span className="label">Reason</span>
+                      <strong>{entry.reason}</strong>
+                    </div>
+                    <div>
+                      <span className="label">At</span>
+                      <strong>{entry.at}</strong>
+                    </div>
+                  </div>
+                  <details className="delta-debug">
+                    <summary>Previous and new params</summary>
+                    <div className="status-grid compact">
+                      <div>
+                        <span className="label">previous</span>
+                        <pre className="result-box">{formatOptionalParams(entry.previous)}</pre>
+                      </div>
+                      <div>
+                        <span className="label">new</span>
+                        <pre className="result-box">{formatOptionalParams(entry.new)}</pre>
+                      </div>
+                    </div>
+                  </details>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="hint">No history loaded.</p>
+          )}
+
+          <h3>Account modules</h3>
+          {accountModules ? (
+            <>
+              <div className="status-grid compact">
+                <div>
+                  <span className="label">Account</span>
+                  <code className="wrap">{accountModules.accountId}</code>
+                </div>
+                <div>
+                  <span className="label">accountParamsVersion</span>
+                  <strong>{accountModules.accountParamsVersion}</strong>
+                </div>
+              </div>
+              {accountModules.modules.length > 0 ? (
+                <div className="delta-list">
+                  {accountModules.modules.map((entry, index) => (
+                    <article className="delta-card" key={`${entry.moduleId}-${index}`}>
+                      <header className="delta-card-header">
+                        <span className="delta-summary-line">
+                          {index + 1}. <code>{entry.moduleId}</code>
+                        </span>
+                        <span
+                          className={`badge ${entry.orphaned ? 'warning' : entry.enabled ? 'success' : 'neutral'}`}
+                        >
+                          {entry.orphaned ? 'orphaned' : entry.enabled ? 'enabled' : 'disabled'}
+                        </span>
+                      </header>
+                      <div className="status-grid compact">
+                        <div>
+                          <span className="label">Scope</span>
+                          <strong>{entry.scope}</strong>
+                        </div>
+                        {entry.scope === 'all' ? (
+                          <>
+                            <div>
+                              <span className="label">Global params</span>
+                              <pre className="result-box">{formatOptionalParams(entry.globalParams)}</pre>
+                            </div>
+                            <div>
+                              <span className="label">Account layer</span>
+                              <pre className="result-box">{formatOptionalParams(entry.accountLayer)}</pre>
+                            </div>
+                          </>
+                        ) : (
+                          <div>
+                            <span className="label">Params</span>
+                            <pre className="result-box">{formatOptionalParams(entry.params)}</pre>
+                          </div>
+                        )}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="hint">No modules apply to this account.</p>
+              )}
+            </>
+          ) : (
+            <p className="hint">
+              Click <strong>Load account modules</strong> for the account ID above.
+            </p>
+          )}
+
+          <h3>Writes</h3>
+          <div className="two-column">
+            <div className="account-card">
+              <label>
+                <span>Global params: module ID</span>
+                <input
+                  value={globalParamsModuleId}
+                  onChange={(event) => setGlobalParamsModuleId(event.target.value)}
+                  placeholder="caps"
+                />
+              </label>
+              <label>
+                <span>Global params JSON</span>
+                <textarea
+                  className="json-input"
+                  value={globalParamsJson}
+                  onChange={(event) => setGlobalParamsJson(event.target.value)}
+                  rows={8}
+                  spellCheck={false}
+                />
+              </label>
+              <div className="actions">
+                <button onClick={() => void setModuleGlobalParams()}>Set global params</button>
+              </div>
+              <p className="hint">
+                Needs <code>policies:write_global</code>. Applies to every account.
+              </p>
+            </div>
+
+            <div className="account-card">
+              <label>
+                <span>Account layer: module ID (scope = all)</span>
+                <input
+                  value={layerModuleId}
+                  onChange={(event) => setLayerModuleId(event.target.value)}
+                  placeholder="blocklist"
+                />
+              </label>
+              <label>
+                <span>Account layer params JSON</span>
+                <textarea
+                  className="json-input"
+                  value={layerParamsJson}
+                  onChange={(event) => setLayerParamsJson(event.target.value)}
+                  rows={8}
+                  spellCheck={false}
+                />
+              </label>
+              <div className="actions">
+                <button onClick={() => void setAccountModuleLayer()}>Set account layer</button>
+                <button onClick={() => void removeAccountModuleLayer()}>Clear account layer</button>
+              </div>
+              <p className="hint">
+                Needs <code>policies:write</code>. The layer is evaluated after the global params
+                and can only add restrictions.
+              </p>
+            </div>
+          </div>
+
+          <label>
+            <span>Account assignment JSON (default and assigned modules, in evaluation order)</span>
+            <textarea
+              className="json-input"
+              value={assignmentJson}
+              onChange={(event) => setAssignmentJson(event.target.value)}
+              rows={8}
+              spellCheck={false}
+              placeholder={'[{ "moduleId": "treasury-allowlist", "params": { "allowlist": [] } }]'}
+            />
+          </label>
+          <div className="actions">
+            <button onClick={() => copyAssignmentFromAccount()}>Copy current assignment</button>
+            <button onClick={() => void setAccountModuleAssignment()}>Replace assignment</button>
+          </div>
+          <p className="hint">
+            Needs <code>policies:write</code>. Replaces every <code>default</code> and{' '}
+            <code>assigned</code> entry; <code>[]</code> removes them all. Each entry is{' '}
+            <code>{'{ "moduleId": ..., "params": {...} }'}</code>.
+          </p>
         </section>
 
         <section className="panel">

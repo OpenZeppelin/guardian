@@ -4,6 +4,7 @@ import {
 } from './session-request.js';
 import type {
   CanonicalNonce,
+  Policy,
   CosignerSignature,
   ConfigureRequest,
   ConfigureResponse,
@@ -25,6 +26,7 @@ import type {
 } from './types.js';
 import type {
   ServerCanonicalNonceResponse,
+  ServerPolicyEntry,
   ServerCosignerSignature,
   ServerConfigureRequest,
   ServerConfigureResponse,
@@ -177,6 +179,16 @@ export function fromServerStateObject(server: ServerStateObject): StateObject {
     createdAt: server.created_at,
     updatedAt: server.updated_at,
     authScheme: server.auth_scheme,
+  };
+}
+
+export function fromServerPolicy(server: ServerPolicyEntry): Policy {
+  return {
+    moduleId: server.module_id,
+    hooks: server.hooks,
+    description: server.description,
+    ...(server.params !== undefined ? { params: server.params } : {}),
+    ...(server.account_layer !== undefined ? { accountLayer: server.account_layer } : {}),
   };
 }
 

@@ -49,6 +49,25 @@ pub struct ProposalBuilder {
     execution_mode: ProposalExecutionMode,
 }
 
+/// A proposal built for an account and not yet sent: the payload GUARDIAN would store, without
+/// the proposer's approval, and the proposal it describes. [`Self::check`] asks GUARDIAN whether
+/// it would be created; [`Self::push`] signs and creates it. Both send the same payload, so a
+/// check answers for exactly the proposal a push would create.
+#[derive(Debug, Clone)]
+pub(crate) struct ProposalDraft {
+    proposal: Proposal,
+    payload: ProposalPayload,
+}
+
+/// The answer of a proposal check that passed: GUARDIAN's policy modules would let the
+/// proposal be created. A refusal is the same error creating it returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProposalCheck {
+    /// False when a module that opts out of checks was skipped, so creation could still be
+    /// refused.
+    pub complete: bool,
+}
+
 /// Per-proposal settings a caller may set when proposing a transaction.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ProposalOptions {
@@ -170,7 +189,23 @@ impl ProposalBuilder {
         self
     }
 
-    /// Builds and submits the proposal to GUARDIAN.
+    /// Builds the proposal and asks GUARDIAN whether it would be created, without storing it.
+    /// Advisory: approval still decides.
+    pub async fn check(
+        self,
+        miden_client: &mut MidenSdkClient,
+        node_rpc: &Arc<dyn NodeRpcClient>,
+        guardian_client: &mut GuardianClient,
+        account: &MultisigAccount,
+        key_manager: &dyn KeyManager,
+    ) -> Result<ProposalCheck> {
+        self.draft(miden_client, node_rpc, account, key_manager)
+            .await?
+            .check(guardian_client)
+            .await
+    }
+
+    /// Builds the proposal, signs it as its proposer and creates it on GUARDIAN.
     pub async fn build(
         self,
         miden_client: &mut MidenSdkClient,
@@ -179,6 +214,21 @@ impl ProposalBuilder {
         account: &MultisigAccount,
         key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
+        self.draft(miden_client, node_rpc, account, key_manager)
+            .await?
+            .push(guardian_client, key_manager)
+            .await
+    }
+
+    /// Builds the proposal for `account` with `key_manager` as its proposer, without contacting
+    /// GUARDIAN: the transaction is executed locally for its summary, and nothing is signed.
+    pub(crate) async fn draft(
+        self,
+        miden_client: &mut MidenSdkClient,
+        node_rpc: &Arc<dyn NodeRpcClient>,
+        account: &MultisigAccount,
+        key_manager: &dyn KeyManager,
+    ) -> Result<ProposalDraft> {
         match self.transaction_type {
             TransactionType::AddCosigner {
                 new_commitment,
@@ -186,24 +236,12 @@ impl ProposalBuilder {
             } => {
                 let new_signer =
                     SignerSpec::new(new_commitment, scheme.unwrap_or(key_manager.scheme()));
-                self.build_add_cosigner(
-                    miden_client,
-                    guardian_client,
-                    account,
-                    new_signer,
-                    key_manager,
-                )
-                .await
+                self.draft_add_cosigner(miden_client, account, new_signer, key_manager)
+                    .await
             }
             TransactionType::RemoveCosigner { commitment } => {
-                self.build_remove_cosigner(
-                    miden_client,
-                    guardian_client,
-                    account,
-                    commitment,
-                    key_manager,
-                )
-                .await
+                self.draft_remove_cosigner(miden_client, account, commitment, key_manager)
+                    .await
             }
             TransactionType::P2ID {
                 recipient,
@@ -212,9 +250,8 @@ impl ProposalBuilder {
                 note_type,
                 heights,
             } => {
-                self.build_p2id(
+                self.draft_p2id(
                     miden_client,
-                    guardian_client,
                     account,
                     recipient,
                     faucet_id,
@@ -226,10 +263,9 @@ impl ProposalBuilder {
                 .await
             }
             TransactionType::ConsumeNotes { ref note_ids, .. } => {
-                self.build_consume_notes(
+                self.draft_consume_notes(
                     miden_client,
                     node_rpc,
-                    guardian_client,
                     account,
                     note_ids.clone(),
                     key_manager,
@@ -240,9 +276,8 @@ impl ProposalBuilder {
                 ref new_endpoint,
                 new_commitment,
             } => {
-                self.build_switch_guardian(
+                self.draft_switch_guardian(
                     miden_client,
-                    guardian_client,
                     account,
                     new_commitment,
                     new_endpoint.clone(),
@@ -254,9 +289,8 @@ impl ProposalBuilder {
                 procedure,
                 new_threshold,
             } => {
-                self.build_update_procedure_threshold(
+                self.draft_update_procedure_threshold(
                     miden_client,
-                    guardian_client,
                     account,
                     procedure,
                     new_threshold,
@@ -268,9 +302,8 @@ impl ProposalBuilder {
                 new_threshold,
                 ref signer_commitments,
             } => {
-                self.build_update_signers(
+                self.draft_update_signers(
                     miden_client,
-                    guardian_client,
                     account,
                     new_threshold,
                     signer_commitments,
@@ -284,18 +317,6 @@ impl ProposalBuilder {
         }
     }
 
-    fn ensure_response_commitment(proposal: &Proposal, response_commitment: &str) -> Result<()> {
-        let response_commitment = ensure_hex_prefix(response_commitment);
-        if hex_body_eq(&proposal.id, &response_commitment) {
-            return Ok(());
-        }
-
-        Err(MultisigError::GuardianServer(format!(
-            "GUARDIAN returned proposal commitment {} but transaction summary commitment is {}",
-            response_commitment, proposal.id
-        )))
-    }
-
     async fn fresh_auth_args(&self, miden_client: &MidenSdkClient) -> Result<MultisigAuthArgs> {
         proposer_auth_args(
             miden_client,
@@ -306,14 +327,13 @@ impl ProposalBuilder {
         .await
     }
 
-    async fn build_add_cosigner(
+    async fn draft_add_cosigner(
         &self,
         miden_client: &mut MidenSdkClient,
-        guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         new_signer: SignerSpec,
         key_manager: &dyn KeyManager,
-    ) -> Result<Proposal> {
+    ) -> Result<ProposalDraft> {
         let account_id = account.id();
         let current_threshold = account.threshold()?;
         let approvers = account.cosigners()?;
@@ -347,9 +367,6 @@ impl ProposalBuilder {
         let attachment = self.execution_mode.attachment(&tx_request);
         let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
 
-        // Sign the transaction summary commitment
-        let tx_commitment = tx_summary.to_commitment();
-
         // Build proposal metadata
         let signer_commitments_hex: Vec<String> = current_signers.iter().map(word_to_hex).collect();
 
@@ -380,7 +397,6 @@ impl ProposalBuilder {
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_transaction_request(attachment)
-            .with_signature(key_manager, tx_commitment)
             .with_add_signer_metadata(
                 new_threshold,
                 signer_commitments_hex.clone(),
@@ -389,13 +405,8 @@ impl ProposalBuilder {
             .with_signer_schemes(&signer_schemes)
             .with_required_signatures(required_signatures);
 
-        // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
         let payload = payload.with_base_commitment(account.commitment());
-        let response = guardian_client
-            .push_delta_proposal(&account_id, nonce, &payload.to_json())
-            .await
-            .map_err(MultisigError::proposal_push)?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -407,28 +418,25 @@ impl ProposalBuilder {
             },
             metadata,
         );
-        Self::ensure_response_commitment(&proposal, &response.commitment)?;
-
-        Ok(proposal)
+        Ok(ProposalDraft::new(proposal, payload))
     }
 
     /// Changes the signing threshold, leaving the signer set as it is.
     ///
     /// The on-chain procedure takes a set and a threshold together, so this is
-    /// the same call `build_add_cosigner` makes with the set left alone. A
+    /// the same call `draft_add_cosigner` makes with the set left alone. A
     /// membership change is refused here rather than served: deriving the new
     /// set from the current one is what makes add and remove safe, and a
     /// caller-supplied set would give that up for no gain, since this variant
     /// exists to move the threshold.
-    async fn build_update_signers(
+    async fn draft_update_signers(
         &self,
         miden_client: &mut MidenSdkClient,
-        guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         new_threshold: u32,
         requested_signers: &[Word],
         key_manager: &dyn KeyManager,
-    ) -> Result<Proposal> {
+    ) -> Result<ProposalDraft> {
         let account_id = account.id();
         let current_threshold = account.threshold()?;
         let target_signers = account.cosigners()?;
@@ -459,7 +467,6 @@ impl ProposalBuilder {
 
         let attachment = self.execution_mode.attachment(&tx_request);
         let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
-        let tx_commitment = tx_summary.to_commitment();
 
         let signer_commitments_hex: Vec<String> = current_signers.iter().map(word_to_hex).collect();
 
@@ -493,7 +500,6 @@ impl ProposalBuilder {
 
         let payload = ProposalPayload::new(&tx_summary)
             .with_transaction_request(attachment)
-            .with_signature(key_manager, tx_commitment)
             .with_threshold_metadata(
                 new_threshold,
                 signer_commitments_hex.clone(),
@@ -505,11 +511,6 @@ impl ProposalBuilder {
         let nonce = account.nonce() + 1;
         let payload = payload.with_base_commitment(account.commitment());
 
-        let response = guardian_client
-            .push_delta_proposal(&account_id, nonce, &payload.to_json())
-            .await
-            .map_err(MultisigError::proposal_push)?;
-
         let proposal = Proposal::new(
             tx_summary,
             nonce,
@@ -519,19 +520,16 @@ impl ProposalBuilder {
             },
             metadata,
         );
-        Self::ensure_response_commitment(&proposal, &response.commitment)?;
-
-        Ok(proposal)
+        Ok(ProposalDraft::new(proposal, payload))
     }
 
-    async fn build_remove_cosigner(
+    async fn draft_remove_cosigner(
         &self,
         miden_client: &mut MidenSdkClient,
-        guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         commitment_to_remove: Word,
         key_manager: &dyn KeyManager,
-    ) -> Result<Proposal> {
+    ) -> Result<ProposalDraft> {
         let account_id = account.id();
         let current_threshold = account.threshold()?;
         let current_signers = account.cosigners()?;
@@ -579,9 +577,6 @@ impl ProposalBuilder {
         let attachment = self.execution_mode.attachment(&tx_request);
         let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
 
-        // Sign the transaction summary commitment
-        let tx_commitment = tx_summary.to_commitment();
-
         // Build proposal metadata
         let signer_commitments_hex: Vec<String> = new_signers.iter().map(word_to_hex).collect();
 
@@ -612,7 +607,6 @@ impl ProposalBuilder {
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_transaction_request(attachment)
-            .with_signature(key_manager, tx_commitment)
             .with_remove_signer_metadata(
                 new_threshold,
                 signer_commitments_hex.clone(),
@@ -621,13 +615,8 @@ impl ProposalBuilder {
             .with_signer_schemes(&signer_schemes)
             .with_required_signatures(required_signatures);
 
-        // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
         let payload = payload.with_base_commitment(account.commitment());
-        let response = guardian_client
-            .push_delta_proposal(&account_id, nonce, &payload.to_json())
-            .await
-            .map_err(MultisigError::proposal_push)?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -638,16 +627,13 @@ impl ProposalBuilder {
             },
             metadata,
         );
-        Self::ensure_response_commitment(&proposal, &response.commitment)?;
-
-        Ok(proposal)
+        Ok(ProposalDraft::new(proposal, payload))
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn build_p2id(
+    async fn draft_p2id(
         &self,
         miden_client: &mut MidenSdkClient,
-        guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         recipient: AccountId,
         faucet_id: AccountId,
@@ -655,7 +641,7 @@ impl ProposalBuilder {
         note_type: NoteType,
         heights: P2ideHeights,
         key_manager: &dyn KeyManager,
-    ) -> Result<Proposal> {
+    ) -> Result<ProposalDraft> {
         let account_id = account.id();
         let required_signatures =
             account.effective_threshold_for(ThresholdedTransaction::P2id)? as usize;
@@ -680,9 +666,6 @@ impl ProposalBuilder {
         // Execute to get the TransactionSummary
         let attachment = self.execution_mode.attachment(&tx_request);
         let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
-
-        // Sign the transaction summary commitment
-        let tx_commitment = tx_summary.to_commitment();
 
         // Build proposal metadata
         let metadata = ProposalMetadata {
@@ -711,7 +694,6 @@ impl ProposalBuilder {
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_transaction_request(attachment)
-            .with_signature(key_manager, tx_commitment)
             .with_payment_metadata(
                 recipient.to_string(),
                 faucet_id.to_string(),
@@ -722,13 +704,8 @@ impl ProposalBuilder {
             )
             .with_required_signatures(required_signatures);
 
-        // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
         let payload = payload.with_base_commitment(account.commitment());
-        let response = guardian_client
-            .push_delta_proposal(&account_id, nonce, &payload.to_json())
-            .await
-            .map_err(MultisigError::proposal_push)?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -743,20 +720,17 @@ impl ProposalBuilder {
             },
             metadata,
         );
-        Self::ensure_response_commitment(&proposal, &response.commitment)?;
-
-        Ok(proposal)
+        Ok(ProposalDraft::new(proposal, payload))
     }
 
-    async fn build_consume_notes(
+    async fn draft_consume_notes(
         &self,
         miden_client: &mut MidenSdkClient,
         node_rpc: &Arc<dyn NodeRpcClient>,
-        guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         note_ids: Vec<NoteId>,
         key_manager: &dyn KeyManager,
-    ) -> Result<Proposal> {
+    ) -> Result<ProposalDraft> {
         let account_id = account.id();
         let required_signatures =
             account.effective_threshold_for(ThresholdedTransaction::ConsumeNotes)? as usize;
@@ -800,7 +774,6 @@ impl ProposalBuilder {
         let attachment = self.execution_mode.attachment(&tx_request);
 
         let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
-        let tx_commitment = tx_summary.to_commitment();
 
         let note_ids_hex: Vec<String> = note_ids.iter().map(|id| id.to_hex()).collect();
         let metadata = ProposalMetadata {
@@ -835,7 +808,6 @@ impl ProposalBuilder {
 
         let payload = ProposalPayload::new(&tx_summary)
             .with_transaction_request(attachment)
-            .with_signature(key_manager, tx_commitment)
             .with_note_consumption_metadata_v2(note_ids_hex, notes_base64, word_to_hex(&salt))
             .with_required_signatures(required_signatures);
 
@@ -852,13 +824,8 @@ impl ProposalBuilder {
             }
         }
 
-        // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
         let payload = payload.with_base_commitment(account.commitment());
-        let response = guardian_client
-            .push_delta_proposal(&account_id, nonce, &payload.to_json())
-            .await
-            .map_err(MultisigError::proposal_push)?;
 
         // Clone notes for the runtime TransactionType; metadata keeps its own copy.
         let notes_for_tx_type = metadata.consume_notes_notes.clone();
@@ -872,21 +839,18 @@ impl ProposalBuilder {
             },
             metadata,
         );
-        Self::ensure_response_commitment(&proposal, &response.commitment)?;
-
-        Ok(proposal)
+        Ok(ProposalDraft::new(proposal, payload))
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn build_switch_guardian(
+    async fn draft_switch_guardian(
         &self,
         miden_client: &mut MidenSdkClient,
-        guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         new_guardian_pubkey: Word,
         new_guardian_endpoint: String,
         key_manager: &dyn KeyManager,
-    ) -> Result<Proposal> {
+    ) -> Result<ProposalDraft> {
         let account_id = account.id();
         let required_signatures =
             account.effective_threshold_for(ThresholdedTransaction::UpdateGuardian)? as usize;
@@ -911,9 +875,6 @@ impl ProposalBuilder {
         // Execute to get the TransactionSummary
         let attachment = self.execution_mode.attachment(&tx_request);
         let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
-
-        // Sign the transaction summary commitment
-        let tx_commitment = tx_summary.to_commitment();
 
         // Build proposal metadata
         let metadata = ProposalMetadata {
@@ -942,7 +903,6 @@ impl ProposalBuilder {
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_transaction_request(attachment)
-            .with_signature(key_manager, tx_commitment)
             .with_guardian_update_metadata(
                 word_to_hex(&new_guardian_pubkey),
                 new_guardian_endpoint.clone(),
@@ -950,13 +910,8 @@ impl ProposalBuilder {
             )
             .with_required_signatures(required_signatures);
 
-        // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
         let payload = payload.with_base_commitment(account.commitment());
-        let response = guardian_client
-            .push_delta_proposal(&account_id, nonce, &payload.to_json())
-            .await
-            .map_err(MultisigError::proposal_push)?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -968,20 +923,17 @@ impl ProposalBuilder {
             },
             metadata,
         );
-        Self::ensure_response_commitment(&proposal, &response.commitment)?;
-
-        Ok(proposal)
+        Ok(ProposalDraft::new(proposal, payload))
     }
 
-    async fn build_update_procedure_threshold(
+    async fn draft_update_procedure_threshold(
         &self,
         miden_client: &mut MidenSdkClient,
-        guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         procedure: ProcedureName,
         new_threshold: u32,
         key_manager: &dyn KeyManager,
-    ) -> Result<Proposal> {
+    ) -> Result<ProposalDraft> {
         let account_id = account.id();
         let required_signatures = account
             .effective_threshold_for(ThresholdedTransaction::SetProcedureThreshold)?
@@ -998,7 +950,6 @@ impl ProposalBuilder {
         )?;
         let attachment = self.execution_mode.attachment(&tx_request);
         let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
-        let tx_commitment = tx_summary.to_commitment();
 
         let metadata = ProposalMetadata {
             tx_summary_json: Some(tx_summary.to_json()),
@@ -1025,17 +976,11 @@ impl ProposalBuilder {
 
         let payload = ProposalPayload::new(&tx_summary)
             .with_transaction_request(attachment)
-            .with_signature(key_manager, tx_commitment)
             .with_procedure_threshold_metadata(procedure, new_threshold as u64, word_to_hex(&salt))
             .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
         let payload = payload.with_base_commitment(account.commitment());
-
-        let response = guardian_client
-            .push_delta_proposal(&account_id, nonce, &payload.to_json())
-            .await
-            .map_err(MultisigError::proposal_push)?;
 
         let proposal = Proposal::new(
             tx_summary,
@@ -1046,9 +991,68 @@ impl ProposalBuilder {
             },
             metadata,
         );
-        Self::ensure_response_commitment(&proposal, &response.commitment)?;
+        Ok(ProposalDraft::new(proposal, payload))
+    }
+}
 
-        Ok(proposal)
+impl ProposalDraft {
+    pub(crate) fn new(proposal: Proposal, payload: ProposalPayload) -> Self {
+        Self { proposal, payload }
+    }
+
+    fn account_id(&self) -> AccountId {
+        self.proposal.tx_summary.account_delta().id()
+    }
+
+    /// Asks GUARDIAN whether this proposal would be created, without storing it. It carries no
+    /// signature: nothing it checks is stored, so it must not hand GUARDIAN an approval. A
+    /// refusal is the same error a push returns. Advisory: approval still decides.
+    pub(crate) async fn check(
+        &self,
+        guardian_client: &mut GuardianClient,
+    ) -> Result<ProposalCheck> {
+        let response = guardian_client
+            .check_delta_proposal(
+                &self.account_id(),
+                self.proposal.nonce,
+                &self.payload.to_json(),
+            )
+            .await
+            .map_err(MultisigError::proposal_push)?;
+        Ok(ProposalCheck {
+            complete: response.complete,
+        })
+    }
+
+    /// Signs the proposal with `key_manager`, the proposer it was drafted for, and creates it on
+    /// GUARDIAN. Refuses a reply whose commitment is not the summary's.
+    pub(crate) async fn push(
+        self,
+        guardian_client: &mut GuardianClient,
+        key_manager: &dyn KeyManager,
+    ) -> Result<Proposal> {
+        let account_id = self.account_id();
+        let payload = self
+            .payload
+            .with_signature(key_manager, self.proposal.tx_summary.to_commitment());
+        let response = guardian_client
+            .push_delta_proposal(&account_id, self.proposal.nonce, &payload.to_json())
+            .await
+            .map_err(MultisigError::proposal_push)?;
+        Self::ensure_response_commitment(&self.proposal, &response.commitment)?;
+        Ok(self.proposal)
+    }
+
+    fn ensure_response_commitment(proposal: &Proposal, response_commitment: &str) -> Result<()> {
+        let response_commitment = ensure_hex_prefix(response_commitment);
+        if hex_body_eq(&proposal.id, &response_commitment) {
+            return Ok(());
+        }
+
+        Err(MultisigError::GuardianServer(format!(
+            "GUARDIAN returned proposal commitment {} but transaction summary commitment is {}",
+            response_commitment, proposal.id
+        )))
     }
 }
 
@@ -1162,7 +1166,7 @@ mod tests {
     #[test]
     fn ensure_response_commitment_rejects_mismatch() {
         let proposal = test_proposal();
-        let result = ProposalBuilder::ensure_response_commitment(
+        let result = ProposalDraft::ensure_response_commitment(
             &proposal,
             "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
         );

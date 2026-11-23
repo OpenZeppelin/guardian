@@ -5,7 +5,7 @@
  * for proposal management.
  */
 
-import { GuardianHttpClient, GuardianHttpError, type ProposalExecution, type TransactionRequestEnvelope, type AbandonCandidateResponse, type AbandonStatus, type DeltaObject, type HistoryOptions, type HistoryPage, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/guardian-client';
+import { GuardianHttpClient, GuardianHttpError, type CheckProposalResult, type Policy, type ProposalExecution, type TransactionRequestEnvelope, type AbandonCandidateResponse, type AbandonStatus, type DeltaObject, type HistoryOptions, type HistoryPage, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/guardian-client';
 import type {
   ConsumableNote,
   ExportedProposal,
@@ -194,6 +194,61 @@ export interface AccountStateVerificationResult {
  * knob lives in a single trailing options bag, so call sites never need
  * positional `undefined` holes to reach a later option.
  */
+/**
+ * A transaction to check against GUARDIAN's policy modules before proposing it, one variant per
+ * typed `create*Proposal` method with that method's arguments. `switch_guardian` is not listed:
+ * leaving a GUARDIAN is never gated by its modules.
+ */
+export type CheckableTransaction =
+  | { type: 'p2id'; recipientId: string; faucetId: string; amount: bigint; options?: CreateP2idProposalOptions }
+  | { type: 'addSigner'; newSigner: SignerInput; options?: CreateSignerProposalOptions }
+  | { type: 'removeSigner'; signer: string; options?: CreateSignerProposalOptions }
+  | { type: 'changeThreshold'; newThreshold: number; options?: CreateProposalOptions }
+  | {
+      type: 'updateProcedureThreshold';
+      procedure: ProcedureName;
+      threshold: number;
+      options?: CreateProposalOptions;
+    }
+  | { type: 'consumeNotes'; noteIds: string[]; options?: CreateProposalOptions }
+  | {
+      type: 'custom';
+      transactionRequestBytes: Uint8Array;
+      proposalType: string;
+      options?: CreateProposalOptions;
+    };
+
+/**
+ * A proposal built for the account and not yet sent: what GUARDIAN would store. A check and a
+ * push send the same draft, so a check answers for exactly the proposal a push would create.
+ */
+interface ProposalDraft {
+  nonce: number;
+  /** The commitment of the account state the summary was built on, for a summary this client
+   * built (issue #517); GUARDIAN checks it is the queue tail. Absent for a caller-supplied one. */
+  baseCommitment?: string;
+  txSummaryBase64: string;
+  metadata: ProposalMetadata;
+  transactionRequest: TransactionRequestEnvelope | undefined;
+}
+
+/**
+ * The payload GUARDIAN receives for `draft`, with the proposer's approval when it signs on
+ * create. A check sends none.
+ */
+function deltaPayloadOf(
+  draft: ProposalDraft,
+  signatures: { signerId: string; signature: ProposalSignature }[] = [],
+) {
+  return {
+    txSummary: { data: draft.txSummaryBase64 },
+    signatures,
+    metadata: ProposalMetadataCodec.toGuardian(draft.metadata),
+    ...(draft.transactionRequest ? { transactionRequest: draft.transactionRequest } : {}),
+    ...(draft.baseCommitment !== undefined ? { baseCommitment: draft.baseCommitment } : {}),
+  };
+}
+
 export interface CreateProposalOptions {
   /**
    * Proposal nonce: the account nonce the executed transaction will have.
@@ -235,6 +290,11 @@ export interface CreateProposalOptions {
 interface ProposalCreation {
   summary: 'built_here' | 'caller_supplied';
   signOnCreate: boolean;
+}
+
+/** How a typed `create*Proposal` method pushes the draft it built. */
+function builtHere(options: CreateProposalOptions | undefined): ProposalCreation {
+  return { summary: 'built_here', signOnCreate: options?.signOnCreate === true };
 }
 
 /**
@@ -1442,15 +1502,40 @@ export class Multisig {
     }
     await this.refreshConfigFromStore();
     this.assertKeySchemeMatches();
-    return this.pushProposal({ nonce }, txSummaryBase64, metadata, undefined, {
-      summary: 'caller_supplied',
-      signOnCreate: false,
+    return this.pushDraft(
+      { nonce, txSummaryBase64, metadata, transactionRequest: undefined },
+      { summary: 'caller_supplied', signOnCreate: false },
+    );
+  }
+
+  /**
+   * The policies GUARDIAN applies to this account, as far as its operator discloses them, in
+   * the order they are evaluated. Mirrors the Rust `MultisigClient::get_policies`.
+   */
+  async getPolicies(): Promise<Policy[]> {
+    return this.guardian.getPolicies(this._accountId);
+  }
+
+  /**
+   * Asks GUARDIAN whether `transaction` would be accepted as a proposal: it is built exactly as
+   * the matching `create*Proposal` method builds it, but nothing is stored and no proposal slot
+   * is taken. Resolves with `complete: false` when a module that opts out of checks was skipped.
+   * A policy refusal rejects with the same `GuardianHttpError` creation would
+   * (`moduleRefusal()`). Advisory: approval still decides, and GUARDIAN rate limits checks per
+   * account and signer. Mirrors the Rust `MultisigClient::check_transaction`.
+   */
+  async checkTransaction(transaction: CheckableTransaction): Promise<CheckProposalResult> {
+    const draft = await this.draftFor(transaction);
+    return this.guardian.checkDeltaProposal({
+      accountId: this._accountId,
+      nonce: draft.nonce,
+      deltaPayload: deltaPayloadOf(draft),
     });
   }
 
   /**
-   * Push a proposal to GUARDIAN and parse the reply against the signer config
-   * the caller refreshed from the store.
+   * Push a drafted proposal to GUARDIAN and parse the reply against the signer config the
+   * caller refreshed from the store.
    *
    * A summary this client derived from the request it built alongside
    * `metadata` (`built_here`) is checked only against the commitment GUARDIAN
@@ -1462,15 +1547,8 @@ export class Multisig {
    * answers a push of a proposal it already holds with the stored copy, which
    * drops the pushed signature.
    */
-  private async pushProposal(
-    label: ProposalLabel,
-    txSummaryBase64: string,
-    metadata: ProposalMetadata,
-    transactionRequest: TransactionRequestEnvelope | undefined,
-    creation: ProposalCreation,
-  ): Promise<Proposal> {
-    const guardianMetadata = ProposalMetadataCodec.toGuardian(metadata);
-    const commitment = normalizeHexWord(computeCommitmentFromTxSummary(txSummaryBase64));
+  private async pushDraft(draft: ProposalDraft, creation: ProposalCreation): Promise<Proposal> {
+    const commitment = normalizeHexWord(computeCommitmentFromTxSummary(draft.txSummaryBase64));
     const signatures = creation.signOnCreate
       ? [
           {
@@ -1479,20 +1557,13 @@ export class Multisig {
           },
         ]
       : [];
-
     const response = await this.guardian.pushDeltaProposal({
       accountId: this._accountId,
-      nonce: label.nonce,
-      deltaPayload: {
-        txSummary: { data: txSummaryBase64 },
-        signatures,
-        metadata: guardianMetadata,
-        ...(transactionRequest ? { transactionRequest } : {}),
-        ...(label.baseCommitment !== undefined ? { baseCommitment: label.baseCommitment } : {}),
-      },
+      nonce: draft.nonce,
+      deltaPayload: deltaPayloadOf(draft, signatures),
     });
 
-    const proposal = this.proposalFactory().fromDelta(response.delta, response.commitment, metadata);
+    const proposal = this.proposalFactory().fromDelta(response.delta, response.commitment, draft.metadata);
     switch (creation.summary) {
       case 'built_here':
         if (proposal.id !== commitment) {
@@ -1520,6 +1591,43 @@ export class Multisig {
     this.guardianKnownProposalIds.add(proposal.id);
 
     return proposal;
+  }
+
+  /** Drafts `transaction` as its typed `create*Proposal` method would, without sending it. */
+  private draftFor(transaction: CheckableTransaction): Promise<ProposalDraft> {
+    switch (transaction.type) {
+      case 'p2id':
+        return this.draftP2id(
+          transaction.recipientId,
+          transaction.faucetId,
+          transaction.amount,
+          transaction.options,
+        );
+      case 'addSigner':
+        return this.draftAddSigner(transaction.newSigner, transaction.options);
+      case 'removeSigner':
+        return this.draftRemoveSigner(transaction.signer, transaction.options);
+      case 'changeThreshold':
+        return this.draftChangeThreshold(transaction.newThreshold, transaction.options);
+      case 'updateProcedureThreshold':
+        return this.draftUpdateProcedureThreshold(
+          transaction.procedure,
+          transaction.threshold,
+          transaction.options,
+        );
+      case 'consumeNotes':
+        return this.draftConsumeNotes(transaction.noteIds, transaction.options);
+      case 'custom':
+        return this.draftCustom(
+          transaction.transactionRequestBytes,
+          transaction.proposalType,
+          transaction.options,
+        );
+      default: {
+        const unreachable: never = transaction;
+        throw new Error(`Unknown transaction ${JSON.stringify(unreachable)}`);
+      }
+    }
   }
 
   /**
@@ -1613,6 +1721,14 @@ export class Multisig {
     options: CreateSignerProposalOptions = {},
     ...legacyArgs: never[]
   ): Promise<Proposal> {
+    return this.pushDraft(await this.draftAddSigner(newSigner, options, legacyArgs), builtHere(options));
+  }
+
+  private async draftAddSigner(
+    newSigner: SignerInput,
+    options: CreateSignerProposalOptions = {},
+    legacyArgs: never[] = [],
+  ): Promise<ProposalDraft> {
     await this.refreshConfigFromStore();
     assertProposalOptionsBag('createAddSignerProposal', options, legacyArgs);
     this.assertKeySchemeMatches();
@@ -1651,10 +1767,7 @@ export class Multisig {
       description: `Add signer ${newCommitment.slice(0, 10)}...`,
     };
 
-    return this.pushProposal(proposalLabel, summaryBase64, metadata, transactionRequest, {
-      summary: 'built_here',
-      signOnCreate: options.signOnCreate === true,
-    });
+    return { ...proposalLabel, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   /**
@@ -1669,6 +1782,14 @@ export class Multisig {
     options: CreateSignerProposalOptions = {},
     ...legacyArgs: never[]
   ): Promise<Proposal> {
+    return this.pushDraft(await this.draftRemoveSigner(signerToRemove, options, legacyArgs), builtHere(options));
+  }
+
+  private async draftRemoveSigner(
+    signerToRemove: string,
+    options: CreateSignerProposalOptions = {},
+    legacyArgs: never[] = [],
+  ): Promise<ProposalDraft> {
     await this.refreshConfigFromStore();
     assertProposalOptionsBag('createRemoveSignerProposal', options, legacyArgs);
     this.assertKeySchemeMatches();
@@ -1713,10 +1834,7 @@ export class Multisig {
       description: `Remove signer ${signerToRemove.slice(0, 10)}...`,
     };
 
-    return this.pushProposal(proposalLabel, summaryBase64, metadata, transactionRequest, {
-      summary: 'built_here',
-      signOnCreate: options.signOnCreate === true,
-    });
+    return { ...proposalLabel, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   /**
@@ -1729,6 +1847,13 @@ export class Multisig {
     newThreshold: number,
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
+    return this.pushDraft(await this.draftChangeThreshold(newThreshold, options), builtHere(options));
+  }
+
+  private async draftChangeThreshold(
+    newThreshold: number,
+    options: CreateProposalOptions = {},
+  ): Promise<ProposalDraft> {
     await this.refreshConfigFromStore();
     assertProposalOptionsBag('createChangeThresholdProposal', options);
     this.assertKeySchemeMatches();
@@ -1763,10 +1888,7 @@ export class Multisig {
       description: `Change threshold from ${this.threshold} to ${newThreshold}`,
     };
 
-    return this.pushProposal(proposalLabel, summaryBase64, metadata, transactionRequest, {
-      summary: 'built_here',
-      signOnCreate: options.signOnCreate === true,
-    });
+    return { ...proposalLabel, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   async createUpdateProcedureThresholdProposal(
@@ -1774,6 +1896,14 @@ export class Multisig {
     targetThreshold: number,
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
+    return this.pushDraft(await this.draftUpdateProcedureThreshold(targetProcedure, targetThreshold, options), builtHere(options));
+  }
+
+  private async draftUpdateProcedureThreshold(
+    targetProcedure: ProcedureName,
+    targetThreshold: number,
+    options: CreateProposalOptions = {},
+  ): Promise<ProposalDraft> {
     await this.refreshConfigFromStore();
     assertProposalOptionsBag('createUpdateProcedureThresholdProposal', options);
     this.assertKeySchemeMatches();
@@ -1818,10 +1948,7 @@ export class Multisig {
       description: action,
     };
 
-    return this.pushProposal(proposalLabel, summaryBase64, metadata, transactionRequest, {
-      summary: 'built_here',
-      signOnCreate: options.signOnCreate === true,
-    });
+    return { ...proposalLabel, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   /**
@@ -1853,10 +1980,10 @@ export class Multisig {
     // sign/execute (which fetch from GUARDIAN) can find it. To leave an
     // unreachable GUARDIAN, use createSwitchGuardianProposalOffline instead.
     const proposalLabel = await this.resolveProposalLabel('createSwitchGuardianProposal', options);
-    return this.pushProposal(proposalLabel, summaryBase64, metadata, undefined, {
-      summary: 'built_here',
-      signOnCreate: options.signOnCreate === true,
-    });
+    return this.pushDraft(
+      { ...proposalLabel, txSummaryBase64: summaryBase64, metadata, transactionRequest: undefined },
+      builtHere(options),
+    );
   }
 
   /**
@@ -1993,6 +2120,13 @@ export class Multisig {
     noteIds: string[],
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
+    return this.pushDraft(await this.draftConsumeNotes(noteIds, options), builtHere(options));
+  }
+
+  private async draftConsumeNotes(
+    noteIds: string[],
+    options: CreateProposalOptions = {},
+  ): Promise<ProposalDraft> {
     assertProposalOptionsBag('createConsumeNotesProposal', options);
     if (noteIds.length === 0) {
       throw new Error('At least one note ID is required');
@@ -2053,10 +2187,7 @@ export class Multisig {
       throw new ConsumeNotesMetadataOversizeError(MAX_CONSUME_NOTES_METADATA_BYTES, metadataSize);
     }
 
-    return this.pushProposal(proposalLabel, summaryBase64, metadata, transactionRequest, {
-      summary: 'built_here',
-      signOnCreate: options.signOnCreate === true,
-    });
+    return { ...proposalLabel, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   /**
@@ -2076,6 +2207,16 @@ export class Multisig {
     options: CreateP2idProposalOptions = {},
     ...legacyArgs: never[]
   ): Promise<Proposal> {
+    return this.pushDraft(await this.draftP2id(recipientId, faucetId, amount, options, legacyArgs), builtHere(options));
+  }
+
+  private async draftP2id(
+    recipientId: string,
+    faucetId: string,
+    amount: bigint,
+    options: CreateP2idProposalOptions = {},
+    legacyArgs: never[] = [],
+  ): Promise<ProposalDraft> {
     await this.refreshConfigFromStore();
     assertProposalOptionsBag('createP2idProposal', options, legacyArgs);
     this.assertKeySchemeMatches();
@@ -2115,10 +2256,7 @@ export class Multisig {
       description: `Send ${amount} of asset ${faucetId.slice(0, 10)}... to ${recipientId.slice(0, 10)}...`,
     };
 
-    return this.pushProposal(proposalLabel, summaryBase64, metadata, transactionRequest, {
-      summary: 'built_here',
-      signOnCreate: options.signOnCreate === true,
-    });
+    return { ...proposalLabel, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   /**
@@ -2892,6 +3030,14 @@ export class Multisig {
     proposalType: string,
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
+    return this.pushDraft(await this.draftCustom(transactionRequestBytes, proposalType, options), builtHere(options));
+  }
+
+  private async draftCustom(
+    transactionRequestBytes: Uint8Array,
+    proposalType: string,
+    options: CreateProposalOptions = {},
+  ): Promise<ProposalDraft> {
     await this.refreshConfigFromStore();
     assertProposalOptionsBag('createCustomProposal', options);
     this.assertKeySchemeMatches();
@@ -2923,10 +3069,7 @@ export class Multisig {
       requiredSignatures: this.getEffectiveThreshold('custom'),
     };
 
-    return this.pushProposal(proposalLabel, summaryBase64, metadata, transactionRequest, {
-      summary: 'built_here',
-      signOnCreate: options.signOnCreate === true,
-    });
+    return { ...proposalLabel, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   /**

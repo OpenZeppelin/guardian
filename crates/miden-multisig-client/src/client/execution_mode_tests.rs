@@ -1196,3 +1196,63 @@ async fn abandon_status_compares_commitments_ignoring_case() {
         super::AbandonStatus::Landed
     );
 }
+
+/// A threshold change drafted for `client`'s account, with `client`'s key as its proposer.
+async fn draft_on(client: &mut MultisigClient) -> crate::transaction::ProposalDraft {
+    let account = client.require_account().unwrap().clone();
+    let node_rpc = client.node_rpc_client();
+    crate::transaction::ProposalBuilder::new(TransactionType::UpdateProcedureThreshold {
+        procedure: ProcedureName::ReceiveAsset,
+        new_threshold: 1,
+    })
+    .with_execution_mode(client.execution_mode)
+    .draft(
+        &mut client.miden_client,
+        &node_rpc,
+        &account,
+        client.key_manager.as_ref(),
+    )
+    .await
+    .unwrap()
+}
+
+/// A check answers for exactly the proposal a push would create: same nonce, same payload, and
+/// no approval, since nothing a check sends is stored.
+#[tokio::test]
+async fn a_check_sends_the_payload_a_push_sends_without_the_signature() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut client, handle, _signers) = proposing_client(
+        dir.path(),
+        ProposalExecutionMode::GuardianExecutable,
+        AccountShape::OneSigner,
+        MockGuardianService::default(),
+    )
+    .await;
+    let draft = draft_on(&mut client).await;
+    let mut guardian = client.create_authenticated_guardian_client().await.unwrap();
+
+    let check = draft.check(&mut guardian).await.unwrap();
+    assert!(!check.complete);
+    assert!(
+        handle.pushed_proposals().is_empty(),
+        "a check creates nothing"
+    );
+    let _ = draft.push(&mut guardian, client.key_manager.as_ref()).await;
+
+    let checked = &handle.checked_proposals()[0];
+    let pushed = &handle.pushed_proposals()[0];
+    assert_eq!(checked.nonce, pushed.nonce);
+    let checked: serde_json::Value = serde_json::from_str(&checked.delta_payload).unwrap();
+    let mut pushed: serde_json::Value = serde_json::from_str(&pushed.delta_payload).unwrap();
+    assert!(
+        checked.get("signatures").is_none(),
+        "a check carries no approval"
+    );
+    let signatures = pushed
+        .as_object_mut()
+        .unwrap()
+        .remove("signatures")
+        .expect("a push carries the proposer's approval");
+    assert_eq!(signatures.as_array().unwrap().len(), 1);
+    assert_eq!(checked, pushed);
+}

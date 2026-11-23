@@ -2,12 +2,13 @@
 
 Minimal browser UI for Guardian operator endpoints using a generated Falcon key.
 
-This example does only four things:
+This example does only these things:
 
 - generate and persist a Falcon key in the browser
 - show the derived public key and commitment
 - call `@openzeppelin/guardian-operator-client`
 - let you manually drive challenge, login, account list, account detail, and logout
+- read and write policy module state (see [Policy modules panel](#policy-modules-panel))
 
 ## Setup
 
@@ -138,19 +139,94 @@ Then exercise each profile:
 Guardian with `cargo run -p guardian-server --features authz-test-probe`
 when smoke-testing US2; release builds return `404` for that path.
 
-**Note on `policies:write`**: the v1 permission vocabulary includes
-`policies:write` but no route requires it yet. Granting it on an
-allowlist entry loads cleanly but has no behavioral effect — the
-first consumer ships with #182. The grant is **not** inert against
-downgrade though: rolling back to a server build that predates the
-permission will fail to load the allowlist. Remove forward-defined
-permissions before downgrading the server binary.
+**Note on module permissions**: `policies:write`, `policies:write_global`
+and `modules:disable` gate the policy module writes (see
+[Policy modules panel](#policy-modules-panel)). Rolling back to a server
+build that predates one of them fails to load the allowlist, so remove
+them before downgrading the server binary.
 
 The browser UI's `Operator Public Keys JSON` field shows the legacy
 single-string form — to test profile B or C, paste a JSON array of
 mixed entries into the file directly and the next Guardian reload
 will pick them up (hot-reload is already supported by
 `002-operator-auth`).
+
+## Policy modules panel
+
+The `Policy modules` panel drives the operator module endpoints (RFC 0002,
+issue #251; not in a release yet). Endpoint semantics are in
+[`docs/DASHBOARD.md`](../../docs/DASHBOARD.md#policy-modules) and the
+walkthrough is the
+[policy modules guide](../../docs/guides/policy-modules/README.md). The panel
+covers:
+
+- **Catalog**: `Load catalog` lists every instance with its id, kind, scope,
+  hooks, enabled flag, circuit, enabled and params drift, plus the
+  `catalogHash`, `paramsVersion` and undeclared instances. Each card has
+  `Enable` and `Disable` (a `409 GUARDIAN_MODULE_NOT_DISABLEABLE` is expected
+  for an instance without `operator_can_disable`) and `Use in forms`, which
+  copies its id and current global params into the forms below.
+- **Params history**: newest first for one module id. `Load older` pages with
+  `before` set to the last entry's `id`; it is disabled once a page returns
+  fewer entries than the limit.
+- **Account modules**: `Load account modules` shows `accountParamsVersion` and
+  the entries in evaluation order for the `Account ID` from the Accounts panel.
+- **Writes**: set an instance's global params, set or clear an account layer
+  on a `scope = all` instance, and replace the account's assignment with a
+  JSON array of `{ "moduleId": ..., "params": {...} }` (`Copy current
+  assignment` fills it from the loaded account modules). Params are checked
+  as JSON objects in the browser before anything is sent, and every write
+  sends the panel's `Reason`, which is required.
+
+Errors show in the Session panel's `Action error` box as
+`HTTP <status> [<code>] <message>`, so a missing permission reads as
+`HTTP 403 [insufficient_operator_permission] ...`.
+
+### Starting Guardian with a catalog
+
+Use the guide's built-in catalog,
+[`docs/guides/policy-modules/built-in.toml`](../../docs/guides/policy-modules/built-in.toml),
+and its environment file, from the repository root (guide steps 2 and 3):
+
+```bash
+mkdir -p .guardian
+cp docs/guides/policy-modules/built-in.toml .guardian/
+cp docs/guides/policy-modules/.env.example docs/guides/policy-modules/.env
+cp docs/guides/policy-modules/operators.example.json .guardian/operators.json
+# Replace 0xREPLACE_WITH_FAUCET_ID in .guardian/built-in.toml (the server does not start until you do).
+
+set -a && . docs/guides/policy-modules/.env && set +a
+cargo run -p guardian-server --bin server
+```
+
+The guide's `.env` points `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` at
+`.guardian/operators.json`. Instead of the guide's `modules_admin keygen`
+key, paste this UI's signer public key (the string inside `Operator Public
+Keys JSON`) into the `public_key` field, keeping the structured entry so the
+permissions apply:
+
+```json
+[
+  {
+    "public_key": "0x<public key from the UI>",
+    "permissions": ["dashboard:read", "policies:write", "policies:write_global", "modules:disable"]
+  }
+]
+```
+
+| Panel action | Permission |
+|---|---|
+| Load catalog, params history, account modules | `dashboard:read` |
+| Set or clear an account layer, replace assignment, enable | `policies:write` |
+| Set global params | `policies:write_global` |
+| Disable | `policies:write` or `modules:disable` |
+
+To see the `403` path, drop a permission from the entry and repeat the
+write; the allowlist is reread without a restart. With `built-in.toml`, try
+`Set account layer` on `blocklist` with `{"denylist": ["0x..."]}`, and
+replace an account's assignment with
+`[{"moduleId": "treasury-allowlist", "params": {"allowlist": ["0x..."]}}]`.
+Each write then appears in `Params history` for that module.
 
 ## Inspecting audit events
 

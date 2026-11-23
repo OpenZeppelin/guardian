@@ -100,7 +100,7 @@ async fn offline_creation_queries(scheme: SignatureScheme, seed: u8) -> Vec<Opti
     handle.get_pubkey_schemes()
 }
 
-/// Online creation (`ProposalBuilder::build_switch_guardian`), against a mock
+/// Online creation (`ProposalBuilder::draft_switch_guardian`), against a mock
 /// current GUARDIAN. The build is allowed to fail past the endpoint check:
 /// the mock's canned push response carries no matching commitment, and the
 /// call under test has already happened by then.

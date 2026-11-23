@@ -6,18 +6,34 @@ export {
   parseErrorBody,
 } from './http.js';
 
-export type { ListAccountsOptions, PaginationOptions, ParsedErrorBody } from './http.js';
+export type { ListAccountsOptions, PaginationOptions, ParamsWriteOptions, ParsedErrorBody } from './http.js';
 
 export {
   ACCOUNTS_PAUSE,
   DASHBOARD_READ,
+  MODULES_DISABLE,
   POLICIES_WRITE,
+  POLICIES_WRITE_GLOBAL,
   STATS_REFRESH,
 } from './permissions.js';
 
 export type { OperatorPermission } from './permissions.js';
 
 export type {
+  AccountModuleEntry,
+  AccountModules,
+  ModuleAssignment,
+  ModuleCatalog,
+  ModuleCircuit,
+  ModuleClientReason,
+  ModuleDisclosure,
+  ModuleInstance,
+  ModuleParams,
+  ModuleParamsHistory,
+  ModuleParamsHistoryEntry,
+  ModuleParamsHistoryOptions,
+  ModuleScope,
+  UndeclaredModuleInstance,
   AccountPausedErrorDetails,
   AccountReleasedErrorDetails,
   AccountStatus,
@@ -37,6 +53,8 @@ export type {
   DashboardDeltaDecodedAsset,
   DashboardDeltaDecodedNote,
   DashboardDeltaDetail,
+  DashboardDeltaModuleApproval,
+  DashboardDeltaModuleFailedOpen,
   DashboardDeltaEntry,
   DashboardDeltaNoteCounts,
   DashboardDeltaNoteTag,
