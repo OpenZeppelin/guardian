@@ -198,6 +198,21 @@ pub trait ModuleStore: Send + Sync {
         change: &Change<'_>,
     ) -> Result<Option<u64>, String>;
 
+    /// Stores catalog params that moved out of the catalog file: replaces the global params
+    /// with `params` (in the module's normalized form when it has one) only while they are
+    /// still the empty placeholder a file-managed seed left, and records `seed`, the catalog
+    /// value as written, as the instance's seed, so a later start no longer sees a
+    /// file-managed seed and does not adopt over an operator's later write, `{}` included.
+    /// Returns the version it committed as, or `None` when it did not write (an operator wrote
+    /// first; the seed then stays file-managed until a later start adopts).
+    async fn adopt_catalog_params(
+        &self,
+        module_id: &str,
+        params: serde_json::Value,
+        seed: serde_json::Value,
+        change: &Change<'_>,
+    ) -> Result<Option<u64>, String>;
+
     async fn account_params(&self, account_id: &str) -> Result<Vec<AccountParamsRow>, String>;
 
     /// What one evaluation reads, in one read: the instance params version, the account's
@@ -481,6 +496,43 @@ impl FsModuleStore {
     }
 }
 
+/// Whether a conditional global write also replaces the instance's seed.
+pub(crate) enum Reseed {
+    Keep,
+    To(serde_json::Value),
+}
+
+impl FsModuleStore {
+    fn write_global_if(
+        &self,
+        module_id: &str,
+        expected: &serde_json::Value,
+        params: serde_json::Value,
+        change: &Change<'_>,
+        reseed: Reseed,
+    ) -> Result<Option<u64>, String> {
+        self.write(|tables| {
+            let Some(row) = tables
+                .instances
+                .get_mut(module_id)
+                .filter(|row| row.global_params == *expected)
+            else {
+                return Ok(None);
+            };
+            let previous = std::mem::replace(&mut row.global_params, params.clone());
+            match reseed {
+                Reseed::Keep => {}
+                Reseed::To(seed) => row.seeded_params = seed,
+            }
+            row.updated_at = change.at.clone();
+            row.updated_by = change.operator.to_string();
+            let version = tables.bump(None);
+            tables.append(version, module_id, None, previous, params, change);
+            Ok(Some(version))
+        })
+    }
+}
+
 #[async_trait]
 impl ModuleStore for FsModuleStore {
     async fn seed_instance(
@@ -591,21 +643,23 @@ impl ModuleStore for FsModuleStore {
         params: serde_json::Value,
         change: &Change<'_>,
     ) -> Result<Option<u64>, String> {
-        self.write(|tables| {
-            let Some(row) = tables
-                .instances
-                .get_mut(module_id)
-                .filter(|row| row.global_params == *expected)
-            else {
-                return Ok(None);
-            };
-            let previous = std::mem::replace(&mut row.global_params, params.clone());
-            row.updated_at = change.at.clone();
-            row.updated_by = change.operator.to_string();
-            let version = tables.bump(None);
-            tables.append(version, module_id, None, previous, params, change);
-            Ok(Some(version))
-        })
+        self.write_global_if(module_id, expected, params, change, Reseed::Keep)
+    }
+
+    async fn adopt_catalog_params(
+        &self,
+        module_id: &str,
+        params: serde_json::Value,
+        seed: serde_json::Value,
+        change: &Change<'_>,
+    ) -> Result<Option<u64>, String> {
+        self.write_global_if(
+            module_id,
+            &serde_json::json!({}),
+            params,
+            change,
+            Reseed::To(seed),
+        )
     }
 
     async fn account_params(&self, account_id: &str) -> Result<Vec<AccountParamsRow>, String> {
@@ -1228,5 +1282,57 @@ mod tests {
         assert_eq!(ids, [2, 1], "entries keep their place across a restart");
         assert_eq!(reopened.account_params("0xacc").await.unwrap().len(), 1);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn adopted_catalog_params_replace_the_placeholder_and_the_seed_once() {
+        let store = FsModuleStore::in_memory();
+        let file_managed = json!({ "api_key": { "$secret": "vendor-key" }, "cap": 5 });
+        store
+            .seed_instance(
+                "vendor",
+                true,
+                &json!({}),
+                &file_managed,
+                "2026-10-15T00:00:00Z",
+            )
+            .await
+            .unwrap();
+        assert!(
+            store
+                .adopt_catalog_params(
+                    "vendor",
+                    json!({ "cap": "5" }),
+                    json!({ "cap": 5 }),
+                    &change()
+                )
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let row = store.instances().await.unwrap().remove(0);
+        assert_eq!(
+            row.global_params,
+            json!({ "cap": "5" }),
+            "the normalized params apply"
+        );
+        assert_eq!(
+            row.seeded_params,
+            json!({ "cap": 5 }),
+            "the seed is the catalog value as written"
+        );
+        assert_eq!(
+            store
+                .adopt_catalog_params(
+                    "vendor",
+                    json!({ "cap": 9 }),
+                    json!({ "cap": 9 }),
+                    &change()
+                )
+                .await
+                .unwrap(),
+            None,
+            "params that are no longer the placeholder are not adopted over"
+        );
     }
 }

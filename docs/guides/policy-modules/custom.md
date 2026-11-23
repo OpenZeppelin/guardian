@@ -49,10 +49,12 @@ any gRPC stack; the Rust trait above is a thin layer over it.
 
 Every call carries `authorization: Bearer <token>` in its gRPC metadata, with
 the token of the instance it is for, and `instance_id` in the message
-(`Describe` names no instance). Any gRPC error status is a module failure, as
-is a call that outlives the instance's `timeout_ms`, and the instance's
-`on_error` decides; repeated failures open a circuit breaker that skips the
-module until a health probe succeeds. Requests can be up to 2 MiB encoded
+(`Describe` names no instance). A gRPC error status other than
+`INVALID_ARGUMENT` is a module failure, as is a call that outlives the
+instance's `timeout_ms`, and the instance's `on_error` decides; repeated
+failures open a circuit breaker that skips the module until a health probe
+succeeds. `INVALID_ARGUMENT` says the request cannot be judged, and the
+request is refused whatever `on_error` says (see status codes below). Requests can be up to 2 MiB encoded
 (`GUARDIAN_MODULE_REQUEST_MAX_BYTES`), so keep your server's receive limit at
 least that high (tonic's default is 4 MiB).
 
@@ -65,9 +67,12 @@ least that high (tonic's default is 4 MiB).
 | `message` | For the operator: logged with the decision, never sent to clients |
 | `client_message` | Optional, for the person who sent the request, via `.with_client_message(..)`. Plain text: the Guardian drops control characters, collapses whitespace and keeps at most 256 characters. Shown only for instances with `client_reason = "full"` (the default); with `"generic"` the client sees `reason_code = "policy_denied"` and nothing else |
 
-Return `ModuleError` for a request you cannot judge (a missing projection,
-params you cannot read). It is a module failure and `on_error` decides, so a
-module never allows by accident.
+Return `ModuleError::InvalidRequest` for a request you cannot judge (a
+missing projection, params you cannot read). The request is refused with
+`GUARDIAN_MODULE_UNAVAILABLE` whatever `on_error` says, since a requester can
+shape a request on purpose, so a module never allows by accident. Return
+`ModuleError::Unavailable` or `ModuleError::Internal` for your own failures (a
+data source that is down): those are module failures and `on_error` decides.
 
 ## Changing your module across releases
 
@@ -208,8 +213,9 @@ What the Guardian expects on the wire:
   instance's token. Check it against the instance the request names
   (`HookRequest.instance_id`), and refuse an unknown instance.
 - **Status codes.** `INVALID_ARGUMENT` means "I cannot judge this request": the
-  instance's `on_error` applies to that request only, and it does not count
-  toward the circuit breaker. `UNAVAILABLE`, `DEADLINE_EXCEEDED` and `UNKNOWN`
+  request is refused with `GUARDIAN_MODULE_UNAVAILABLE` whatever the instance's
+  `on_error` says, since a requester can shape a request on purpose, and it
+  does not count toward the circuit breaker. `UNAVAILABLE`, `DEADLINE_EXCEEDED` and `UNKNOWN`
   mean the module is down: they count toward the breaker, and on `Describe` at
   startup an already-known instance starts unavailable instead of stopping the
   server. Any other status (`UNAUTHENTICATED`, `PERMISSION_DENIED`, `INTERNAL`,
@@ -240,7 +246,9 @@ The Rust conformance suite runs in process only, so port its cases (listed in
 A custom build is the official server plus one `with_module_kind` call per
 kind. [`ServerBuilder::from_env`](../../../crates/server/src/builder/env.rs)
 configures everything else from the environment exactly as the stock `server`
-binary does, so there is no setup to copy or keep in step:
+binary does, and `start` runs the startup account recovery
+`GUARDIAN_STARTUP_ACCOUNT_RECOVERY` asks for before serving, as the binary
+does, so there is no setup to copy or keep in step:
 
 ```rust
 ServerBuilder::from_env()
@@ -250,8 +258,12 @@ ServerBuilder::from_env()
     .build()
     .await
     .expect("Failed to build server")
-    .run()
-    .await;
+    .start()
+    .await
+    .unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1)
+    });
 ```
 
 The factory gets each catalog instance's configuration and returns the module.

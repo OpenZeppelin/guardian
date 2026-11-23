@@ -25,7 +25,7 @@ fn port(var: &str, default: u16) -> u16 {
 async fn main() {
     dotenvy::dotenv().ok();
 
-    ServerBuilder::from_env()
+    let server = ServerBuilder::from_env()
         .await
         .unwrap_or_else(|error| panic!("Failed to configure server: {error}"))
         .with_module_kind(note_policy::KIND, Arc::new(note_policy::NotePolicyFactory))
@@ -33,7 +33,9 @@ async fn main() {
         .grpc(true, port("GUARDIAN_EXAMPLE_GRPC_PORT", DEFAULT_GRPC_PORT))
         .build()
         .await
-        .unwrap_or_else(|error| panic!("Failed to build server: {error}"))
-        .run()
-        .await;
+        .unwrap_or_else(|error| panic!("Failed to build server: {error}"));
+    if let Err(error) = server.start().await {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
 }

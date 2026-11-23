@@ -112,6 +112,7 @@ impl Stored {
                 }
             } else if was_file_managed && placeholder {
                 tracing::warn!(module = %config.id, "Params moved out of the catalog file; the catalog params apply and are stored as the operator-managed global params");
+                applied.seed_drift.remove(&config.id);
                 applied.adopted.push(config.id.clone());
             } else if row.global_params != config.params {
                 tracing::warn!(module = %config.id, "Catalog params differ from the operator-managed global params; the stored params apply");
@@ -213,10 +214,10 @@ impl StartupWrites<'_> {
                 continue;
             }
             self.store
-                .set_global_if(
+                .adopt_catalog_params(
                     &config.id,
-                    &serde_json::json!({}),
                     params.clone(),
+                    config.params.clone(),
                     &self.change("catalog", "params moved out of the catalog file"),
                 )
                 .await?;
@@ -622,6 +623,29 @@ params = {params}
             store.instances().await.unwrap()[0].global_params,
             serde_json::json!({ "cap": 5 }),
             "from then on the stored params are operator-managed and the catalog only seeds"
+        );
+
+        let cleared = crate::modules::store::Change {
+            operator: "0xoperator",
+            reason: "clear the cap",
+            at: "2026-10-17T00:00:00Z".to_string(),
+            expected_version: None,
+        };
+        store
+            .set_global("vendor", serde_json::json!({}), &cleared)
+            .await
+            .unwrap();
+        start(catalog("{ cap = 5 }")).await.unwrap();
+        let row = store.instances().await.unwrap().remove(0);
+        assert_eq!(
+            row.global_params,
+            serde_json::json!({}),
+            "an operator's later write of empty params is not adopted over"
+        );
+        assert_eq!(
+            row.seeded_params,
+            serde_json::json!({ "cap": 5 }),
+            "the adopted params became the seed"
         );
     }
 

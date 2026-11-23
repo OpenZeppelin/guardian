@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use crate::ack::AckRegistry;
 use crate::block_watch::BlockWatchConfig;
+use crate::builder::handle::StartupRecoveryMode;
 use crate::builder::storage::StorageMetadataBuilder;
 use crate::builder::{BuildError, ServerBuilder};
 use crate::canonicalization::CanonicalizationConfig;
@@ -46,8 +47,9 @@ impl ServerBuilder {
     ///     .with_module_kind("acme-sanctions", factory())
     ///     .build()
     ///     .await?
-    ///     .run()
-    ///     .await;
+    ///     .start()
+    ///     .await
+    ///     .map_err(|error| error.to_string())?;
     /// # Ok(())
     /// # }
     /// ```
@@ -98,6 +100,13 @@ impl ServerBuilder {
             ReleaseSweepConfig::from_env().map_err(invalid("release sweep configuration"))?;
         let block_watch = BlockWatchConfig::from_env_following(release_sweep.enabled)
             .map_err(invalid("block watch configuration"))?;
+        let startup_recovery = StartupRecoveryMode::from_env()?;
+        #[cfg(not(feature = "postgres"))]
+        if startup_recovery != StartupRecoveryMode::Off {
+            return Err("Account recovery requires a Postgres build"
+                .to_string()
+                .into());
+        }
 
         Ok(Self::new()
             .with_logging(LoggingConfig::default())
@@ -107,6 +116,7 @@ impl ServerBuilder {
             .with_execution(execution)
             .with_release_sweep(Some(release_sweep))
             .with_block_watch(Some(block_watch))
+            .with_startup_recovery(startup_recovery)
             .with_rate_limit(RateLimitConfig::from_env())
             .with_body_limit(BodyLimitConfig::from_env())
             .storage(storage)

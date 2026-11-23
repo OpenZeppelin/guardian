@@ -888,11 +888,12 @@ Guardian execution ends `failed` with `GUARDIAN_EXECUTION_MODULE_DENIED` or
    breaks the rule is still a deny: it reaches clients as `policy_denied` and
    logs `Policy module denied with a reason code that breaks the reason code
    rule`. A request the
-   Guardian could not build, or one over `GUARDIAN_MODULE_REQUEST_MAX_BYTES`,
-   is logged as `Policy module request could not be judged; refusing whatever
+   Guardian could not build, one over `GUARDIAN_MODULE_REQUEST_MAX_BYTES`, or
+   one the module rejected as one it cannot judge (`INVALID_ARGUMENT`), is
+   logged as `Policy module request could not be judged; refusing whatever
    on_error says`, counted in `guardian_module_request_refused_total{module,
-   reason}` (`unavailable` or `too_large`), and refused even by a fail-open
-   instance. A fail-open
+   reason}` (`unavailable`, `too_large` or `rejected`), and refused even by a
+   fail-open instance. A fail-open
    failure is also recorded on the signed delta (`modules.failed_open` on
    `GET /dashboard/accounts/{account_id}/deltas/{nonce}`)
    and counted in `guardian_module_fail_open_total`.

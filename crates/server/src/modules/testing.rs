@@ -380,6 +380,20 @@ impl super::store::ModuleStore for RacingStore {
             .await
     }
 
+    async fn adopt_catalog_params(
+        &self,
+        module_id: &str,
+        params: serde_json::Value,
+        seed: serde_json::Value,
+        change: &super::store::Change<'_>,
+    ) -> Result<Option<u64>, String> {
+        let writes = std::mem::take(&mut *self.before_set_global_if.lock().unwrap());
+        self.commit(writes).await?;
+        self.inner
+            .adopt_catalog_params(module_id, params, seed, change)
+            .await
+    }
+
     async fn account_params(
         &self,
         account_id: &str,

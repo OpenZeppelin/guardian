@@ -3,9 +3,9 @@
 use serde::Serialize;
 
 use super::catalog::{ClientReason, Disclosure, Scope, contains_secret_reference};
-use super::pipeline::ModulePipeline;
+use super::pipeline::{ModulePipeline, Rows};
 use super::registry::{Instance, Unhealthy, validate_params};
-use super::store::{Assigned, Change, HistoryEntry, ParamsKind, WriteError};
+use super::store::{Assigned, Change, HistoryEntry, InstanceRow, ParamsKind, WriteError};
 use crate::audit::{AuditEvent, AuditOutcome, kinds};
 use crate::dashboard::AuthenticatedOperator;
 use crate::error::{GuardianError, Result};
@@ -188,14 +188,6 @@ async fn existing_account(state: &AppState, account_id: &str) -> Result<String> 
     Err(GuardianError::AccountNotFound(account_id.to_string()))
 }
 
-async fn version(pipeline: &ModulePipeline) -> Result<u64> {
-    pipeline
-        .store()
-        .instance_version()
-        .await
-        .map_err(GuardianError::StorageError)
-}
-
 fn audit(
     state: &AppState,
     operator: &AuthenticatedOperator,
@@ -274,17 +266,47 @@ async fn instance_view(
     pipeline: &ModulePipeline,
     instance: &Instance,
 ) -> Result<ModuleInstanceView> {
-    let params = pipeline.global_params(instance).await?;
-    let enabled = pipeline.enabled(instance).await?;
-    let seeded = pipeline
+    let stored = stored_instances(pipeline).await?;
+    Ok(view_in(pipeline, instance, &rows_of(&stored), &stored))
+}
+
+fn rows_of(stored: &[InstanceRow]) -> Rows {
+    std::sync::Arc::new(
+        stored
+            .iter()
+            .map(|row| {
+                (
+                    row.module_id.clone(),
+                    (row.global_params.clone(), row.enabled),
+                )
+            })
+            .collect(),
+    )
+}
+
+async fn stored_instances(pipeline: &ModulePipeline) -> Result<Vec<InstanceRow>> {
+    pipeline
         .store()
         .instances()
         .await
-        .map_err(GuardianError::StorageError)?
-        .into_iter()
+        .map_err(GuardianError::StorageError)
+}
+
+/// One instance as `rows` and `stored` show it, so every instance in a listing comes from the
+/// same reads.
+fn view_in(
+    pipeline: &ModulePipeline,
+    instance: &Instance,
+    rows: &Rows,
+    stored: &[InstanceRow],
+) -> ModuleInstanceView {
+    let params = ModulePipeline::global_params_in(rows, instance);
+    let enabled = ModulePipeline::enabled_in(rows, instance);
+    let seeded = stored
+        .iter()
         .find(|row| row.module_id == instance.config.id)
-        .map(|row| row.seeded_params);
-    Ok(ModuleInstanceView {
+        .map(|row| &row.seeded_params);
+    ModuleInstanceView {
         module_id: instance.config.id.clone(),
         kind: instance.config.kind.clone(),
         scope: scope_name(instance.config.scope),
@@ -299,7 +321,7 @@ async fn instance_view(
         enabled_drift: enabled != instance.config.catalog_enabled,
         operator_can_disable: instance.config.operator_can_disable,
         params_drift: !instance.config.file_managed_params
-            && seeded.is_some_and(|seeded| seeded != instance.config.params),
+            && seeded.is_some_and(|seeded| *seeded != instance.config.params),
         params,
         file_managed_params: instance.config.file_managed_params,
         build: instance.build.clone(),
@@ -308,20 +330,28 @@ async fn instance_view(
         client_reason: instance.config.client_reason,
         dry_run: instance.config.dry_run,
         circuit: pipeline.breakers().state(&instance.config.id).as_str(),
-    })
+    }
 }
 
+/// The catalog from one read of the stored instances, with `params_version` read before it,
+/// so a write landing between the two reads pairs newer params with the older version: a
+/// fenced write based on the listing is then refused as stale, never applied over the newer
+/// params.
 pub async fn catalog_view(state: &AppState) -> Result<ModuleCatalogView> {
     let pipeline = pipeline(state)?;
-    let mut modules = Vec::with_capacity(pipeline.instances().len());
-    for instance in pipeline.instances() {
-        modules.push(instance_view(pipeline, instance).await?);
-    }
-    let undeclared = pipeline
+    let params_version = pipeline
         .store()
-        .instances()
+        .instance_version()
         .await
-        .map_err(GuardianError::StorageError)?
+        .map_err(GuardianError::StorageError)?;
+    let stored = stored_instances(pipeline).await?;
+    let rows = rows_of(&stored);
+    let modules = pipeline
+        .instances()
+        .iter()
+        .map(|instance| view_in(pipeline, instance, &rows, &stored))
+        .collect();
+    let undeclared = stored
         .into_iter()
         .filter(|row| pipeline.instance(&row.module_id).is_none())
         .map(|row| UndeclaredInstanceView {
@@ -332,7 +362,7 @@ pub async fn catalog_view(state: &AppState) -> Result<ModuleCatalogView> {
         .collect();
     Ok(ModuleCatalogView {
         catalog_hash: pipeline.catalog_hash.clone(),
-        params_version: version(pipeline).await?,
+        params_version,
         modules,
         undeclared,
     })

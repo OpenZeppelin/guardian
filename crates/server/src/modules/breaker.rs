@@ -105,12 +105,16 @@ impl Breakers {
     }
 
     /// The module answered, allow or deny: a deny is an answer, not a failure. A closed
-    /// breaker's failure count resets, and a half-open one closes when this is its current
-    /// trial's answer. Any other answer is to a call admitted before the breaker opened, or
-    /// before a later trial, and says nothing a probe and that trial have not decided since.
+    /// breaker's failure count resets when the call was admitted since the breaker last
+    /// closed, and a half-open one closes when this is its current trial's answer. Any other
+    /// answer is to a call admitted before the breaker opened, or before a later trial, and
+    /// says nothing a probe and that trial have not decided since.
     pub fn answered(&self, instance: &str, admission: Admission) {
         self.update(instance, |breaker| match breaker.state {
-            CircuitState::Closed => breaker.consecutive_failures = 0,
+            CircuitState::Closed if admission.generation == breaker.generation => {
+                breaker.consecutive_failures = 0
+            }
+            CircuitState::Closed => {}
             CircuitState::HalfOpen if is_current_trial(breaker, admission) => {
                 breaker.state = CircuitState::Closed;
                 breaker.consecutive_failures = 0;
@@ -120,17 +124,45 @@ impl Breakers {
         });
     }
 
-    /// The module timed out, failed to respond or returned a malformed decision. A half-open
-    /// breaker opens again only on its current trial's failure.
+    /// The module timed out, failed to respond or returned a malformed decision. A closed
+    /// breaker counts it only when the call was admitted since the breaker last closed, so late
+    /// failures of calls from before an outage cannot reopen it; a half-open breaker opens again
+    /// only on its current trial's failure.
     pub fn failed(&self, instance: &str, admission: Admission) {
         let threshold = self.threshold;
         self.update(instance, |breaker| match breaker.state {
-            CircuitState::Closed => count_failure(breaker, threshold),
+            CircuitState::Closed if admission.generation == breaker.generation => {
+                count_failure(breaker, threshold)
+            }
+            CircuitState::Closed => {}
             CircuitState::HalfOpen if is_current_trial(breaker, admission) => {
                 breaker.state = CircuitState::Open;
                 breaker.trial_in_flight = false;
             }
             CircuitState::HalfOpen | CircuitState::Open => {}
+        });
+    }
+
+    /// Admits a call like [`Self::admit`] and holds its admission until the call reports
+    /// back. A call that never does (cut short by the budget, a dry run, or a request dropped
+    /// mid-call) releases its half-open trial when it is dropped, so the next request can be
+    /// the trial instead of waiting for a probe.
+    pub fn call<'a>(&'a self, instance: &'a str, caller: Caller) -> Option<Call<'a>> {
+        self.admit(instance, caller).map(|admission| Call {
+            breakers: self,
+            instance,
+            admission,
+            settled: false,
+        })
+    }
+
+    /// Frees the half-open trial slot `admission` holds, if it is the current trial, without
+    /// deciding anything: the breaker stays half-open for the next request.
+    pub fn release(&self, instance: &str, admission: Admission) {
+        self.update(instance, |breaker| {
+            if breaker.state == CircuitState::HalfOpen && is_current_trial(breaker, admission) {
+                breaker.trial_in_flight = false;
+            }
         });
     }
 
@@ -159,7 +191,7 @@ impl Breakers {
     }
 
     /// A health probe succeeded: an open breaker lets the next real call through, and a
-    /// half-open one whose trial never reported back (its request was dropped) lets another.
+    /// half-open one whose trial is still out lets another.
     pub fn probe_succeeded(&self, instance: &str) {
         self.update(instance, |breaker| match breaker.state {
             CircuitState::Open => breaker.state = CircuitState::HalfOpen,
@@ -190,6 +222,36 @@ impl Breakers {
                 to = current.as_str(),
                 "Policy module circuit changed"
             );
+        }
+    }
+}
+
+/// One admitted call to an instance, from [`Breakers::call`]. It reports with
+/// [`Call::answered`] or [`Call::failed`]; dropped without either, it releases its admission.
+#[must_use = "a call reports its outcome; dropping it releases a half-open trial undecided"]
+pub struct Call<'a> {
+    breakers: &'a Breakers,
+    instance: &'a str,
+    admission: Admission,
+    settled: bool,
+}
+
+impl Call<'_> {
+    pub fn answered(mut self) {
+        self.settled = true;
+        self.breakers.answered(self.instance, self.admission);
+    }
+
+    pub fn failed(mut self) {
+        self.settled = true;
+        self.breakers.failed(self.instance, self.admission);
+    }
+}
+
+impl Drop for Call<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            self.breakers.release(self.instance, self.admission);
         }
     }
 }
@@ -271,6 +333,48 @@ mod tests {
         );
         breakers.answered("m", trial);
         assert_eq!(breakers.state("m"), CircuitState::Closed);
+    }
+
+    #[test]
+    fn a_trial_that_never_reports_back_frees_the_slot_for_the_next_request() {
+        let breakers = Breakers::new(1);
+        breakers.probe_failed("m");
+        breakers.probe_succeeded("m");
+        let trial = breakers
+            .call("m", Caller::Request)
+            .expect("the trial is admitted");
+        assert!(breakers.admit("m", Caller::Request).is_none());
+        drop(trial);
+        assert_eq!(breakers.state("m"), CircuitState::HalfOpen);
+        let next = breakers
+            .call("m", Caller::Request)
+            .expect("a dropped trial does not hold the slot until a probe");
+        next.answered();
+        assert_eq!(breakers.state("m"), CircuitState::Closed);
+    }
+
+    #[test]
+    fn a_late_failure_from_before_an_outage_does_not_count_once_closed_again() {
+        let breakers = Breakers::new(1);
+        let early = call(&breakers);
+        breakers.probe_failed("m");
+        breakers.probe_succeeded("m");
+        breakers
+            .call("m", Caller::Request)
+            .expect("trial")
+            .answered();
+        assert_eq!(breakers.state("m"), CircuitState::Closed);
+        breakers.failed("m", early);
+        assert_eq!(
+            breakers.state("m"),
+            CircuitState::Closed,
+            "a failure admitted before the breaker opened says nothing about the module now"
+        );
+        breakers
+            .call("m", Caller::Request)
+            .expect("closed")
+            .failed();
+        assert_eq!(breakers.state("m"), CircuitState::Open);
     }
 
     #[test]

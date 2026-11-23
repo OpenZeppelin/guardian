@@ -972,7 +972,10 @@ deployment without one behaves as before. With one:
 - **Custom server builds.** `ServerBuilder::from_env()` configures the server
   from the environment as the `server` binary does, and a release attaches a
   `custom-guardian-<tag>.tar.gz` template that registers extra module kinds
-  with `with_module_kind`. For crates embedding `guardian-server`,
+  with `with_module_kind`. Custom builds call `ServerHandle::start()` instead
+  of `run()`: `start` runs the startup account recovery
+  `GUARDIAN_STARTUP_ACCOUNT_RECOVERY` asks for, as the `server` binary does,
+  while `run` skips it. For crates embedding `guardian-server`,
   `ServerBuilder::build` now returns `BuildError` instead of `String`;
   `BuildError` is a `std::error::Error`, so map it with `.to_string()` where a
   `String` error is still wanted. The

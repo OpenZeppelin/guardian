@@ -28,9 +28,15 @@ For every instance in the catalog, know which path stops it:
   (timeout, error, invalid decision, open circuit), which the delta records in
   `modules.failed_open` (`GET /dashboard/accounts/{account_id}/deltas/{nonce}`).
   A request the Guardian cannot build (an account view it cannot read, a failed
-  read) or one over `GUARDIAN_MODULE_REQUEST_MAX_BYTES` is refused whatever
-  `on_error` says, since a requester can cause either on purpose; both are
-  counted in `guardian_module_request_refused_total{module, reason}`.
+  read), one over `GUARDIAN_MODULE_REQUEST_MAX_BYTES`, or one the module
+  rejects as one it cannot judge is refused whatever `on_error` says, since a
+  requester can cause each on purpose; all three are counted in
+  `guardian_module_request_refused_total{module, reason}`.
+  A module that rejects every request (after a protocol or version mismatch,
+  say) therefore refuses every request even with `on_error = "allow"`, and its
+  breaker stays closed, since a rejection is an answer: disable the instance
+  (below) until the module is fixed. `reason="rejected"` on that counter shows
+  it.
 - Give the on-call operator `modules:disable`. It allows disabling instances
   marked `operator_can_disable` and nothing else, so it is safe to hand out
   more widely than `policies:write` ([permissions](../DASHBOARD.md#permission-vocabulary)).
@@ -69,7 +75,9 @@ Symptoms: clients get `503 GUARDIAN_MODULE_UNAVAILABLE` with `meta.module`
 `GUARDIAN_MODULE_BREAKER_FAILURES` (5) failures in a row (failed calls and
 unanswered probes count, dry-run checks do not), or at once when a probe finds
 the module incompatible with this Guardian, after which the
-module is skipped without waiting for its timeout.
+module is skipped without waiting for its timeout. It reads 0 again once the
+instance is disabled, since a disabled instance is not called, so the alarm
+clears after the break-glass step and can fire for another instance.
 
 1. Check the module itself (its process, endpoint, certificate, token). A
    module that rejects the Guardian's token fails `Describe`, so it looks
@@ -194,12 +202,20 @@ it after enabling.
 
 A server build from before policy modules does not know the module
 permissions, so it refuses to load an operator allowlist that grants
-`policies:write`, `policies:write_global` or `modules:disable`. Before
+`policies:write_global` or `modules:disable` (`policies:write` is older and
+stays). A Guardian execution a module refused is stored with an execution
+failure code the older build cannot decode, so its execution status
+(`GET /delta/proposal/execution`) fails there with a storage error. Before
 deploying such a build:
 
-1. Remove those permissions from the allowlist (the entries keep their other
-   permissions).
-2. Unset `GUARDIAN_MODULES_CONFIG`. The older build ignores it, but leaving it
+1. Restart the current build without the catalog
+   (`GUARDIAN_MODULES_DISABLED=true` in production) or with
+   `GUARDIAN_PROVING_ENABLED=false`, so no new refusal is stored. Refusals
+   stored before stay unreadable to the older build
+   ([compatibility notes](../MIDEN_COMPATIBILITY.md)).
+2. Remove `policies:write_global` and `modules:disable` from the allowlist (the
+   entries keep their other permissions).
+3. Unset `GUARDIAN_MODULES_CONFIG`. The older build ignores it, but leaving it
    set means the next upgrade starts with the catalog again, which is what you
    want only if you roll forward.
 

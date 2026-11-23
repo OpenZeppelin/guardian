@@ -315,7 +315,8 @@ impl Compliance {
 }
 
 /// The account as it will be if every module allows. Without it the module cannot judge the
-/// signers, which is an error for the instance's `on_error` to decide, never an allow.
+/// signers: it is `InvalidRequest`, which the Guardian refuses whatever the instance's
+/// `on_error` says, never an allow.
 fn account_after(request: &HookRequest) -> Result<&guardian_module_sdk::AccountView, ModuleError> {
     let after = request
         .after

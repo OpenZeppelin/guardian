@@ -199,8 +199,8 @@ account) is not a payment to anyone else. The fee note is not a payment.
 
 A request the module cannot judge is an error, never an allow. Examples are a
 registration without the account's signers, or a transaction without its
-projection. The instance's `on_error` then decides, and `on_error = "deny"`
-refuses the request.
+projection. The module answers `INVALID_ARGUMENT`, and the Guardian refuses
+the request whatever the instance's `on_error` says.
 
 ## Going to production
 

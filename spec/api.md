@@ -1109,7 +1109,7 @@ behavior.
 | `guardian_block_watch_block_processing_seconds` | histogram | — |
 | `guardian_module_evaluate_duration_seconds` | histogram | `module` (catalog instance id), `outcome` (`allow`/`deny`/`error`/`skipped`) |
 | `guardian_module_fail_open_total` | counter | `module` |
-| `guardian_module_request_refused_total` | counter | `module`, `reason` (`unavailable`: the request could not be built; `too_large`: over `GUARDIAN_MODULE_REQUEST_MAX_BYTES`); refused whatever `on_error` says |
+| `guardian_module_request_refused_total` | counter | `module`, `reason` (`unavailable`: the request could not be built; `too_large`: over `GUARDIAN_MODULE_REQUEST_MAX_BYTES`; `rejected`: the module rejected it as one it cannot judge); refused whatever `on_error` says |
 | `guardian_module_up` | gauge | `module` (1 when the last health probe succeeded) |
 | `guardian_module_circuit_open` | gauge | `module` (1 while the replica's breaker is open) |
 | `guardian_module_enabled` | gauge | `module` |

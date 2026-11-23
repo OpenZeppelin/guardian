@@ -50,7 +50,10 @@ own data.
   pass and both must allow, so it can only add restrictions.
 - **Failure.** If a module times out or errors, `on_error = "deny"` (the
   default) refuses with `503 GUARDIAN_MODULE_UNAVAILABLE`; `"allow"` continues
-  and records the failure on the signed delta.
+  and records the failure on the signed delta. A request the Guardian cannot build,
+  one over the size cap, or one the module rejects as one it cannot judge is
+  refused whatever `on_error` says, since a requester can cause each on
+  purpose.
 - **Refusal.** A deny returns `403 GUARDIAN_MODULE_DENIED` with `module`,
   `reason_code` and `layer` (`global` or `account`) in `meta`, plus the
   module's `client_message` when it sets one. The Rust and TypeScript clients

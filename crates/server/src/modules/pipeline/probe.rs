@@ -32,7 +32,7 @@ impl ModulePipeline {
             );
             crate::modules::metrics::circuit_open(
                 id,
-                self.breakers.state(id) == CircuitState::Open,
+                enabled && self.breakers.state(id) == CircuitState::Open,
             );
         }
     }
@@ -208,6 +208,33 @@ mod tests {
             "guardian_module_catalog_info{catalog_hash=\"\"} 1",
         ] {
             assert!(text.contains(line), "{line} missing from:\n{text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_disabled_instance_does_not_report_an_open_circuit() {
+        let mut disabled = instance(
+            "screening",
+            &[HookName::BeforeTransactionApproved],
+            OnError::Deny,
+            StubModule::allowing(),
+        );
+        disabled.config.enabled = false;
+        let pipeline = pipeline(vec![disabled]);
+        pipeline.breakers().hold_open("screening");
+        let rows = pipeline.rows().await.unwrap();
+        let recorder = crate::metrics::build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || pipeline.publish(&rows));
+        let text = handle.render();
+        for line in [
+            "guardian_module_enabled{module=\"screening\"} 0",
+            "guardian_module_circuit_open{module=\"screening\"} 0",
+        ] {
+            assert!(
+                text.contains(line),
+                "a disabled instance is not called, so its breaker does not alarm: {line} missing from:\n{text}"
+            );
         }
     }
 

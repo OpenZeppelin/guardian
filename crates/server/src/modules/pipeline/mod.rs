@@ -10,7 +10,7 @@ use super::catalog::{ClientReason, HookName, OnError, Scope};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
-use super::breaker::{Admission, Breakers, Caller};
+use super::breaker::{Breakers, Call, Caller};
 use super::limits::Limits;
 use super::registry::{CallError, Instance, isolated};
 use super::store::{AccountParamsRow, Assigned, ModuleStore, ParamsKind};
@@ -153,7 +153,8 @@ enum Failure {
 impl Failure {
     fn kind(&self) -> &'static str {
         match self {
-            Failure::Error(_) | Failure::Rejected(_) => "error",
+            Failure::Error(_) => "error",
+            Failure::Rejected(_) => "rejected",
             Failure::Timeout => "timeout",
             Failure::UnknownEffect(_) => "invalid_decision",
             Failure::RequestUnavailable(_) | Failure::RequestTooLarge(_) => "request_unavailable",
@@ -162,22 +163,22 @@ impl Failure {
     }
 
     /// The refusal for a failure the request itself causes, whatever the instance's
-    /// `on_error`: a requester can make a request that cannot be built or that exceeds the size
-    /// cap, so letting either through would let the requester switch fail-open instances off.
-    /// `on_error` covers only the module's own failures. A request that could not be built is
-    /// refused as unavailable, since its cause can be transient (the chain fee not loaded yet);
-    /// one over the cap is denied, since resending it cannot succeed. Returns the refusal and
-    /// its `reason` for `guardian_module_request_refused_total`, or `None` for the module's own
-    /// failures.
+    /// `on_error`: a requester can make a request that cannot be built, that exceeds the size
+    /// cap, or that the module rejects as one it cannot judge, so letting any of them through
+    /// would let the requester switch fail-open instances off. `on_error` covers only the
+    /// module's own failures. A request that could not be built or that the module rejected is
+    /// refused as unavailable, since its cause can be transient (the chain fee not loaded yet, a
+    /// module upgrade); one over the cap is denied, since resending it cannot succeed. Returns
+    /// the refusal and its `reason` for `guardian_module_request_refused_total`, or `None` for
+    /// the module's own failures.
     fn refusal(&self, instance: &Instance, layer: Layer) -> Option<(GuardianError, &'static str)> {
         let generic = instance.config.client_reason == ClientReason::Generic;
+        let unavailable = || GuardianError::ModuleUnavailable {
+            module: (!generic).then(|| instance.config.id.clone()),
+        };
         match self {
-            Failure::RequestUnavailable(_) => Some((
-                GuardianError::ModuleUnavailable {
-                    module: (!generic).then(|| instance.config.id.clone()),
-                },
-                "unavailable",
-            )),
+            Failure::RequestUnavailable(_) => Some((unavailable(), "unavailable")),
+            Failure::Rejected(_) => Some((unavailable(), "rejected")),
             Failure::RequestTooLarge(_) if generic => {
                 Some((GuardianError::ModuleDeniedGeneric, "too_large"))
             }
@@ -191,7 +192,6 @@ impl Failure {
                 "too_large",
             )),
             Failure::Error(_)
-            | Failure::Rejected(_)
             | Failure::Timeout
             | Failure::UnknownEffect(_)
             | Failure::CircuitOpen => None,
@@ -682,10 +682,10 @@ impl Plan<'_> {
             } else if remaining.is_zero() {
                 Err(Failure::Timeout)
             } else {
-                breakers.admit(id, caller).ok_or(Failure::CircuitOpen)
+                breakers.call(id, caller).ok_or(Failure::CircuitOpen)
             };
-            let admission = match admitted {
-                Ok(admission) => admission,
+            let call = match admitted {
+                Ok(call) => call,
                 Err(failure) => {
                     super::metrics::evaluated(
                         id,
@@ -711,7 +711,7 @@ impl Plan<'_> {
             let failure = match outcome.map(|decision| (effect(&decision), decision)) {
                 Ok((Some(Effect::Allow), _)) => {
                     if !dry_run {
-                        breakers.answered(id, admission);
+                        call.answered();
                     }
                     super::metrics::evaluated(id, super::metrics::Outcome::Allow, took);
                     continue;
@@ -719,7 +719,7 @@ impl Plan<'_> {
                 Ok((Some(Effect::Deny), decision)) => {
                     let reason_code = denial_reason_code(&instance.config.id, decision.reason_code);
                     if !dry_run {
-                        breakers.answered(id, admission);
+                        call.answered();
                     }
                     super::metrics::evaluated(id, super::metrics::Outcome::Deny, took);
                     tracing::info!(
@@ -761,7 +761,7 @@ impl Plan<'_> {
             };
             super::metrics::evaluated(id, super::metrics::Outcome::Error, took);
             if !dry_run {
-                count_toward_breaker(&breakers, id, admission, &failure, cut_by_budget);
+                count_toward_breaker(call, &failure, cut_by_budget);
             }
             approval
                 .failed_open
@@ -786,17 +786,11 @@ fn cut_by_budget(
 /// anyone's signature) on the instance's breaker. The breaker stops calls to a module that is
 /// down for every account, so only failures that say so count: a request the module rejected
 /// is an answer, and a timeout the budget caused is not the module's.
-fn count_toward_breaker(
-    breakers: &Breakers,
-    id: &str,
-    admission: Admission,
-    failure: &Failure,
-    cut_by_budget: bool,
-) {
+fn count_toward_breaker(call: Call<'_>, failure: &Failure, cut_by_budget: bool) {
     match failure {
-        Failure::Rejected(_) => breakers.answered(id, admission),
+        Failure::Rejected(_) => call.answered(),
         Failure::Timeout if cut_by_budget => {}
-        _ => breakers.failed(id, admission),
+        _ => call.failed(),
     }
 }
 
@@ -1625,6 +1619,21 @@ mod failure_handling_tests {
             CircuitState::Closed,
             "one account's unjudgeable requests do not stop the module for every account"
         );
+    }
+
+    #[tokio::test]
+    async fn a_request_the_module_rejects_is_refused_even_by_a_fail_open_instance() {
+        let pipeline = ModulePipeline::from_instances(vec![instance(
+            "screening",
+            &[HOOK],
+            OnError::Allow,
+            StubModule::new(Behaviour::Reject),
+        )]);
+        assert!(matches!(
+            run(&pipeline).await,
+            Err(GuardianError::ModuleUnavailable { module: Some(module) }) if module == "screening"
+        ));
+        assert_eq!(pipeline.breakers().state("screening"), CircuitState::Closed);
     }
 
     #[tokio::test]

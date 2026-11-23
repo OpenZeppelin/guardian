@@ -88,8 +88,8 @@ Each refusal carries a fixed `client_message` naming the rule (for example
 never a list entry or a limit, so a `client_reason = "full"` instance tells
 users what to change without disclosing params. The exact amounts and
 entries go to the server log. A request a kind cannot judge (a transaction
-without a Miden projection, say) is an error, not an allow, so the instance's
-`on_error` applies.
+without a Miden projection, say) is not an allow: it is refused with
+`GUARDIAN_MODULE_UNAVAILABLE` whatever the instance's `on_error` says.
 
 ## The example catalog
 
