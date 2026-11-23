@@ -2484,6 +2484,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "custom-guardian"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "dotenvy",
+ "guardian-module-sdk",
+ "guardian-server",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "darling"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3497,6 +3510,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "guardian-compliance-module"
+version = "0.1.0"
+dependencies = [
+ "guardian-module-sdk",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonic",
+]
+
+[[package]]
 name = "guardian-demo"
 version = "0.1.0"
 dependencies = [
@@ -3508,6 +3532,34 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "guardian-module-sdk"
+version = "0.19.1"
+dependencies = [
+ "async-trait",
+ "bech32",
+ "guardian-module-sdk",
+ "prost",
+ "prost-types",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
+name = "guardian-policy-module"
+version = "0.1.0"
+dependencies = [
+ "guardian-module-sdk",
+ "tokio",
+ "tonic",
 ]
 
 [[package]]
@@ -3540,6 +3592,7 @@ dependencies = [
  "chrono",
  "clap",
  "guardian-client",
+ "guardian-module-sdk",
  "guardian-shared",
  "hex",
  "libc",
@@ -3556,6 +3609,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "toml 0.8.23",
+ "tonic",
 ]
 
 [[package]]
@@ -3601,6 +3655,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "futures-util",
+ "guardian-module-sdk",
  "guardian-shared",
  "hex",
  "hmac 0.12.1",
@@ -3626,6 +3681,7 @@ dependencies = [
  "rand 0.10.2",
  "rand_chacha 0.10.0",
  "rcgen",
+ "reqwest 0.12.28",
  "rustls 0.23.46",
  "rustls-pemfile",
  "secrecy",
@@ -3641,6 +3697,7 @@ dependencies = [
  "tokio-postgres",
  "tokio-postgres-rustls",
  "tokio-util",
+ "toml 0.8.23",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
