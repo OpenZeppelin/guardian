@@ -25,6 +25,8 @@ pub enum Permission {
     DashboardRead,
     AccountsPause,
     PoliciesWrite,
+    PoliciesWriteGlobal,
+    ModulesDisable,
     StatsRefresh,
 }
 
@@ -38,6 +40,14 @@ pub const ACCOUNTS_PAUSE: &str = "accounts:pause";
 
 /// Wire string for [`Permission::PoliciesWrite`].
 pub const POLICIES_WRITE: &str = "policies:write";
+
+/// Wire string for [`Permission::PoliciesWriteGlobal`]: may change the global params of a policy
+/// module, which apply to every account.
+pub const POLICIES_WRITE_GLOBAL: &str = "policies:write_global";
+
+/// Wire string for [`Permission::ModulesDisable`]: may disable a policy module instance the
+/// catalog marks `operator_can_disable`, and nothing else.
+pub const MODULES_DISABLE: &str = "modules:disable";
 
 /// Wire string for [`Permission::StatsRefresh`]: may request an
 /// out-of-cycle refresh of the `/dashboard/stats` aggregate
@@ -66,6 +76,8 @@ impl Permission {
             Self::DashboardRead => DASHBOARD_READ,
             Self::AccountsPause => ACCOUNTS_PAUSE,
             Self::PoliciesWrite => POLICIES_WRITE,
+            Self::PoliciesWriteGlobal => POLICIES_WRITE_GLOBAL,
+            Self::ModulesDisable => MODULES_DISABLE,
             Self::StatsRefresh => STATS_REFRESH,
         }
     }
@@ -88,6 +100,8 @@ impl std::str::FromStr for Permission {
             DASHBOARD_READ => Ok(Self::DashboardRead),
             ACCOUNTS_PAUSE => Ok(Self::AccountsPause),
             POLICIES_WRITE => Ok(Self::PoliciesWrite),
+            POLICIES_WRITE_GLOBAL => Ok(Self::PoliciesWriteGlobal),
+            MODULES_DISABLE => Ok(Self::ModulesDisable),
             STATS_REFRESH => Ok(Self::StatsRefresh),
             other => Err(UnknownPermission(other.to_owned())),
         }

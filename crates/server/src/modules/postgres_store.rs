@@ -1,0 +1,1287 @@
+//! The module tables on Postgres.
+
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use diesel::QueryableByName;
+use diesel::sql_types::{BigInt, Bool, Integer, Jsonb, Nullable, Text, Timestamptz};
+use diesel_async::pooled_connection::deadpool::Pool;
+use diesel_async::scoped_futures::ScopedFutureExt;
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+
+use super::store::{
+    AccountModule, AccountParamsRow, Assigned, Change, HistoryEntry, InstanceRow, ModuleSnapshot,
+    ModuleStore, ParamsKind, WriteError, assignment_changes,
+};
+
+pub struct PgModuleStore {
+    pool: Pool<AsyncPgConnection>,
+}
+
+impl PgModuleStore {
+    pub fn new(pool: Pool<AsyncPgConnection>) -> Self {
+        Self { pool }
+    }
+
+    async fn conn(
+        &self,
+    ) -> Result<diesel_async::pooled_connection::deadpool::Object<AsyncPgConnection>, String> {
+        self.pool
+            .get()
+            .await
+            .map_err(|e| format!("module store pool: {e}"))
+    }
+}
+
+fn at(change: &Change<'_>) -> Result<DateTime<Utc>, String> {
+    DateTime::parse_from_rfc3339(&change.at)
+        .map(|at| at.with_timezone(&Utc))
+        .map_err(|e| format!("invalid change time: {e}"))
+}
+
+#[derive(QueryableByName)]
+struct InstanceSql {
+    #[diesel(sql_type = Text)]
+    module_id: String,
+    #[diesel(sql_type = Bool)]
+    enabled: bool,
+    #[diesel(sql_type = Jsonb)]
+    global_params: serde_json::Value,
+    #[diesel(sql_type = Jsonb)]
+    seeded_params: serde_json::Value,
+    #[diesel(sql_type = Timestamptz)]
+    updated_at: DateTime<Utc>,
+    #[diesel(sql_type = Text)]
+    updated_by: String,
+}
+
+#[derive(QueryableByName)]
+struct AccountParamsSql {
+    #[diesel(sql_type = Text)]
+    account_id: String,
+    #[diesel(sql_type = Text)]
+    module_id: String,
+    #[diesel(sql_type = Text)]
+    kind: String,
+    #[diesel(sql_type = Integer)]
+    position: i32,
+    #[diesel(sql_type = Jsonb)]
+    params: serde_json::Value,
+    #[diesel(sql_type = Timestamptz)]
+    updated_at: DateTime<Utc>,
+    #[diesel(sql_type = Text)]
+    updated_by: String,
+}
+
+#[derive(QueryableByName)]
+struct HistorySql {
+    #[diesel(sql_type = BigInt)]
+    id: i64,
+    #[diesel(sql_type = BigInt)]
+    version: i64,
+    #[diesel(sql_type = Text)]
+    module_id: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    account_id: Option<String>,
+    #[diesel(sql_type = Jsonb)]
+    previous_params: serde_json::Value,
+    #[diesel(sql_type = Jsonb)]
+    new_params: serde_json::Value,
+    #[diesel(sql_type = Text)]
+    operator: String,
+    #[diesel(sql_type = Text)]
+    reason: String,
+    #[diesel(sql_type = Timestamptz)]
+    changed_at: DateTime<Utc>,
+}
+
+#[derive(QueryableByName)]
+struct VersionSql {
+    #[diesel(sql_type = BigInt)]
+    version: i64,
+}
+
+#[derive(QueryableByName)]
+struct ParamsSql {
+    #[diesel(sql_type = Jsonb)]
+    params: serde_json::Value,
+}
+
+impl From<diesel::result::Error> for WriteError {
+    fn from(error: diesel::result::Error) -> Self {
+        WriteError::Storage(error.to_string())
+    }
+}
+
+/// Refuses an operator write made against `expected` once the rows it locked have moved past
+/// it: `version` is the version this write commits as, so the rows were at `version - 1`.
+fn check(version: i64, expected: Option<u64>) -> Result<(), WriteError> {
+    let current = (version - 1) as u64;
+    match expected {
+        Some(expected) if expected != current => Err(WriteError::Stale { current }),
+        _ => Ok(()),
+    }
+}
+
+/// Takes the instance write lock and returns the instance params version this write commits
+/// as.
+async fn bump(conn: &mut AsyncPgConnection) -> Result<i64, diesel::result::Error> {
+    let rows: Vec<VersionSql> = diesel::sql_query(
+        "UPDATE module_state_version SET version = version + 1 RETURNING version",
+    )
+    .load(conn)
+    .await?;
+    rows.into_iter()
+        .next()
+        .map(|row| row.version)
+        .ok_or(diesel::result::Error::NotFound)
+}
+
+/// Takes the write lock of one account's rows and returns the account params version this
+/// write commits as. Writes to other accounts and to the instance rows do not wait for it.
+async fn bump_account(
+    conn: &mut AsyncPgConnection,
+    account_id: &str,
+) -> Result<i64, diesel::result::Error> {
+    let rows: Vec<VersionSql> = diesel::sql_query(
+        "INSERT INTO module_account_version (account_id, version) VALUES ($1, 1) \
+         ON CONFLICT (account_id) DO UPDATE SET version = module_account_version.version + 1 \
+         RETURNING version",
+    )
+    .bind::<Text, _>(account_id)
+    .load(conn)
+    .await?;
+    rows.into_iter()
+        .next()
+        .map(|row| row.version)
+        .ok_or(diesel::result::Error::NotFound)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn append(
+    conn: &mut AsyncPgConnection,
+    version: i64,
+    module_id: &str,
+    account_id: Option<&str>,
+    previous: &serde_json::Value,
+    new: &serde_json::Value,
+    change: &Change<'_>,
+    changed_at: DateTime<Utc>,
+) -> Result<usize, diesel::result::Error> {
+    diesel::sql_query(
+        "INSERT INTO module_params_history \
+         (version, module_id, account_id, previous_params, new_params, operator, reason, \
+         changed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind::<BigInt, _>(version)
+    .bind::<Text, _>(module_id)
+    .bind::<Nullable<Text>, _>(account_id)
+    .bind::<Jsonb, _>(previous)
+    .bind::<Jsonb, _>(new)
+    .bind::<Text, _>(change.operator)
+    .bind::<Text, _>(change.reason)
+    .bind::<Timestamptz, _>(changed_at)
+    .execute(conn)
+    .await
+}
+
+fn account_params_row(row: AccountParamsSql) -> Result<AccountParamsRow, String> {
+    Ok(AccountParamsRow {
+        account_id: row.account_id,
+        module_id: row.module_id,
+        kind: ParamsKind::parse(&row.kind)?,
+        position: row.position,
+        params: row.params,
+        updated_at: row.updated_at.to_rfc3339(),
+        updated_by: row.updated_by,
+    })
+}
+
+diesel::define_sql_function! {
+    /// Typed so the statement is prepared once per connection: one module evaluation is one
+    /// call (see the migration for what it returns).
+    fn guardian_module_snapshot(
+        account_id: Text,
+        cached_version: Nullable<BigInt>,
+    ) -> Record<(BigInt, BigInt, Nullable<Jsonb>, Jsonb)>;
+}
+
+diesel::define_sql_function! {
+    /// Typed so the statement is prepared once per connection: the default-module copy of a
+    /// first registration is one call, which locks only that account's version row, for that
+    /// call only (see the migration).
+    fn guardian_module_seed_assignment(
+        account_id: Text,
+        modules: Jsonb,
+        operator: Text,
+        reason: Text,
+        changed_at: Timestamptz,
+    ) -> Nullable<BigInt>;
+}
+
+#[async_trait]
+impl ModuleStore for PgModuleStore {
+    async fn seed_instance(
+        &self,
+        module_id: &str,
+        enabled: bool,
+        params: &serde_json::Value,
+        catalog_params: &serde_json::Value,
+        at_text: &str,
+    ) -> Result<(), String> {
+        let changed_at = DateTime::parse_from_rfc3339(at_text)
+            .map(|at| at.with_timezone(&Utc))
+            .map_err(|e| format!("invalid seed time: {e}"))?;
+        let mut conn = self.conn().await?;
+        let (module_id, params, catalog_params) = (
+            module_id.to_string(),
+            params.clone(),
+            catalog_params.clone(),
+        );
+        let seeded = conn
+            .transaction::<(), diesel::result::Error, _>(|conn| {
+                async move {
+                    let version = bump(conn).await?;
+                    let inserted = diesel::sql_query(
+                        "INSERT INTO module_instances \
+                     (module_id, enabled, global_params, seeded_params, updated_at, updated_by) \
+                     VALUES ($1, $2, $3, $4, $5, 'catalog') ON CONFLICT (module_id) DO NOTHING",
+                    )
+                    .bind::<Text, _>(&module_id)
+                    .bind::<Bool, _>(enabled)
+                    .bind::<Jsonb, _>(&params)
+                    .bind::<Jsonb, _>(&catalog_params)
+                    .bind::<Timestamptz, _>(changed_at)
+                    .execute(conn)
+                    .await?;
+                    if inserted == 0 {
+                        return Err(diesel::result::Error::RollbackTransaction);
+                    }
+                    let change = Change {
+                        operator: "catalog",
+                        reason: "seeded from the catalog file",
+                        at: String::new(),
+                        expected_version: None,
+                    };
+                    append(
+                        conn,
+                        version,
+                        &module_id,
+                        None,
+                        &serde_json::Value::Null,
+                        &params,
+                        &change,
+                        changed_at,
+                    )
+                    .await?;
+                    Ok(())
+                }
+                .scope_boxed()
+            })
+            .await;
+        match seeded {
+            Ok(()) | Err(diesel::result::Error::RollbackTransaction) => Ok(()),
+            Err(e) => Err(format!("seed module {e}")),
+        }
+    }
+
+    async fn instances(&self) -> Result<Vec<InstanceRow>, String> {
+        let mut conn = self.conn().await?;
+        let rows: Vec<InstanceSql> = diesel::sql_query(
+            "SELECT module_id, enabled, global_params, seeded_params, updated_at, updated_by \
+             FROM module_instances ORDER BY module_id",
+        )
+        .load(&mut conn)
+        .await
+        .map_err(|e| format!("module instances: {e}"))?;
+        Ok(rows
+            .into_iter()
+            .map(|row| InstanceRow {
+                module_id: row.module_id,
+                enabled: row.enabled,
+                global_params: row.global_params,
+                seeded_params: row.seeded_params,
+                updated_at: row.updated_at.to_rfc3339(),
+                updated_by: row.updated_by,
+            })
+            .collect())
+    }
+
+    async fn set_enabled(
+        &self,
+        module_id: &str,
+        enabled: bool,
+        change: &Change<'_>,
+    ) -> Result<u64, String> {
+        #[derive(QueryableByName)]
+        struct EnabledSql {
+            #[diesel(sql_type = Bool)]
+            enabled: bool,
+        }
+        let changed_at = at(change)?;
+        let mut conn = self.conn().await?;
+        let module_id = module_id.to_string();
+        conn.transaction::<i64, diesel::result::Error, _>(|conn| {
+            async move {
+                let version = bump(conn).await?;
+                let previous: Vec<EnabledSql> = diesel::sql_query(
+                    "SELECT enabled FROM module_instances WHERE module_id = $1 FOR UPDATE",
+                )
+                .bind::<Text, _>(&module_id)
+                .load(conn)
+                .await?;
+                let previous = previous
+                    .into_iter()
+                    .next()
+                    .ok_or(diesel::result::Error::NotFound)?
+                    .enabled;
+                diesel::sql_query(
+                    "UPDATE module_instances SET enabled = $2, updated_at = $3, updated_by = $4 \
+                     WHERE module_id = $1",
+                )
+                .bind::<Text, _>(&module_id)
+                .bind::<Bool, _>(enabled)
+                .bind::<Timestamptz, _>(changed_at)
+                .bind::<Text, _>(change.operator)
+                .execute(conn)
+                .await?;
+                append(
+                    conn,
+                    version,
+                    &module_id,
+                    None,
+                    &serde_json::json!({ "enabled": previous }),
+                    &serde_json::json!({ "enabled": enabled }),
+                    change,
+                    changed_at,
+                )
+                .await?;
+                Ok(version)
+            }
+            .scope_boxed()
+        })
+        .await
+        .map(|version| version as u64)
+        .map_err(|e| format!("set enabled: {e}"))
+    }
+
+    async fn set_global(
+        &self,
+        module_id: &str,
+        params: serde_json::Value,
+        change: &Change<'_>,
+    ) -> Result<u64, WriteError> {
+        let changed_at = at(change)?;
+        let mut conn = self.conn().await?;
+        let module_id = module_id.to_string();
+        conn.transaction::<i64, WriteError, _>(|conn| {
+            async move {
+                let version = bump(conn).await?;
+                check(version, change.expected_version)?;
+                let previous: Vec<ParamsSql> = diesel::sql_query(
+                    "SELECT global_params AS params FROM module_instances \
+                     WHERE module_id = $1 FOR UPDATE",
+                )
+                .bind::<Text, _>(&module_id)
+                .load(conn)
+                .await?;
+                let previous = previous
+                    .into_iter()
+                    .next()
+                    .map(|row| row.params)
+                    .unwrap_or_default();
+                diesel::sql_query(
+                    "INSERT INTO module_instances \
+                     (module_id, enabled, global_params, seeded_params, updated_at, updated_by) \
+                     VALUES ($1, TRUE, $2, $2, $3, $4) ON CONFLICT (module_id) DO UPDATE SET \
+                     global_params = EXCLUDED.global_params, updated_at = EXCLUDED.updated_at, \
+                     updated_by = EXCLUDED.updated_by",
+                )
+                .bind::<Text, _>(&module_id)
+                .bind::<Jsonb, _>(&params)
+                .bind::<Timestamptz, _>(changed_at)
+                .bind::<Text, _>(change.operator)
+                .execute(conn)
+                .await?;
+                append(
+                    conn, version, &module_id, None, &previous, &params, change, changed_at,
+                )
+                .await?;
+                Ok(version)
+            }
+            .scope_boxed()
+        })
+        .await
+        .map(|version| version as u64)
+        .map_err(|e| e.context("set global params"))
+    }
+
+    async fn set_global_if(
+        &self,
+        module_id: &str,
+        expected: &serde_json::Value,
+        params: serde_json::Value,
+        change: &Change<'_>,
+    ) -> Result<Option<u64>, String> {
+        let changed_at = at(change)?;
+        let mut conn = self.conn().await?;
+        let (module_id, expected) = (module_id.to_string(), expected.clone());
+        let written = conn
+            .transaction::<i64, diesel::result::Error, _>(|conn| {
+                async move {
+                    let version = bump(conn).await?;
+                    let current: Vec<ParamsSql> = diesel::sql_query(
+                        "SELECT global_params AS params FROM module_instances \
+                         WHERE module_id = $1 FOR UPDATE",
+                    )
+                    .bind::<Text, _>(&module_id)
+                    .load(conn)
+                    .await?;
+                    let Some(previous) = current.into_iter().next().map(|row| row.params) else {
+                        return Err(diesel::result::Error::RollbackTransaction);
+                    };
+                    if previous != expected {
+                        return Err(diesel::result::Error::RollbackTransaction);
+                    }
+                    diesel::sql_query(
+                        "UPDATE module_instances SET global_params = $2, updated_at = $3, \
+                         updated_by = $4 WHERE module_id = $1",
+                    )
+                    .bind::<Text, _>(&module_id)
+                    .bind::<Jsonb, _>(&params)
+                    .bind::<Timestamptz, _>(changed_at)
+                    .bind::<Text, _>(change.operator)
+                    .execute(conn)
+                    .await?;
+                    append(
+                        conn, version, &module_id, None, &previous, &params, change, changed_at,
+                    )
+                    .await?;
+                    Ok(version)
+                }
+                .scope_boxed()
+            })
+            .await;
+        match written {
+            Ok(version) => Ok(Some(version as u64)),
+            Err(diesel::result::Error::RollbackTransaction) => Ok(None),
+            Err(e) => Err(format!("set global params: {e}")),
+        }
+    }
+
+    async fn account_params(&self, account_id: &str) -> Result<Vec<AccountParamsRow>, String> {
+        let mut conn = self.conn().await?;
+        let rows: Vec<AccountParamsSql> = diesel::sql_query(
+            "SELECT account_id, module_id, kind, position, params, updated_at, updated_by \
+             FROM module_account_params WHERE account_id = $1 ORDER BY position, module_id",
+        )
+        .bind::<Text, _>(account_id)
+        .load(&mut conn)
+        .await
+        .map_err(|e| format!("account module params: {e}"))?;
+        rows.into_iter().map(account_params_row).collect()
+    }
+
+    async fn snapshot(
+        &self,
+        account_id: &str,
+        cached_version: Option<u64>,
+    ) -> Result<ModuleSnapshot, String> {
+        let mut conn = self.conn().await?;
+        let (instance_version, account_version, instances, account_params): (
+            i64,
+            i64,
+            Option<serde_json::Value>,
+            serde_json::Value,
+        ) = diesel::select(guardian_module_snapshot(
+            account_id,
+            cached_version.map(|version| version as i64),
+        ))
+        .get_result(&mut conn)
+        .await
+        .map_err(|e| format!("module snapshot: {e}"))?;
+        Ok(ModuleSnapshot {
+            instance_version: instance_version as u64,
+            account_version: account_version as u64,
+            instances: instances
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| format!("module snapshot instances: {e}"))?,
+            account_params: serde_json::from_value(account_params)
+                .map_err(|e| format!("module snapshot account rows: {e}"))?,
+        })
+    }
+
+    async fn account_modules(&self) -> Result<Vec<AccountModule>, String> {
+        #[derive(QueryableByName)]
+        struct AccountModuleSql {
+            #[diesel(sql_type = Text)]
+            account_id: String,
+            #[diesel(sql_type = Text)]
+            module_id: String,
+            #[diesel(sql_type = Text)]
+            kind: String,
+        }
+        let mut conn = self.conn().await?;
+        let rows: Vec<AccountModuleSql> = diesel::sql_query(
+            "SELECT account_id, module_id, kind FROM module_account_params \
+             ORDER BY account_id, position, module_id",
+        )
+        .load(&mut conn)
+        .await
+        .map_err(|e| format!("account modules: {e}"))?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(AccountModule {
+                    account_id: row.account_id,
+                    module_id: row.module_id,
+                    kind: ParamsKind::parse(&row.kind)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn set_layer(
+        &self,
+        account_id: &str,
+        module_id: &str,
+        params: Option<serde_json::Value>,
+        change: &Change<'_>,
+    ) -> Result<u64, WriteError> {
+        let changed_at = at(change)?;
+        let mut conn = self.conn().await?;
+        let (account_id, module_id) = (account_id.to_string(), module_id.to_string());
+        conn.transaction::<i64, WriteError, _>(|conn| {
+            async move {
+                let version = bump_account(conn, &account_id).await?;
+                check(version, change.expected_version)?;
+                let previous: Vec<ParamsSql> = diesel::sql_query(
+                    "DELETE FROM module_account_params WHERE account_id = $1 AND module_id = $2 \
+                     AND kind = 'layer' RETURNING params",
+                )
+                .bind::<Text, _>(&account_id)
+                .bind::<Text, _>(&module_id)
+                .load(conn)
+                .await?;
+                let previous = previous
+                    .into_iter()
+                    .next()
+                    .map(|row| row.params)
+                    .unwrap_or_default();
+                if let Some(params) = &params {
+                    diesel::sql_query(
+                        "INSERT INTO module_account_params \
+                         (account_id, module_id, kind, position, params, updated_at, updated_by) \
+                         VALUES ($1, $2, 'layer', 0, $3, $4, $5)",
+                    )
+                    .bind::<Text, _>(&account_id)
+                    .bind::<Text, _>(&module_id)
+                    .bind::<Jsonb, _>(params)
+                    .bind::<Timestamptz, _>(changed_at)
+                    .bind::<Text, _>(change.operator)
+                    .execute(conn)
+                    .await?;
+                }
+                let new = params.unwrap_or_default();
+                append(
+                    conn,
+                    version,
+                    &module_id,
+                    Some(&account_id),
+                    &previous,
+                    &new,
+                    change,
+                    changed_at,
+                )
+                .await?;
+                Ok(version)
+            }
+            .scope_boxed()
+        })
+        .await
+        .map(|version| version as u64)
+        .map_err(|e| e.context("set account layer"))
+    }
+
+    async fn set_assignment(
+        &self,
+        account_id: &str,
+        modules: Vec<Assigned>,
+        change: &Change<'_>,
+    ) -> Result<u64, WriteError> {
+        let changed_at = at(change)?;
+        let mut conn = self.conn().await?;
+        let account_id = account_id.to_string();
+        conn.transaction::<i64, WriteError, _>(|conn| {
+            async move {
+                let version = bump_account(conn, &account_id).await?;
+                check(version, change.expected_version)?;
+                let removed: Vec<AccountParamsSql> = diesel::sql_query(
+                    "DELETE FROM module_account_params WHERE account_id = $1 \
+                     AND kind = 'assignment' RETURNING account_id, module_id, kind, position, \
+                     params, updated_at, updated_by",
+                )
+                .bind::<Text, _>(&account_id)
+                .load(conn)
+                .await?;
+                let previous = removed
+                    .into_iter()
+                    .map(|row| AccountParamsRow {
+                        account_id: row.account_id,
+                        module_id: row.module_id,
+                        kind: ParamsKind::Assignment,
+                        position: row.position,
+                        params: row.params,
+                        updated_at: row.updated_at.to_rfc3339(),
+                        updated_by: row.updated_by,
+                    })
+                    .collect::<Vec<_>>();
+                for (position, assigned) in modules.iter().enumerate() {
+                    diesel::sql_query(
+                        "INSERT INTO module_account_params \
+                         (account_id, module_id, kind, position, params, updated_at, updated_by) \
+                         VALUES ($1, $2, 'assignment', $3, $4, $5, $6)",
+                    )
+                    .bind::<Text, _>(&account_id)
+                    .bind::<Text, _>(&assigned.module_id)
+                    .bind::<Integer, _>(position as i32)
+                    .bind::<Jsonb, _>(&assigned.params)
+                    .bind::<Timestamptz, _>(changed_at)
+                    .bind::<Text, _>(change.operator)
+                    .execute(conn)
+                    .await?;
+                }
+                for (module_id, before, after) in assignment_changes(&previous, &modules) {
+                    append(
+                        conn,
+                        version,
+                        &module_id,
+                        Some(&account_id),
+                        &before,
+                        &after,
+                        change,
+                        changed_at,
+                    )
+                    .await?;
+                }
+                Ok(version)
+            }
+            .scope_boxed()
+        })
+        .await
+        .map(|version| version as u64)
+        .map_err(|e| e.context("set assignment"))
+    }
+
+    async fn seed_assignment(
+        &self,
+        account_id: &str,
+        modules: Vec<Assigned>,
+        change: &Change<'_>,
+    ) -> Result<bool, String> {
+        if modules.is_empty() {
+            return Ok(false);
+        }
+        let changed_at = at(change)?;
+        let modules = serde_json::Value::Array(
+            modules
+                .into_iter()
+                .map(|assigned| {
+                    serde_json::json!({ "module_id": assigned.module_id, "params": assigned.params })
+                })
+                .collect(),
+        );
+        let mut conn = self.conn().await?;
+        let committed: Option<i64> = diesel::select(guardian_module_seed_assignment(
+            account_id,
+            modules,
+            change.operator,
+            change.reason,
+            changed_at,
+        ))
+        .get_result(&mut conn)
+        .await
+        .map_err(|e| format!("seed assignment: {e}"))?;
+        Ok(committed.is_some())
+    }
+
+    async fn history(
+        &self,
+        module_id: &str,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<HistoryEntry>, String> {
+        let mut conn = self.conn().await?;
+        let rows: Vec<HistorySql> = diesel::sql_query(
+            "SELECT id, version, module_id, account_id, previous_params, new_params, operator, \
+             reason, changed_at FROM module_params_history WHERE module_id = $1 \
+             AND ($2::BIGINT IS NULL OR id < $2) ORDER BY id DESC LIMIT $3",
+        )
+        .bind::<Text, _>(module_id)
+        .bind::<Nullable<BigInt>, _>(before.map(|before| before as i64))
+        .bind::<BigInt, _>(limit as i64)
+        .load(&mut conn)
+        .await
+        .map_err(|e| format!("module params history: {e}"))?;
+        Ok(rows
+            .into_iter()
+            .map(|row| HistoryEntry {
+                id: row.id as u64,
+                version: row.version as u64,
+                module_id: row.module_id,
+                account_id: row.account_id,
+                previous: row.previous_params,
+                new: row.new_params,
+                operator: row.operator,
+                reason: row.reason,
+                at: row.changed_at.to_rfc3339(),
+            })
+            .collect())
+    }
+
+    async fn instance_version(&self) -> Result<u64, String> {
+        let mut conn = self.conn().await?;
+        let rows: Vec<VersionSql> = diesel::sql_query("SELECT version FROM module_state_version")
+            .load(&mut conn)
+            .await
+            .map_err(|e| format!("module params version: {e}"))?;
+        Ok(rows.into_iter().next().map_or(0, |row| row.version as u64))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::storage::postgres::build_postgres_pool_lazy;
+    use crate::testing::pg::test_database_url;
+
+    fn change(at: &str) -> Change<'static> {
+        Change {
+            operator: "0xop",
+            reason: "ticket",
+            at: at.to_string(),
+            expected_version: None,
+        }
+    }
+
+    async fn account_version(store: &PgModuleStore, account: &str) -> u64 {
+        store.snapshot(account, None).await.unwrap().account_version
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_snapshot_reads_both_versions_and_skips_rows_the_cache_holds() {
+        let url = test_database_url().await;
+        let store = PgModuleStore::new(build_postgres_pool_lazy(&url, 2).expect("pool"));
+        let t0 = "2026-11-09T00:00:00Z";
+        let module = format!("caps-{}", rand::random::<u32>());
+        let account = format!("0xacc{}", rand::random::<u32>());
+        store
+            .seed_instance(
+                &module,
+                true,
+                &json!({ "cap": 1000 }),
+                &json!({ "cap": 1000 }),
+                t0,
+            )
+            .await
+            .unwrap();
+        let instance_version = store.instance_version().await.unwrap();
+        store
+            .set_layer(&account, &module, Some(json!({ "cap": 100 })), &change(t0))
+            .await
+            .unwrap();
+
+        let fresh = store.snapshot(&account, None).await.unwrap();
+        assert_eq!(
+            fresh.instance_version, instance_version,
+            "an account write leaves the instance version, so no cache is invalidated"
+        );
+        assert_eq!(fresh.account_version, 1);
+        let instances = fresh.instances.expect("no cached version");
+        let row = instances
+            .iter()
+            .find(|row| row.module_id == module)
+            .unwrap();
+        assert_eq!(row.global_params, json!({ "cap": 1000 }));
+        assert_eq!(fresh.account_params.len(), 1);
+        assert_eq!(fresh.account_params[0].params, json!({ "cap": 100 }));
+        assert_eq!(fresh.account_params[0].kind, ParamsKind::Layer);
+
+        let cached = store
+            .snapshot(&account, Some(fresh.instance_version))
+            .await
+            .unwrap();
+        assert!(cached.instances.is_none(), "the cache holds this version");
+        assert_eq!(cached.account_params, fresh.account_params);
+
+        store
+            .set_global(&module, json!({ "cap": 10 }), &change(t0))
+            .await
+            .unwrap();
+        let moved = store
+            .snapshot(&account, Some(fresh.instance_version))
+            .await
+            .unwrap();
+        assert!(moved.instance_version > fresh.instance_version);
+        assert_eq!(
+            moved.account_version, 1,
+            "an instance write leaves the account's"
+        );
+        let row = moved
+            .instances
+            .expect("a stale cache gets the rows")
+            .into_iter()
+            .find(|row| row.module_id == module)
+            .unwrap();
+        assert_eq!(row.global_params, json!({ "cap": 10 }));
+        let nobody = store.snapshot("0xnobody", None).await.unwrap();
+        assert!(nobody.account_params.is_empty());
+        assert_eq!(nobody.account_version, 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn module_tables_round_trip_and_version_moves_with_history() {
+        let url = test_database_url().await;
+        let store = PgModuleStore::new(build_postgres_pool_lazy(&url, 2).expect("pool"));
+        let other_replica = PgModuleStore::new(build_postgres_pool_lazy(&url, 2).expect("pool"));
+        let t0 = "2026-10-15T00:00:00Z";
+        let module = format!("blocklist-{}", rand::random::<u32>());
+        let account = format!("0xacc{}", rand::random::<u32>());
+        let start = store.instance_version().await.unwrap();
+
+        store
+            .seed_instance(
+                &module,
+                true,
+                &json!({ "denylist": ["0xaaa"] }),
+                &json!({ "denylist": ["0xaaa"] }),
+                t0,
+            )
+            .await
+            .unwrap();
+        store
+            .seed_instance(
+                &module,
+                true,
+                &json!({ "ignored": true }),
+                &json!({ "ignored": true }),
+                t0,
+            )
+            .await
+            .unwrap();
+        store
+            .set_global(
+                &module,
+                json!({ "denylist": ["0xaaa", "0xddd"] }),
+                &change(t0),
+            )
+            .await
+            .unwrap();
+        let layer = store
+            .set_layer(
+                &account,
+                &module,
+                Some(json!({ "denylist": ["0xccc"] })),
+                &change(t0),
+            )
+            .await
+            .unwrap();
+        let assignment = store
+            .set_assignment(
+                &account,
+                vec![Assigned {
+                    module_id: format!("{module}-opt"),
+                    params: json!({ "a": 1 }),
+                }],
+                &change(t0),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (layer, assignment),
+            (1, 2),
+            "the account counts its own writes"
+        );
+
+        let instance = other_replica
+            .instances()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.module_id == module)
+            .unwrap();
+        assert_eq!(
+            instance.global_params,
+            json!({ "denylist": ["0xaaa", "0xddd"] })
+        );
+        assert_eq!(instance.seeded_params, json!({ "denylist": ["0xaaa"] }));
+
+        let rows = other_replica.account_params(&account).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|row| row.kind == ParamsKind::Layer));
+
+        let history = other_replica.history(&module, None, 10).await.unwrap();
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].account_id.as_deref(), Some(account.as_str()));
+        let older = other_replica
+            .history(&module, Some(history[0].id), 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            older,
+            vec![history[1].clone()],
+            "paged below an entry, newest first"
+        );
+        assert_eq!(
+            other_replica.instance_version().await.unwrap(),
+            start + 2,
+            "the seed and the global write; the account's writes have their own version"
+        );
+
+        store
+            .set_layer(&account, &module, None, &change(t0))
+            .await
+            .unwrap();
+        assert_eq!(store.account_params(&account).await.unwrap().len(), 1);
+
+        store
+            .set_enabled(&module, false, &change(t0))
+            .await
+            .unwrap();
+        let instance = other_replica
+            .instances()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.module_id == module)
+            .unwrap();
+        assert!(!instance.enabled);
+        assert!(
+            store
+                .set_enabled("no-such-module", false, &change(t0))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn concurrent_writes_to_an_account_serialize_and_its_version_counts_them() {
+        let url = test_database_url().await;
+        let store = std::sync::Arc::new(PgModuleStore::new(
+            build_postgres_pool_lazy(&url, 8).expect("pool"),
+        ));
+        let account = format!("0xacc{}", rand::random::<u32>());
+        let t0 = "2026-10-15T00:00:00Z";
+        let before = store.instance_version().await.unwrap();
+        let writes = (0..8).map(|n| {
+            let store = store.clone();
+            let account = account.clone();
+            tokio::spawn(async move {
+                store
+                    .set_assignment(
+                        &account,
+                        vec![Assigned {
+                            module_id: format!("opt-{n}"),
+                            params: json!({}),
+                        }],
+                        &change(t0),
+                    )
+                    .await
+            })
+        });
+        for write in writes {
+            write.await.unwrap().unwrap();
+        }
+        let rows = store.account_params(&account).await.unwrap();
+        assert_eq!(rows.len(), 1, "one replacement wins, never a union");
+        assert_eq!(account_version(&store, &account).await, 8);
+        assert_eq!(store.instance_version().await.unwrap(), before);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn default_copies_reach_only_accounts_without_assignment_history() {
+        let url = test_database_url().await;
+        let store = PgModuleStore::new(build_postgres_pool_lazy(&url, 2).expect("pool"));
+        let account = format!("0xseed{}", rand::random::<u32>());
+        let copy = || {
+            vec![Assigned {
+                module_id: "screening".into(),
+                params: json!({ "limit": 5 }),
+            }]
+        };
+        let t0 = "2026-11-09T00:00:00Z";
+        assert!(
+            store
+                .seed_assignment(&account, copy(), &change(t0))
+                .await
+                .unwrap()
+        );
+        assert_eq!(account_version(&store, &account).await, 1);
+        assert!(
+            !store
+                .seed_assignment(&account, copy(), &change(t0))
+                .await
+                .unwrap(),
+            "an existing assignment is kept"
+        );
+        assert_eq!(
+            account_version(&store, &account).await,
+            1,
+            "a refused copy does not move the version"
+        );
+        store
+            .set_assignment(&account, Vec::new(), &change(t0))
+            .await
+            .unwrap();
+        assert!(
+            !store
+                .seed_assignment(&account, copy(), &change(t0))
+                .await
+                .unwrap(),
+            "an assignment an operator emptied is not refilled"
+        );
+        assert!(store.account_params(&account).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn an_operator_write_that_changed_nothing_still_blocks_the_default_copy() {
+        let url = test_database_url().await;
+        let store = PgModuleStore::new(build_postgres_pool_lazy(&url, 2).expect("pool"));
+        let account = format!("0xnoop{}", rand::random::<u32>());
+        store
+            .set_assignment(&account, Vec::new(), &change("2026-11-10T00:00:00Z"))
+            .await
+            .unwrap();
+        let copied = store
+            .seed_assignment(
+                &account,
+                vec![Assigned {
+                    module_id: "screening".into(),
+                    params: json!({}),
+                }],
+                &change("2026-11-10T00:00:00Z"),
+            )
+            .await
+            .unwrap();
+        assert!(!copied, "the operator wrote the account first");
+        assert!(store.account_params(&account).await.unwrap().is_empty());
+        assert_eq!(account_version(&store, &account).await, 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn concurrent_default_copies_of_one_account_write_once() {
+        let url = test_database_url().await;
+        let store = std::sync::Arc::new(PgModuleStore::new(
+            build_postgres_pool_lazy(&url, 8).expect("pool"),
+        ));
+        let account = format!("0xrace{}", rand::random::<u32>());
+        let copies = (0..8).map(|n| {
+            let store = store.clone();
+            let account = account.clone();
+            tokio::spawn(async move {
+                store
+                    .seed_assignment(
+                        &account,
+                        vec![Assigned {
+                            module_id: "screening".into(),
+                            params: json!({ "copy": n }),
+                        }],
+                        &change("2026-11-10T00:00:00Z"),
+                    )
+                    .await
+                    .unwrap()
+            })
+        });
+        let mut written = 0;
+        for copy in copies {
+            written += usize::from(copy.await.unwrap());
+        }
+        assert_eq!(written, 1, "exactly one registration copies the defaults");
+        assert_eq!(store.account_params(&account).await.unwrap().len(), 1);
+        assert_eq!(account_version(&store, &account).await, 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_default_copy_racing_an_operator_write_never_overwrites_it() {
+        let url = test_database_url().await;
+        let store = std::sync::Arc::new(PgModuleStore::new(
+            build_postgres_pool_lazy(&url, 4).expect("pool"),
+        ));
+        for _ in 0..10 {
+            let account = format!("0xrace{}", rand::random::<u32>());
+            let operator = Assigned {
+                module_id: "operator-choice".into(),
+                params: json!({ "set_by": "operator" }),
+            };
+            let seed = {
+                let (store, account) = (store.clone(), account.clone());
+                tokio::spawn(async move {
+                    store
+                        .seed_assignment(
+                            &account,
+                            vec![Assigned {
+                                module_id: "screening".into(),
+                                params: json!({ "set_by": "catalog" }),
+                            }],
+                            &change("2026-11-10T00:00:00Z"),
+                        )
+                        .await
+                        .unwrap()
+                })
+            };
+            let write = {
+                let (store, account, operator) = (store.clone(), account.clone(), operator.clone());
+                tokio::spawn(async move {
+                    store
+                        .set_assignment(&account, vec![operator], &change("2026-11-10T00:00:00Z"))
+                        .await
+                        .unwrap()
+                })
+            };
+            let (copied, _) = (seed.await.unwrap(), write.await.unwrap());
+            let rows = store.account_params(&account).await.unwrap();
+            assert_eq!(
+                rows.iter()
+                    .map(|row| (row.module_id.as_str(), &row.params))
+                    .collect::<Vec<_>>(),
+                vec![(operator.module_id.as_str(), &operator.params)],
+                "the operator's assignment stands whichever write committed first"
+            );
+            assert_eq!(
+                account_version(&store, &account).await,
+                1 + u64::from(copied),
+                "one version per write that committed"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_default_copy_keeps_its_order_and_records_each_module() {
+        let url = test_database_url().await;
+        let store = PgModuleStore::new(build_postgres_pool_lazy(&url, 2).expect("pool"));
+        let run = rand::random::<u32>();
+        let account = format!("0xorder{run}");
+        let (second, first) = (format!("a-second-{run}"), format!("z-first-{run}"));
+        let instance_version = store.instance_version().await.unwrap();
+        assert!(
+            store
+                .seed_assignment(
+                    &account,
+                    vec![
+                        Assigned {
+                            module_id: first.clone(),
+                            params: json!({ "limit": 1 }),
+                        },
+                        Assigned {
+                            module_id: second.clone(),
+                            params: json!({ "limit": 2 }),
+                        },
+                    ],
+                    &change("2026-11-10T00:00:00Z"),
+                )
+                .await
+                .unwrap()
+        );
+        let version = account_version(&store, &account).await;
+        assert_eq!(version, 1, "one copy is one version");
+        assert_eq!(
+            store.instance_version().await.unwrap(),
+            instance_version,
+            "a registration does not touch the instance version"
+        );
+        let rows = store.account_params(&account).await.unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.module_id.as_str(), row.position, row.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                (first.as_str(), 0, ParamsKind::Assignment),
+                (second.as_str(), 1, ParamsKind::Assignment),
+            ],
+            "evaluation order is the order given, not the id order"
+        );
+        assert_eq!(rows[1].params, json!({ "limit": 2 }));
+        for (module, params) in [
+            (&first, json!({ "limit": 1 })),
+            (&second, json!({ "limit": 2 })),
+        ] {
+            let history = store.history(module, None, 10).await.unwrap();
+            assert_eq!(history.len(), 1);
+            assert_eq!(history[0].version, version);
+            assert_eq!(history[0].previous, serde_json::Value::Null);
+            assert_eq!(history[0].new, params);
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_conditional_write_only_replaces_the_value_it_expects() {
+        let url = test_database_url().await;
+        let store = PgModuleStore::new(build_postgres_pool_lazy(&url, 2).expect("pool"));
+        let module = format!("cas-{}", rand::random::<u32>());
+        let t0 = "2026-10-16T00:00:00Z";
+        store
+            .seed_instance(
+                &module,
+                true,
+                &json!({ "old_name": 1000 }),
+                &json!({ "old_name": 1000 }),
+                t0,
+            )
+            .await
+            .unwrap();
+        store
+            .set_global(&module, json!({ "new_name": 100 }), &change(t0))
+            .await
+            .unwrap();
+        let before = store.instance_version().await.unwrap();
+        assert_eq!(
+            store
+                .set_global_if(
+                    &module,
+                    &json!({ "old_name": 1000 }),
+                    json!({ "new_name": 1000 }),
+                    &change(t0)
+                )
+                .await
+                .unwrap(),
+            None,
+            "the stale expectation does not write"
+        );
+        assert_eq!(
+            store.instance_version().await.unwrap(),
+            before,
+            "and does not move the version"
+        );
+        assert_eq!(
+            store
+                .set_global_if(
+                    &module,
+                    &json!({ "new_name": 100 }),
+                    json!({ "new_name": 50 }),
+                    &change(t0)
+                )
+                .await
+                .unwrap(),
+            Some(before + 1),
+            "a write reports the version it committed as"
+        );
+        let row = store
+            .instances()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.module_id == module)
+            .unwrap();
+        assert_eq!(row.global_params, json!({ "new_name": 50 }));
+    }
+}

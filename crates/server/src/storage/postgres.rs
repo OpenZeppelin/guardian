@@ -1989,6 +1989,36 @@ impl StorageBackend for PostgresService {
         .map_err(|e| format!("Failed to admit delta proposal: {e}"))
     }
 
+    async fn viable_request_bytes(
+        &self,
+        account_id: &str,
+        prev_commitment: &str,
+        viable_nonce: Option<u64>,
+    ) -> Result<u64, String> {
+        let mut conn = self
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+        let (lowest_viable, highest_viable) = viable_nonce.map_or((i64::MIN, i64::MAX), |viable| {
+            (viable as i64, viable as i64)
+        });
+        let used: i64 = delta_proposals::table
+            .filter(delta_proposals::account_id.eq(account_id))
+            .filter(delta_proposals::prev_commitment.eq(prev_commitment))
+            .filter(delta_proposals::nonce.between(lowest_viable, highest_viable))
+            .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
+                "status->>'status' = 'pending'",
+            ))
+            .select(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                "COALESCE(SUM(request_bytes), 0)::BIGINT",
+            ))
+            .first(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to read viable proposal bytes: {e}"))?;
+        Ok(u64::try_from(used).unwrap_or(0))
+    }
+
     async fn pull_delta_proposal(
         &self,
         account_id: &str,
