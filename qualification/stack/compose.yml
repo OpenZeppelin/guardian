@@ -20,7 +20,12 @@ services:
     volumes:
       - ${QUAL_ACK_KEYS_DIR:?set QUAL_ACK_KEYS_DIR}:/var/guardian/ack-keys:ro
       - ${QUAL_OPERATOR_DIR:?set QUAL_OPERATOR_DIR}:/var/guardian/operator:ro
+      - ${QUAL_MODULES_DIR:?set QUAL_MODULES_DIR}:/var/guardian/modules:ro
+      - ${QUAL_MODULE_SECRETS_DIR:?set QUAL_MODULE_SECRETS_DIR}:/var/guardian/module-secrets:ro
       - guardian-keystore:/var/guardian/keystore
+    # The remote policy module is served by the Rust driver on the host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - RUST_LOG=${QUAL_RUST_LOG:-info}
       - GUARDIAN_NETWORK_TYPE=${QUAL_NETWORK_TYPE:?set QUAL_NETWORK_TYPE}
@@ -40,6 +45,11 @@ services:
       - GUARDIAN_DASHBOARD_COMMITMENT_RATE_BURST_PER_SEC=${QUAL_DASHBOARD_RATE_BURST_PER_SEC:-100}
       - GUARDIAN_DASHBOARD_COMMITMENT_RATE_PER_MIN=${QUAL_DASHBOARD_RATE_PER_MIN:-2000}
       - GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/var/guardian/operator/operators.json
+      # Policy modules, all scoped to the accounts a scenario assigns them to
+      # (qualification/stack/lib/modules.sh).
+      - GUARDIAN_MODULES_CONFIG=/var/guardian/modules/catalog.toml
+      - GUARDIAN_MODULE_SECRET_PROVIDER=file
+      - GUARDIAN_MODULE_SECRET_DIR=/var/guardian/module-secrets
       # Scraped once a run's scenarios finish, so the execution timings of a live run (chain
       # view and proving) are kept with its results as the recorded baseline.
       - GUARDIAN_METRICS_ENABLED=true

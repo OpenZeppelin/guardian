@@ -1,0 +1,62 @@
+# Built-in policies run inside the Guardian process: spending-limit, recipient-policy,
+# signer-policy and code-policy, one concern each.
+# Copy to .guardian/built-in.toml and replace the placeholders.
+# `params` seed the global params on first start; change them later through the operator API.
+
+# Spending cap for every account: at most 5 base units of one asset per transaction.
+[[module]]
+id = "caps"
+kind = "spending-limit"
+scope = "all"
+hooks = ["before_proposal_created", "before_transaction_approved"]
+timeout_ms = 50
+on_error = "deny"
+operator_can_disable = true
+disclosure = "params"
+description = "At most 5 base units of one asset per transaction"
+params = { max_per_transaction = { "0xREPLACE_WITH_FAUCET_ID" = "5" } }
+
+# Recipient blocklist for every account; extend it globally or per account at runtime.
+# Generic denials: clients learn that a policy refused, not which list or why.
+[[module]]
+id = "blocklist"
+kind = "recipient-policy"
+scope = "all"
+hooks = ["before_proposal_created", "before_transaction_approved"]
+timeout_ms = 50
+on_error = "deny"
+operator_can_disable = true
+client_reason = "generic"
+params = { denylist = [] }
+
+# Signer rule: no account may add this signer. Protected: operators cannot disable it.
+[[module]]
+id = "signers"
+kind = "signer-policy"
+scope = "all"
+hooks = ["before_account_registered", "before_proposal_created", "before_transaction_approved"]
+timeout_ms = 50
+on_error = "deny"
+params = { check = "added", denylist = ["0xdededededededededededededededededededededededededededededededede"] }
+
+# Code pinning (uncomment after reviewing the account code you accept): an account must
+# register with a listed code commitment, and a transaction that replaces its code must
+# replace it with listed code. With check = "all", every gate hook checks the code the
+# account runs, so an account on unlisted code can only upgrade.
+# [[module]]
+# id = "reviewed-code"
+# kind = "code-policy"
+# scope = "all"
+# hooks = ["before_account_registered", "before_proposal_created", "before_transaction_approved"]
+# timeout_ms = 50
+# on_error = "deny"
+# params = { check = "changed", allowed = ["0xREPLACE_WITH_REVIEWED_CODE_COMMITMENT"] }
+
+# Opt-in module: applies only to accounts an operator assigns it to, with their own params.
+[[module]]
+id = "treasury-allowlist"
+kind = "recipient-policy"
+scope = "assigned"
+hooks = ["before_proposal_created", "before_transaction_approved"]
+timeout_ms = 50
+on_error = "deny"

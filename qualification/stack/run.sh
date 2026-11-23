@@ -33,6 +33,8 @@ source "${STACK_DIR}/lib/summary.sh"
 source "${STACK_DIR}/lib/phase.sh"
 # shellcheck source=lib/operator.sh
 source "${STACK_DIR}/lib/operator.sh"
+# shellcheck source=lib/modules.sh
+source "${STACK_DIR}/lib/modules.sh"
 
 EXIT_SUCCESS=0
 EXIT_PRODUCT_FAILURE=1
@@ -308,6 +310,13 @@ if ! qual_write_operator_allowlist "${REPO_ROOT}" "${QUAL_OPERATOR_ALLOWLIST}" "
   exit "${EXIT_SETUP_FAILURE}"
 fi
 export QUAL_OPERATOR_ALLOWLIST
+
+echo "==> writing the policy module catalog"
+if ! qual_write_module_catalog "${QUAL_MODULES_DIR}" "${QUAL_MODULE_SECRETS_DIR}" \
+     "${QUAL_MODULE_TLS_DIR}" "${QUAL_MODULE_PORT}"; then
+  echo "error: the policy module catalog or its certificates could not be written" >&2
+  exit "${EXIT_SETUP_FAILURE}"
+fi
 
 qual_install_teardown_trap "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" "${RUN_DIR}"
 

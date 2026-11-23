@@ -344,7 +344,9 @@ load time so a typo surfaces explicitly
 |---|---|
 | `dashboard:read` | Read access to all `/dashboard/*` read endpoints. |
 | `accounts:pause` | Pause/unpause accounts. |
-| `policies:write` | Reserved for future policy writes — no endpoint currently requires it. |
+| `policies:write` | Policy module writes for one account (account layers, assignments) and enabling or disabling module instances ([Policy modules](#policy-modules)). |
+| `policies:write_global` | Policy module global params, which apply to every account. |
+| `modules:disable` | Disabling a module instance that the catalog marks `operator_can_disable`, without any other policy write. |
 | `stats:refresh` | Request an out-of-cycle refresh of the `/dashboard/stats` aggregate (`POST /dashboard/stats/refresh`, issue #371). |
 
 Wire strings are **case-sensitive** and **must not contain whitespace** —
@@ -352,9 +354,103 @@ the parser rejects both.
 
 > **Current scope:** `dashboard:read` gates all read endpoints.
 > `accounts:pause` gates the pause/unpause endpoints (see [Account
-> pausing](#account-pausing) below). `policies:write` is reserved
-> vocabulary — accepted by the allowlist parser but no endpoint requires
-> it yet.
+> pausing](#account-pausing) below). `policies:write`,
+> `policies:write_global` and `modules:disable` gate the policy module
+> writes (see [Policy modules](#policy-modules) below).
+
+## Policy modules
+
+M2a (RFC 0002, issue #251); not in a release yet. The endpoints
+manage the module instances the catalog file declares
+([`GUARDIAN_MODULES_CONFIG`](./CONFIGURATION.md#runtime-policy-modules));
+they cannot add, remove or reconfigure an instance. Every write takes a
+`reason`, is validated by the module before it is stored, and is recorded
+in the params history and the audit log. A walkthrough is in the
+[policy modules guide](./guides/policy-modules/README.md).
+
+Which configuration approved a signed delta is on its detail,
+`GET /dashboard/accounts/{account_id}/deltas/{nonce}`, in the `modules` field:
+`catalog_hash`, `params_version`, `account_params_version`, `signed_at`,
+`submitter`, `proposer`, and under `failed_open` each module failure an `on_error = "allow"` instance let
+through (`module_id`, `layer`, `failure`). It is absent when no module ran for
+the delta, and client routes never return it. The same skips at proposal
+creation and account registration, where nothing is signed, are written to the
+audit log as `modules.failed_open` events (`operator_identity` `system`, with
+the hook, submitter, catalog hash, both params versions and, for a proposal,
+its `proposal_id`). Operator writes are audited with the version they
+committed as (`params_version` for an instance write, `account_params_version`
+for a write to one account), or `null` for an enable or disable that changed
+nothing.
+
+There are two params versions. `params_version` moves with every write to an
+instance (its global params or its enabled flag) and is what each replica keys
+its instance cache on; `GET /dashboard/modules` reports it. Each account has its
+own `account_params_version`, which moves with every write to that account's
+layers or assignment, including the default copy at registration;
+`GET /dashboard/accounts/{account_id}/modules` reports it. A write to one
+account therefore neither waits for writes to other accounts nor makes any
+replica reload its instances. The params history gives each entry an `id`, in
+write order, and the `version` it committed as; page it with `before=<id>`.
+`GET /dashboard/info` reports the
+catalog hash this replica loaded as `backend.module_catalog_hash`.
+
+| Endpoint | Permission | Body |
+|---|---|---|
+| `GET /dashboard/modules` | `dashboard:read` | |
+| `GET /dashboard/modules/{module_id}/params/history?before=<id>&limit=<n>` | `dashboard:read` | |
+| `GET /dashboard/accounts/{account_id}/modules` | `dashboard:read` | |
+| `PUT /dashboard/modules/{module_id}/params` | `policies:write_global` | `{"params": {...}, "reason": "...", "expected_version": n}` (`expected_version` optional) |
+| `PUT /dashboard/accounts/{account_id}/modules/{module_id}/params` | `policies:write` | `{"params": {...}, "reason": "...", "expected_version": n}` (`expected_version` optional) |
+| `DELETE /dashboard/accounts/{account_id}/modules/{module_id}/params` | `policies:write` | `{"reason": "...", "expected_version": n}` (`expected_version` optional) |
+| `PUT /dashboard/accounts/{account_id}/modules` | `policies:write` | `{"modules": [{"module_id": "...", "params": {...}}], "reason": "...", "expected_version": n}` (`expected_version` optional) |
+| `POST /dashboard/modules/{module_id}/enable` | `policies:write` | `{"reason": "..."}` |
+| `POST /dashboard/modules/{module_id}/disable` | `policies:write` or `modules:disable` | `{"reason": "..."}` |
+
+On a `scope = all` instance the per-account params are a layer evaluated
+after the global params, and both must allow, so a layer only adds
+restrictions. A `scope = default` instance is copied into an account's
+assignment when it first registers and is then replaced or removed with the
+account's other assignments; a `scope = assigned` one applies only where it
+is assigned. Disabling an instance the catalog does not mark
+`operator_can_disable` returns `409 GUARDIAN_MODULE_NOT_DISABLEABLE`.
+
+The four params writes (global params, account layer set or removed, assignment)
+accept an optional `expected_version`: the catalog-wide `params_version` from
+`GET /dashboard/modules` for a global write (any instance's global write or
+enable/disable moves it, so re-read the catalog after a 409), the account's `account_params_version` for the others. Set, a
+write made after another change to the same rows is refused with
+`409 GUARDIAN_MODULE_PARAMS_STALE` and nothing is written; read the params
+again and reapply your change. Unset, a global write replaces whatever is there,
+so two operators editing from the same read can drop each other's change. An
+account write (layer or assignment) is always checked against the rows it read:
+without `expected_version`, one that loses a race with another write to the same
+account is also refused with `409 GUARDIAN_MODULE_PARAMS_STALE`, so two writes
+can never together exceed the account's evaluation budget. Retry it.
+
+A refused write returns `400 invalid_input` with the reason in `meta.detail`
+(the module and the rule it broke; the `message` stays generic, as for every
+error), and a body that names a JSON key twice in one object is refused the
+same way rather than keeping the last value. Writes are refused when the
+`reason` is longer than
+512 characters, when the params exceed
+`GUARDIAN_MODULE_PARAMS_MAX_BYTES`, when a layer is written for a module the
+account still has in its assignment (left from before a catalog change made it
+`scope = all`; remove it from the assignment first), or when they would take the account's modules
+over the evaluation budget at a hook where they are not already that far over
+(each `all` instance, again for its layer, plus each assigned one). A write that
+keeps or lowers the cost always passes, so an account a deploy pushed over the
+budget can be brought back under it. Params a module cannot validate because it
+does not answer are refused with `503 GUARDIAN_MODULE_UNAVAILABLE`; an assignment
+entry sent exactly as stored is not validated again, so an account keeping a down
+module can still have its other entries changed. `GET /dashboard/modules` reports each instance's
+`circuit` on the answering replica, `params_drift` against the params seeded
+from the catalog file, and under `undeclared` the stored instances the catalog
+no longer declares. An account's entries naming such an instance are marked
+`orphaned` and skipped, and so are entries a `scope` change left behind: a
+layer on an instance that is no longer `all`, or an assignment entry on one
+that now is. Delete such a layer, or write the account's assignment again
+(which drops entries on `all` instances). The history is newest first, at most 100 entries per
+page by default (1,000 at most), and `before` pages backwards by entry `id` (not `version`, which is counted per instance or per account).
 
 ## Account pausing
 

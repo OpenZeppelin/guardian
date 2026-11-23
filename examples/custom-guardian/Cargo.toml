@@ -1,0 +1,22 @@
+[package]
+name = "custom-guardian"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "A Guardian server build with the operator's own policy module kinds compiled in"
+
+[[bin]]
+name = "custom-guardian"
+path = "src/main.rs"
+
+[features]
+postgres = ["guardian-server/postgres"]
+
+[dependencies]
+guardian-server = { path = "../../crates/server" }
+guardian-module-sdk = { path = "../../crates/guardian-module-sdk" }
+async-trait = "0.1"
+dotenvy = "0.15"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+tokio = { version = "1.47.1", features = ["rt-multi-thread", "macros"] }

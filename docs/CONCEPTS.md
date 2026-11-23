@@ -178,6 +178,7 @@ flowchart LR
 | Guardian → Client | The ACK signature on every accepted delta. Clients verify the ACK and the commitment chain before trusting returned state. |
 | Client → Miden | Miden's own ZK proof verification; Guardian is not in this path. |
 | Guardian → Miden | Read-only RPC; Miden does not trust Guardian for anything. |
+| Guardian → policy modules (optional) | Modules can only refuse: the Guardian signs only when every applicable module allows, and a module never holds a key. Remote modules are reached over TLS with a bearer token per instance. What they receive is a disclosure; see [Policy modules](#policy-modules) below. |
 | Inside Guardian | Backend access control, IAM scoping, infrastructure hardening — see [`docs/runbooks/secrets.md`](./runbooks/secrets.md) and [`docs/architecture/infra.md`](./architecture/infra.md). |
 
 What this means in practice:
@@ -190,6 +191,48 @@ What this means in practice:
 - **An offline Guardian halts coordination.** Users can still execute
   locally; they just cannot sync with their other devices, and other
   cosigners cannot see their proposals.
+
+### Policy modules
+
+An operator can start Guardian with a module catalog: policy modules it asks
+before it creates a proposal, signs a delta or accepts a new account
+([guide](./guides/policy-modules/README.md),
+[RFC 0002](./rfcs/0002-guardian-modules.md)). They change the trust model in
+two ways.
+
+- **They add a reason to refuse, never a way to sign.** A module that is
+  compromised or wrong can stop transactions (or, if its instance is set to
+  fail open, be skipped), but it cannot make Guardian sign anything the
+  cosigners did not sign. A rule that must hold even if Guardian itself is
+  compromised belongs in the account's code on chain, not in a module.
+- **They are a disclosure.** Each module, and for a remote module the team or
+  vendor running it, receives for every account it applies to:
+  - the full transaction: amounts, assets, recipients, notes, storage and code
+    changes, and the account's signers and thresholds before and after;
+  - the verified signer that submitted it, and the proposer;
+  - the proposer's free-text proposal `description`, which can contain
+    personal data;
+  - transactions that never execute: proposals at creation, and every
+    transaction a cosigner checks with the dry-run endpoint (unless the
+    instance sets `dry_run = false`);
+  - at registration, the account's initial vault and storage.
+
+  Secrets never reach a remote module: secret references are refused in its
+  configuration, and resolved values stay in the Guardian process.
+
+What this means for operators:
+
+- Treat a module vendor as a data processor. Ask it to document what it
+  stores, for how long and where, and put that in your agreement with it.
+- Apply a module only where it is needed: a `scope = "assigned"` instance sees
+  only the accounts it is assigned to, and a module subscribed only to
+  `before_transaction_approved` does not see proposals at creation.
+- Guardian's own logs hold, for every denial, the module's free-text
+  `message`, the account, the submitter and the reason code; they fall under
+  the same retention as the rest of the server log.
+- What cosigners learn about the modules is chosen per instance
+  (`disclosure`, `client_reason`); by default they learn only that a policy
+  refused, with the module's instance id and reason code.
 
 ## Client verification checklist
 

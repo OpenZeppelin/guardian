@@ -258,6 +258,9 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_proving_enabled` | `null` | Overrides `GUARDIAN_PROVING_ENABLED`; `false` refuses execution requests while executions in flight still settle |
 | `guardian_tx_prover_timeout_secs` | `null` | Overrides `GUARDIAN_TX_PROVER_TIMEOUT_SECS` (server default 300) |
 | `guardian_execution_lease_secs` | `null` | Overrides `GUARDIAN_EXECUTION_LEASE_SECS` (server default 120, at most 3600) |
+| `guardian_modules_config` | `""` | Absolute path of the policy module catalog inside the server image, injected as `GUARDIAN_MODULES_CONFIG`. Empty runs without policy modules; in the prod stage, once the database holds module state, that start is refused unless `guardian_modules_disabled = true`. The published image carries no catalog, so deploy an image built from it that copies yours in |
+| `guardian_modules_disabled` | `false` | Sets `GUARDIAN_MODULES_DISABLED=true`, to run a prod stack without its catalog on purpose (retiring modules) although its database holds module state |
+| `guardian_module_secret_names` | `[]` | Secrets Manager secret names the catalog references. The task runtime role gets `secretsmanager:GetSecretValue` on each, and `GUARDIAN_MODULE_SECRET_PROVIDER=aws` is set. Needs `guardian_modules_config`; the secrets are created and rotated by the operator |
 | `guardian_execution_reconcile_interval_secs` | `null` | Overrides `GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS` (server default 30; must stay below the lease) |
 | `guardian_execution_expiration_horizon_blocks` | `null` | Overrides `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS` (server default 512, at least 256) |
 | `guardian_execution_max_concurrent` | `null` | Overrides `GUARDIAN_EXECUTION_MAX_CONCURRENT`, a memory safety bound on executions one task holds at once (server default 64, at least 1); raise it only with `server_memory` |
@@ -327,6 +330,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `alarm_execution_failures_threshold` | `1` | Operator-side execution failures (`PROVING_FAILED`, `NODE_UNAVAILABLE`, `CHAIN_INCONSISTENT`, `SEALING_FAILED`, `ACKNOWLEDGEMENT_FAILED`) per 5-minute period tolerated before the execution-failures alarm fires |
 | `alarm_execution_observation_outage_threshold_seconds` | `300` | Seconds without a chain observation for a submitted execution before the observation-outage alarm fires |
 | `alarm_execution_reservation_age_threshold_seconds` | `1800` | Age of the oldest active execution reservation that fires the reservation-age alarm; raise it with the lease or expiration horizon |
+| `alarm_module_fail_open_threshold` | `0` | Policy module evaluations per 5 minutes skipped under `on_error = allow` (dry-run checks included) that fire the module-fail-open alarm; created only with `guardian_modules_config` set |
 | `cloudwatch_log_alarms_enabled` | `true` | ERROR log metric filter on the server log group + log-errors alarm (plus a WARN filter when the dashboard exists); requires `guardian_log_format = "json"` (plan-time check) |
 | `alarm_log_error_threshold` | `0` | ERROR log lines per 5-minute period tolerated before a period counts as breaching (two consecutive periods alarm) |
 

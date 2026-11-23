@@ -2945,7 +2945,7 @@ pub async fn assert_signer_set(runner: &Runner) -> ActionOutcome {
 
 /// How long GUARDIAN may take to finish applying an executed change before the
 /// suite treats the disagreement as real.
-const SETTLE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
+pub(super) const SETTLE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
 
 /// Proposes, waiting out the window where GUARDIAN refuses a new proposal
 /// because earlier changes are still pending: the account's candidate queue
@@ -2976,7 +2976,7 @@ async fn propose_when_settled(
 }
 
 /// What the account sends back to the treasury, well under what it holds.
-const P2ID_AMOUNT: u64 = 1_000;
+pub(super) const P2ID_AMOUNT: u64 = 1_000;
 
 /// The procedure whose threshold override the suite exercises.
 const OVERRIDE_PROCEDURE: miden_multisig_client::ProcedureName =

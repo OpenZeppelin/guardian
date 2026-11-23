@@ -301,6 +301,51 @@ aws_region = "us-east-1"
 # cloudflare_api_token = "..."
 ```
 
+## Policy modules
+
+Policy modules ([guide](./guides/policy-modules/README.md)) are off unless the
+server is given a catalog. The catalog is a file the server reads once at
+startup, and the published image carries none, so on this stack it travels in
+the image:
+
+1. Build an image from the published one that copies your catalog in, push it
+   to the stack's ECR repository and deploy it as the server image. Use a
+   release that includes policy modules: no published image does yet, so until
+   one does, build the base image from the source
+   (`docker build --build-arg GUARDIAN_SERVER_FEATURES=postgres .`). Copy any
+   file the catalog names relative to itself, such as a `tls.ca_file`, next to
+   it:
+
+   ```dockerfile
+   FROM ghcr.io/openzeppelin/guardian:<version>
+   COPY modules.toml /etc/guardian/modules.toml
+   COPY module-ca.pem /etc/guardian/module-ca.pem
+   ```
+
+2. Point the server at it and name the secrets the catalog references:
+
+   ```hcl
+   guardian_modules_config      = "/etc/guardian/modules.toml"
+   guardian_module_secret_names = ["guardian/modules/screening-token"]
+   ```
+
+`guardian_modules_config` sets `GUARDIAN_MODULES_CONFIG`.
+`guardian_module_secret_names` grants the task runtime role
+`secretsmanager:GetSecretValue` on exactly those secrets and sets
+`GUARDIAN_MODULE_SECRET_PROVIDER=aws`. Create each secret before the deploy
+that enables its instance ([`runbooks/secrets.md`](./runbooks/secrets.md#policy-module-secrets)):
+an enabled instance whose secret cannot be read stops startup.
+
+The catalog is deploy configuration. A change to it is a new image and a new
+task definition, which is the review bar wanted for adding, removing or
+reconfiguring an instance; params, enabled flags and account assignments
+change at run time through the [operator API](./DASHBOARD.md#policy-modules)
+and live in the database. A remote module must be reachable from the task's
+subnets; the stack does not deploy modules.
+
+A catalog that is set but empty, or declares no module, stops startup. To run
+without modules again, clear `guardian_modules_config`.
+
 ## Database TLS verification
 
 By default the server `DATABASE_URL` uses `sslmode=require` — the connection is
@@ -629,6 +674,8 @@ exposes no knobs for a routable bind address.
 | `<stack>-execution-failures` | More than `alarm_execution_failures_threshold` (default 1) executions in a 5-minute period fail with an operator-side code (`GUARDIAN_EXECUTION_PROVING_FAILED`, `NODE_UNAVAILABLE`, `CHAIN_INCONSISTENT`, `SEALING_FAILED`, `ACKNOWLEDGEMENT_FAILED`): check the prover, the Miden node and the acknowledgement signer. Failures caused by the proposal or its signers are not counted |
 | `<stack>-execution-observation-outage` | Guardian could not observe the chain for a submitted execution for more than `alarm_execution_observation_outage_threshold_seconds` (default 300 s); the account stays reserved meanwhile |
 | `<stack>-execution-reservation-age` | The oldest active execution reservation is older than `alarm_execution_reservation_age_threshold_seconds` (default 1800 s, above 256 blocks plus the lease); the account cannot start another execution until it is released. Raise it with the lease or the expiration horizon |
+| `<stack>-module-circuit-open` | Only with `guardian_modules_config` set. A policy module's circuit has been open for 10 minutes: its accounts follow `on_error` (fail-closed instances refuse, fail-open ones skip the module). See the [policy modules runbook](./runbooks/policy-modules.md) |
+| `<stack>-module-fail-open` | Only with `guardian_modules_config` set. More than `alarm_module_fail_open_threshold` (default 0) module evaluations in 5 minutes were skipped because a fail-open instance (`on_error = allow`) failed. It counts skipped judgements, dry-run checks included, not approved requests: a later module may still have denied the request |
 | `<stack>-metrics-missing` | Application metrics stop arriving — the constant `guardian_build_info` heartbeat disappears (metrics endpoint down, sidecar dead, or scrape failing) |
 | `<stack>-metrics-refresh-failures` | Slow-aggregate refresher attempts are failing; delta/proposal/account gauges are stale |
 | `<stack>-metrics-refresh-stale` | The refresh timestamp stopped advancing for ≥ 10 min (hung or dead refresher — catches what the failures counter cannot) |

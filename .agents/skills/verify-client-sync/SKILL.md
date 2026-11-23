@@ -114,7 +114,7 @@ enough, because the undo of a dropped transaction leaves the cache on the
 dropped config.
 
 Fix: every proposal creator (`createProposal` and each `create*Proposal`
-method), `signProposal`, `signProposalOffline`, `importProposal`,
+method, in the `draft*` step that `checkTransaction` shares), `signProposal`, `signProposalOffline`, `importProposal`,
 `syncProposals` (`reconcileProposals`), `submitTransaction` and
 `registerOnGuardian` re-read the store (`refreshConfigFromStore`), and
 `prepareProposalExecution` and `prepareCustomExecution` refresh the config

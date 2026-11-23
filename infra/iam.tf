@@ -168,6 +168,31 @@ resource "aws_iam_role_policy" "ecs_task_storage_encryption_secret" {
   })
 }
 
+# Secrets the policy module catalog names. Secrets Manager appends a hyphen and six characters
+# to a secret's name in its ARN, which the pattern below matches for exactly the named secrets.
+resource "aws_iam_role_policy" "ecs_task_module_secrets" {
+  count = length(var.guardian_module_secret_names) > 0 ? 1 : 0
+
+  name = "${var.stack_name}-ecs-task-module-secrets"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [
+          for name in var.guardian_module_secret_names :
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${name}-??????"
+        ]
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role_policy" "ecs_task_operator_public_keys_secret" {
   count = var.guardian_operator_public_keys_secret_arn != "" || local.managed_operator_public_keys_secret_enabled ? 1 : 0
 

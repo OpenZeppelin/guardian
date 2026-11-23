@@ -19,6 +19,8 @@ source "${STACK_DIR}/lib/redact.sh"
 source "${STACK_DIR}/lib/pairing.sh"
 # shellcheck source=../lib/phase.sh
 source "${STACK_DIR}/lib/phase.sh"
+# shellcheck source=../lib/modules.sh
+source "${STACK_DIR}/lib/modules.sh"
 
 PASSED=0
 FAILED=0
@@ -58,6 +60,8 @@ compose_accepts_project() {
   QUAL_ACK_KEYS_DIR=/tmp/qual-test/ack-keys \
   QUAL_ACK_KEYS_MIGRATION_DIR=/tmp/qual-test/ack-keys-migration-target \
   QUAL_OPERATOR_DIR=/tmp/qual-test/operator \
+  QUAL_MODULES_DIR=/tmp/qual-test/modules \
+  QUAL_MODULE_SECRETS_DIR=/tmp/qual-test/module-secrets \
     docker compose -p "${project}" -f "${STACK_DIR}/compose.yml" config >/dev/null 2>&1
 }
 
@@ -322,6 +326,30 @@ LS_JSON='[{"Name":"qual-live","Status":"running(4)"},{"Name":"qual-dead","Status
 assert_eq "a stopped qualification project is reaped" "qual-dead" "$(reap_candidates "${LS_JSON}")"
 assert_not_contains "a running qualification project is left alone" "$(reap_candidates "${LS_JSON}")" "qual-live"
 assert_not_contains "an unrelated project is left alone" "$(reap_candidates "${LS_JSON}")" "other"
+
+echo "policy module catalog"
+MODULE_RUN="$(mktemp -d)"
+if qual_write_module_catalog "${MODULE_RUN}/modules" "${MODULE_RUN}/secrets" "${MODULE_RUN}/tls" 40123; then
+  pass "the catalog and its certificates are written"
+  assert_contains "the remote instance points at the driver's port" \
+    "$(cat "${MODULE_RUN}/modules/catalog.toml")" 'endpoint = "grpc://host.docker.internal:40123"'
+  assert_eq "the Guardian and the driver share one token" \
+    "$(cat "${MODULE_RUN}/secrets/qual-remote-token")" "$(cat "${MODULE_RUN}/tls/token")"
+  # The file secrets backend refuses a token anyone but its owner can read.
+  assert_eq "the token is owner-only" "600" \
+    "$(stat -c '%a' "${MODULE_RUN}/secrets/qual-remote-token" 2>/dev/null || stat -f '%Lp' "${MODULE_RUN}/secrets/qual-remote-token")"
+  if openssl verify -CAfile "${MODULE_RUN}/modules/module-ca.pem" -verify_hostname host.docker.internal \
+       "${MODULE_RUN}/tls/cert.pem" >/dev/null 2>&1; then
+    pass "the module certificate verifies for host.docker.internal under the catalog's CA"
+  else
+    fail "the module certificate verifies for host.docker.internal under the catalog's CA"
+  fi
+  assert_eq "the CA key does not outlive the run setup" "absent" \
+    "$([[ -e "${MODULE_RUN}/tls/ca-key.pem" ]] && echo present || echo absent)"
+else
+  fail "the catalog and its certificates are written" "qual_write_module_catalog failed"
+fi
+rm -rf "${MODULE_RUN}"
 
 echo
 printf 'passed %d, failed %d, skipped %d\n' "${PASSED}" "${FAILED}" "${SKIPPED}"
