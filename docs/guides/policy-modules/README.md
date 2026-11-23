@@ -130,12 +130,22 @@ gitignored, so keys and tokens stay out of commits.
 ```sh
 cp docs/guides/policy-modules/built-in.toml .guardian/
 cp docs/guides/policy-modules/.env.example docs/guides/policy-modules/.env
+cargo run -p guardian-server --bin ack-keygen -- --out-dir .guardian/modules-guide/ack
 ```
+
+`ack-keygen` writes the Guardian's signing keys, which the guide's `.env` loads.
+Accounts are bound to these keys when they register, so they must survive the
+restarts the guide asks for; without them each start makes new keys.
 
 Edit `.guardian/built-in.toml` for your network: replace `0xREPLACE_WITH_FAUCET_ID`
 with the faucet id of an asset you hold, in `0x` hex form or as its bech32
 address (stored as hex). The server does not start until you do: the built-in
-policies refuse a placeholder, since it would never match a transaction. The other pages swap in
+policies refuse a placeholder, since it would never match a transaction. To
+find the id, open the demo (step 5) with your account and choose `s` (Show
+account details): the vault lists each asset with its full faucet id. The cap
+applies only to the faucets it names; a payment in any other asset is not
+capped, unless `allowed_assets` limits which assets may be sent (see
+[built-in policies](./built-in.md#spending-limit)). The other pages swap in
 `remote.toml` or `custom.toml` by changing `GUARDIAN_MODULES_CONFIG` in the
 guide's `.env`.
 
@@ -146,9 +156,16 @@ set -a && . docs/guides/policy-modules/.env && set +a
 cargo run -p guardian-server --bin server
 ```
 
-Exported variables take precedence over the repository's own `.env`. The
-server uses the filesystem backend unless built with `--features postgres`;
-module state then goes to `GUARDIAN_METADATA_PATH/modules/module_state.json`.
+Exported variables take precedence over the repository's own `.env`, but the
+server still reads that file for anything the guide's `.env` leaves unset. If
+it sets `GUARDIAN_MODULES_CONFIG`, that catalog loads whenever the guide's
+`.env` is not loaded in the shell, and to run without modules you must
+`unset GUARDIAN_MODULES_CONFIG` and remove the line from the repository's
+`.env` too (an empty value is refused at startup). The server uses the
+filesystem backend unless built with `--features postgres`; module state then
+goes to `GUARDIAN_METADATA_PATH/modules/module_state.json`. A Postgres build
+uses `DATABASE_URL` instead, from either file, together with whatever module
+state that database already holds.
 Look for this line in the log:
 
 ```
@@ -185,6 +202,13 @@ At its prompts, pick the network the guide's `.env` names
 (`GUARDIAN_NETWORK_TYPE`, devnet by default; the demo's own default is local),
 and use an account funded with the asset whose faucet id you put in the
 catalog, or the cap has nothing to apply to.
+
+Every transaction pays its fee from the account's own vault in the network's
+native asset, the account's first transaction included, so fund a new account
+with that asset before you test with it. An account without it fails while the
+client builds the transaction, before the Guardian or any module sees it, with
+`assertion failed with error code: 644413868907058392` (the vault holds less
+than the fee). The fee note is not a payment: the cap does not count it.
 
 Any client works; refusals are plain Guardian errors.
 
@@ -246,5 +270,6 @@ For outages, a module that refuses too much, and break-glass steps, see the
 | `GUARDIAN_MODULES_CONFIG is set but empty` or `declares no module` at startup | An empty value or an empty catalog would silently run without any policy. Point the variable at a catalog, or unset it to run without modules. |
 | `module caps-remote: …` at startup | An enabled remote module rejected the token or answered incompatibly, or it is new to this Guardian and unreachable. Start the module first, or set `enabled = false` until it runs. A module that has started here before and is merely down does not stop startup: the instance starts unavailable and recovers on a health probe. |
 | `relation "module_state_version" does not exist` | A Postgres database that ran an earlier prototype migration. Drop the `module_*` tables and the functions `guardian_module_snapshot` and `guardian_module_seed_assignment`, delete the module rows in `__diesel_schema_migrations` (versions `20261015000001`, `20261109000001`, `20261110000001` and `20261110000002`, whichever exist), then restart so every module migration runs again. |
+| `GUARDIAN public key commitment 0x… does not match account commitment 0x…` | The server started with different signing keys from the ones the account registered with, usually because `GUARDIAN_ACK_SECRET_PROVIDER=file` was not set (Setup step 2). Keys made without it are gone after a restart: register a new account. |
 | `login failed: no session cookie` | The server did not load the key: check `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` and the `public_key` in it. |
 | The client shows a generic error | The server log names the module, reason code and layer for every refusal. |
