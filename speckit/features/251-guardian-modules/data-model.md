@@ -2,7 +2,7 @@
 
 **Feature**: [spec.md](./spec.md) | **Plan**: [plan.md](./plan.md)
 
-Wire messages are defined in [contracts/guardian_module_v1.proto](./contracts/guardian_module_v1.proto). This file covers what the Guardian loads, stores and keeps in memory. Column and type names are indicative until the prototype gates close ([research.md](./research.md)).
+Wire messages are defined in [`crates/guardian-module-sdk/proto/guardian_module_v1.proto`](../../../crates/guardian-module-sdk/proto/guardian_module_v1.proto). This file covers what the Guardian loads, stores and keeps in memory. Column and type names are indicative until the prototype gates close ([research.md](./research.md)).
 
 ## Configuration (loaded at startup, not stored)
 
@@ -17,7 +17,7 @@ One `[[module]]` entry of the catalog file ([contracts/catalog-config.md](./cont
 | `endpoint` | Remote kinds only: `grpc://` (TLS) or `grpc+insecure://` (plain text, loopback hosts only, never in prod) |
 | `scope` | `all`, `default` or `assigned` |
 | `hooks` | Non-empty subset of the gate and notify hooks; each must be in the module's `describe` |
-| `timeout_ms` | Required, 1 to `GUARDIAN_MODULE_TIMEOUT_MAX_MS` |
+| `timeout_ms` | Required, 1 to 1000 |
 | `on_error` | `deny` (default) or `allow` |
 | `auth` | Remote kinds; mandatory in prod; secret reference for the bearer token, optional mTLS |
 | `params` | Seed for the instance's global params, written to the metadata store the first time the id is seen; JSON object; `$secret` references only for in-process kinds (such an instance's global params stay file-managed); validated by `validate_params` |
@@ -65,21 +65,27 @@ Assignments are created for `default` instances in the same transaction as the c
 
 #### `module_params_history`
 
-Append-only: `id` (primary key), `version`, `module_id`, `account_id` (null for global), `previous`, `new`, `operator`, `reason`, `at`. Rows of one write share its `version`.
+Append-only: `id` (primary key, the order the history is listed and paged in), `version`, `module_id`, `account_id` (null for global), `previous`, `new`, `operator`, `reason`, `at`. Rows of one write share its `version`: the instance params version for a global row, the account's params version for an account row.
 
 #### `module_state_version`
 
-One row holding the params version. Every write takes its lock first, increments it, updates its rows and appends the history in one transaction, so writes serialize and the version moves in commit order; replicas key their cache on it. On the filesystem backend all tables are one file, `module_state.json`, replaced atomically.
+One row holding the instance params version. Every write to `module_instances` takes its lock first, increments it, updates its rows and appends the history in one transaction, so instance writes serialize and the version moves in commit order; replicas key their instance cache on it.
+
+#### `module_account_version`
+
+One row per account a write has touched: `account_id` (primary key) and the account's params version. Every write to an account's rows in `module_account_params`, including the default copy at registration, takes that row's lock, increments it, updates the rows and appends the history in one transaction, so writes to one account serialize while writes to different accounts never wait for each other, and no account write moves the instance version. On the filesystem backend all tables are one file, `module_state.json`, replaced atomically, and each version is the highest of its history rows.
 
 ### Delta additions (both backends)
 
+The approval record is `metadata.modules` on the signed delta (`ModuleApproval`), stored with the delta's metadata (JSONB on Postgres, JSON on the filesystem), so it needs no migration. Operators read it as `modules` on the dashboard delta detail (`GET /dashboard/accounts/{account_id}/deltas/{nonce}`); it is stripped from every client delta response and is not carried over gRPC. Written only when a module ran for the delta.
+
 | Field | Set when | Notes |
 |---|---|---|
-| `modules` (evaluation trace) | The Guardian signs the delta after modules ran | Dashboard detail only. `catalog_hash`, `params_version`, `failed_open` (module, layer, failure kind; omitted when empty). Allowed evaluations are derived from the catalog, not stored. Prototype: `metadata.modules` |
-| `signed_at` | Fixed before the pipeline runs | The accounting clock; repeated in `pending` and `CommitEvent` |
+| `catalog_hash`, `params_version`, `account_params_version`, `failed_open` | The Guardian signs the delta after modules ran | The configuration the modules ran with; `failed_open` lists module, layer and failure kind, omitted when empty. Allowed evaluations are derived from the catalog, not stored |
+| `signed_at` | Fixed before the pipeline runs | RFC 3339; the accounting clock, sent as `accounting_time` and repeated in `pending` and `CommitEvent` (M2b) |
 | `submitter` | At signing | Verified signer commitment of the request being acked |
-| `proposer` | At signing | From `ProposalContext`; empty when no matching proposal |
-| `module_projection` | At signing, for every account, once any instance subscribes to `after_transaction_committed` (M2b) | Stored, never recomputed; a queued candidate without it puts subscribed modules for its account behind the activation fence |
+| `proposer` | At signing | From `ProposalContext`; omitted when no proposal matched |
+| `module_projection` | At signing, for every account, once any instance subscribes to `after_transaction_committed` (M2b) | Stored, never recomputed; a queued candidate without it, or without an approval record, puts subscribed modules for its account behind the activation fence |
 
 ### Proposal storage rule
 
@@ -151,5 +157,5 @@ A deny is an answer and resets the failure count. `guardian_module_circuit_open{
 | `TransactionProjection` (Miden variant `MidenTransaction`) | Transaction summary (gate G2) | At least one module will be called; stored when M2b subscribers exist |
 | `pending` | Candidate queue and unacknowledged events in one repeatable-read snapshot (M2b) | Only for modules subscribed to `after_transaction_committed` |
 | `params` | The layer being evaluated: global params, then the account layer of an `all` instance as a second pass, or the account's own params for `default`/`assigned` | Per module and layer |
-| `submitter` | Request authentication (`ResolvedAccount.signer_commitment`) or the execution reservation | Always |
+| `submitter` | Request authentication (`ResolvedAccount.signer_commitment`), on the execution path carried on the execution job from the request that started the attempt | Always |
 | `proposer`, `unverified_metadata` | `ProposalContext` | Transaction hooks |
