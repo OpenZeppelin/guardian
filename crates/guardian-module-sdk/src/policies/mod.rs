@@ -11,9 +11,10 @@
 //! Each kind refuses params that belong to another, and supports only the hooks where its rule
 //! can refuse something, so a catalog that subscribes it to another hook does not start. An
 //! instance with no rule configured allows without reading the request; one with a rule that
-//! cannot read what it needs returns an error, so the instance's `on_error` applies. Every
-//! denial carries a fixed reason code and a fixed client message that names the rule, never a
-//! list entry or a limit; the details go only to the logged message.
+//! cannot read what it needs returns `InvalidRequest`, which the Guardian refuses whatever
+//! the instance's `on_error` says. Every denial carries a fixed reason code and a fixed client
+//! message that names the rule, never a list entry or a limit; the details go only to the
+//! logged message.
 
 use std::collections::BTreeSet;
 
@@ -303,8 +304,9 @@ pub(crate) fn info(kind: &str, hooks: &[Hook]) -> ModuleInfo {
 }
 
 /// The transaction a request asks about, in its Miden projection. A request that carries no
-/// transaction, or no projection this module can read, is not judged: it is an error, so the
-/// instance's `on_error` applies, never an allow.
+/// transaction, or no projection this module can read, is not judged: it is
+/// `InvalidRequest`, which the Guardian refuses whatever the instance's `on_error` says, never
+/// an allow.
 pub(crate) fn transaction(request: &HookRequest) -> Result<&MidenTransaction, ModuleError> {
     match &request.subject {
         Some(hook_request::Subject::Transaction(tx)) => tx.miden().ok_or_else(|| {
