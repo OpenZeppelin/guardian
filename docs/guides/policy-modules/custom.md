@@ -54,10 +54,13 @@ the token of the instance it is for, and `instance_id` in the message
 instance's `timeout_ms`, and the instance's `on_error` decides; repeated
 failures, once a `Describe` health probe also fails, open a circuit breaker
 that skips the module until a probe succeeds. Answer `Describe` only while
-`Evaluate` can work: the probe is what tells the Guardian the module is down. `INVALID_ARGUMENT` says the request cannot be judged, and the
-request is refused whatever `on_error` says (see status codes below). Requests can be up to 2 MiB encoded
-(`GUARDIAN_MODULE_REQUEST_MAX_BYTES`), so keep your server's receive limit at
-least that high (tonic's default is 4 MiB).
+`Evaluate` can work: the probe is what tells the Guardian the module is down.
+`INVALID_ARGUMENT` says the request cannot be judged, and the request is
+refused whatever `on_error` says (see status codes below). Requests can be up
+to 2 MiB encoded (`GUARDIAN_MODULE_REQUEST_MAX_BYTES`), so keep your server's
+receive limit at
+least that high (tonic's default is 4 MiB; with the SDK's `serve`, raise it with
+`request_max_bytes` when the Guardian's cap is above that).
 
 ## Decisions
 
@@ -221,8 +224,9 @@ What the Guardian expects on the wire:
   mean the module is down: they count toward the breaker, and on `Describe` at
   startup an already-known instance starts unavailable instead of stopping the
   server. Any other status (`UNAUTHENTICATED`, `PERMISSION_DENIED`, `INTERNAL`,
-  ...) means the Guardian cannot use the module: on `Describe` it stops startup
-  for a new instance and holds the breaker open until a health probe passes.
+  ...) means the Guardian cannot use the module: on `Describe` at startup it
+  stops the server, for a known instance as for a new one, and found later by a
+  health probe it holds the breaker open until a probe passes.
 - **Decisions.** Set `effect` to `ALLOW` or `DENY`; an unset or unknown effect
   is a module failure. A deny needs a `reason_code` of 1 to 64 characters of
   `a-z`, `0-9` and `_` (another code is still a deny, but clients only see

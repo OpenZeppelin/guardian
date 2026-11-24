@@ -88,13 +88,28 @@ impl Rules {
         if !self.caps.is_empty() {
             let mut sent: BTreeMap<String, u128> = BTreeMap::new();
             for asset in payments().flat_map(|n| n.assets.iter()) {
-                if let Some(asset::Value::FungibleAmount(amount)) = &asset.value {
-                    let amount = amount.parse::<u128>().unwrap_or(u128::MAX);
-                    let total = sent
-                        .entry(asset.faucet_id.to_ascii_lowercase())
-                        .or_default();
-                    *total = total.saturating_add(amount);
-                }
+                let amount = match &asset.value {
+                    Some(asset::Value::FungibleAmount(amount)) => {
+                        amount.parse::<u128>().unwrap_or(u128::MAX)
+                    }
+                    Some(asset::Value::NftId(_)) => continue,
+                    None if !self
+                        .caps
+                        .contains_key(&asset.faucet_id.to_ascii_lowercase()) =>
+                    {
+                        continue;
+                    }
+                    None => {
+                        return Err(ModuleError::InvalidRequest(format!(
+                            "asset of {} has no value",
+                            asset.faucet_id
+                        )));
+                    }
+                };
+                let total = sent
+                    .entry(asset.faucet_id.to_ascii_lowercase())
+                    .or_default();
+                *total = total.saturating_add(amount);
             }
             for (faucet, cap) in &self.caps {
                 if sent.get(faucet).is_some_and(|total| total > cap) {
@@ -204,6 +219,28 @@ mod tests {
         };
         let projection = paying(vec![p2id(RECIPIENT, vec![fungible(ETH, 5000), nft])]);
         assert!(decide(&tx_request(cap(), projection)).await.allows());
+    }
+
+    #[tokio::test]
+    async fn an_asset_without_a_value_is_an_error_not_an_allow() {
+        let unset = Asset {
+            faucet_id: USDC.into(),
+            value: None,
+        };
+        let projection = paying(vec![p2id(RECIPIENT, vec![unset])]);
+        assert!(matches!(
+            SpendingLimit.evaluate(&tx_request(cap(), projection)).await,
+            Err(ModuleError::InvalidRequest(_))
+        ));
+        let uncapped = Asset {
+            faucet_id: ETH.into(),
+            value: None,
+        };
+        let projection = paying(vec![p2id(RECIPIENT, vec![uncapped])]);
+        assert!(
+            decide(&tx_request(cap(), projection)).await.allows(),
+            "an uncapped faucet's asset is not counted, value or not"
+        );
     }
 
     #[tokio::test]

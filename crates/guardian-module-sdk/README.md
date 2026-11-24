@@ -45,7 +45,9 @@ impl Module for NoPrivateNotes {
     }
 
     async fn validate_params(&self, params: &[u8]) -> Result<ParamsVerdict, ModuleError> {
-        Ok(if params == b"{}" {
+        let empty = serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(params)
+            .is_ok_and(|params| params.is_empty());
+        Ok(if empty {
             ParamsVerdict::ok()
         } else {
             ParamsVerdict::invalid("takes no params")
@@ -109,8 +111,10 @@ credentials; never expose such a server, since anyone who reaches it can query
 the module. For TLS
 add `serve(...).into_service()` to a tonic server configured for TLS, as
 [`examples/policy-module`](https://github.com/OpenZeppelin/guardian/tree/main/examples/policy-module)
-does. Raise the server's receive limit if you lower it: the Guardian sends
-requests up to `DEFAULT_REQUEST_MAX_BYTES` (2 MiB) by default.
+does. The Guardian sends requests up to `DEFAULT_REQUEST_MAX_BYTES` (2 MiB) by
+default and the harness accepts gRPC's default of 4 MiB; when the Guardian's
+`GUARDIAN_MODULE_REQUEST_MAX_BYTES` is higher, raise it with
+`serve(...).request_max_bytes(n)`.
 
 The Guardian side is a catalog entry:
 

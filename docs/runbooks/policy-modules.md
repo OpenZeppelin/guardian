@@ -182,7 +182,7 @@ instance that has never started on this Guardian. The log names the instance
 (`module <id>: ...`).
 
 A module that is merely down does not stop a restart once its instance has
-started here before. The server logs `Enabled module did not answer its
+run enabled here before. The server logs `Enabled module did not answer its
 startup checks` and starts with that instance unavailable: its circuit is
 open, so its accounts get `GUARDIAN_MODULE_UNAVAILABLE` (or skip it with
 `on_error = "allow"`, recorded as a fail-open skip), and every other account
