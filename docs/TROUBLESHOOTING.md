@@ -861,6 +861,26 @@ once come back synchronously and create nothing.
   (`alarm_execution_reservation_age_threshold_seconds`, default 1800 s) sits above even the
   256-block window built-in proposals script, so it fires only when a reservation outlives the
   transaction's expiration, which is worth investigating.
+- **Batched submission looks wrong (`GUARDIAN_EXECUTION_MAX_TXS_PER_BATCH` above 1).** A batch
+  changes how transactions reach the node, never an execution's state or failure code, so
+  diagnose an execution as above. Each batch sent logs "Guardian execution batch submitted" with
+  its `batch_id`, `accounts`, `transactions`, `outcome` and `build_ms`/`prove_ms`/`send_ms`.
+  "the node refused the batch, so none of its transactions is in flight; sending each alone" names
+  the node's `reason`; each transaction's own send then decides its outcome, which the execution's
+  logs show as without batching. "the mempool is at capacity" means the node's mempool is full, or
+  the node runs a `max_txs_per_batch` below this server's `GUARDIAN_EXECUTION_MAX_TXS_PER_BATCH`
+  (the server allows at most 4, the node's default), which costs one wasted batch send per group,
+  so lower it. "Guardian did not send these transactions as a batch; sending each alone" names why
+  no batch was sent: the chain view, assembly or proving failed, the build ran past the time that
+  leaves its transactions the batch send and their own send after a refusal, or another batch was
+  being proved for all of its build time (a batch waits for the prover within that time). A planned stop sends collecting and building batches' transactions alone and logs
+  "the process is stopping" at info; it is not counted.
+  `guardian_execution_batches_total` counts each group by outcome. A transaction that consumes an
+  unauthenticated note, expires within 8 blocks of the tip, or reaches the batcher with less than
+  the window plus 35 s of send time left, is sent alone and logs nothing special; on devnet's
+  20-block expiration a slow proof often leaves less, so few transactions batch there. With batching
+  on, a lone transaction is sent one `GUARDIAN_EXECUTION_BATCH_WINDOW_MS` later than without it,
+  which shows in the `send` phase of `guardian_execution_phase_duration_seconds`.
 
 ### Rate limits triggered
 
