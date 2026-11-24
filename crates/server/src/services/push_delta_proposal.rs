@@ -196,11 +196,16 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
     };
     ensure_account_active_metadata(&resolved.metadata)?;
     let credentials_session = credentials.auth_format() == RequestAuthFormat::Session;
-    // A dry run is admitted against its rate limit before any reconstruction work, whether
-    // or not modules are configured.
-    if mode == Mode::DryRun {
-        crate::modules::check_limit::admit(&account_id, &resolved.signer_commitment)?;
-    }
+    let mut creation_slot = match mode {
+        Mode::DryRun => {
+            crate::modules::check_limit::admit(&account_id, &resolved.signer_commitment)?;
+            None
+        }
+        Mode::Create if state.modules.is_some() => Some(
+            crate::modules::check_limit::admit_creation(&account_id, &resolved.signer_commitment)?,
+        ),
+        Mode::Create => None,
+    };
     let dry_run = match (mode, state.modules.as_deref()) {
         (Mode::DryRun, Some(modules)) => Some(modules.plan_dry_run(&account_id).await?),
         (Mode::DryRun, None) => Some((Vec::new(), true)),
@@ -553,7 +558,16 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
                 })
             })
             .await
-            .map(|evaluation| evaluations.push(evaluation))?;
+            .map(|evaluation| evaluations.push(evaluation))
+            .inspect_err(|error| {
+                if matches!(
+                    error,
+                    GuardianError::ModuleDenied { .. } | GuardianError::ModuleDeniedGeneric
+                ) && let Some(slot) = creation_slot.take()
+                {
+                    slot.denied();
+                }
+            })?;
         }
     }
     if mode == Mode::DryRun {
@@ -3253,6 +3267,94 @@ mod tests {
             propose_with_module(module, HookName::BeforeProposalCreated).await;
         assert!(matches!(result, Err(GuardianError::ModuleDenied { .. })));
         assert!(storage.get_submit_delta_proposal_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_creation_in_flight_holds_its_place_in_the_denial_window() {
+        let module = crate::modules::testing::StubModule::denying("recipient_blocked");
+        let (state, _, params, proposer) =
+            module_setup(module.clone(), HookName::BeforeProposalCreated, |_| {});
+        for _ in 1..crate::modules::check_limit::CHECK_RATE_DEFAULT {
+            crate::modules::check_limit::admit_creation(&params.account_id, &proposer)
+                .expect("the window has room")
+                .denied();
+        }
+        let in_flight = crate::modules::check_limit::admit_creation(&params.account_id, &proposer)
+            .expect("the last place");
+        assert!(
+            matches!(
+                push_delta_proposal(&state, params).await,
+                Err(GuardianError::RateLimitExceeded { .. })
+            ),
+            "a creation reserves its place before the modules run, so creations in flight at once cannot all be judged against the same window"
+        );
+        assert_eq!(module.calls(), 0);
+        drop(in_flight);
+    }
+
+    #[tokio::test]
+    async fn only_a_creation_the_modules_deny_counts_toward_the_denial_window() {
+        use crate::modules::check_limit::denials_counted;
+        let (state, _, params, proposer) = module_setup(
+            crate::modules::testing::StubModule::denying("recipient_blocked"),
+            HookName::BeforeProposalCreated,
+            |_| {},
+        );
+        let account_id = params.account_id.clone();
+        assert!(matches!(
+            push_delta_proposal(&state, params).await,
+            Err(GuardianError::ModuleDenied { .. })
+        ));
+        assert_eq!(denials_counted(&account_id, &proposer), 1);
+
+        let (state, _, params, proposer) = module_setup(
+            crate::modules::testing::StubModule::allowing(),
+            HookName::BeforeProposalCreated,
+            |_| {},
+        );
+        let account_id = params.account_id.clone();
+        push_delta_proposal(&state, params)
+            .await
+            .expect("an allowed creation");
+        assert_eq!(
+            denials_counted(&account_id, &proposer),
+            0,
+            "an allowed creation gives its reservation back"
+        );
+
+        let (state, _, params, proposer) = module_setup(
+            crate::modules::testing::StubModule::denying("recipient_blocked"),
+            HookName::BeforeProposalCreated,
+            |_| {},
+        );
+        let account_id = params.account_id.clone();
+        assert!(check_proposal(&state, params).await.is_err());
+        assert_eq!(
+            denials_counted(&account_id, &proposer),
+            0,
+            "a denied check counts against the check limit, not the denial window"
+        );
+    }
+
+    #[tokio::test]
+    async fn creation_stops_running_modules_once_they_denied_a_window_of_the_signers_proposals() {
+        let module = crate::modules::testing::StubModule::denying("recipient_blocked");
+        let (state, _, params, proposer) =
+            module_setup(module.clone(), HookName::BeforeProposalCreated, |_| {});
+        for _ in 0..crate::modules::check_limit::CHECK_RATE_DEFAULT {
+            crate::modules::check_limit::admit_creation(&params.account_id, &proposer)
+                .expect("the window has room")
+                .denied();
+        }
+        let refused = push_delta_proposal(&state, params).await;
+        assert!(
+            matches!(
+                refused,
+                Err(GuardianError::RateLimitExceeded { ref scope, .. }) if scope == "proposal_denials"
+            ),
+            "denied creations are limited like dry-run checks, so creation is not a free check: {refused:?}"
+        );
+        assert_eq!(module.calls(), 0, "the modules are not asked again");
     }
 
     #[tokio::test]

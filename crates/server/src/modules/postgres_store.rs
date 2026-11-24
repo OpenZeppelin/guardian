@@ -10,7 +10,7 @@ use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
 use super::store::{
     AccountModule, AccountParamsRow, Assigned, Change, HistoryEntry, InstanceRow, ModuleSnapshot,
-    ModuleStore, ParamsKind, WriteError, assignment_changes,
+    ModuleStore, ParamsKind, Reseed, WriteError, assignment_changes,
 };
 
 pub struct PgModuleStore {
@@ -18,6 +18,66 @@ pub struct PgModuleStore {
 }
 
 impl PgModuleStore {
+    async fn write_global_if(
+        &self,
+        module_id: &str,
+        expected: &serde_json::Value,
+        params: serde_json::Value,
+        change: &Change<'_>,
+        reseed: Reseed,
+    ) -> Result<Option<u64>, String> {
+        let changed_at = at(change)?;
+        let mut conn = self.conn().await?;
+        let (module_id, expected) = (module_id.to_string(), expected.clone());
+        let seed = match reseed {
+            Reseed::Keep => None,
+            Reseed::To(seed) => Some(seed),
+        };
+        let written = conn
+            .transaction::<i64, diesel::result::Error, _>(|conn| {
+                async move {
+                    let version = bump(conn).await?;
+                    let current: Vec<ParamsSql> = diesel::sql_query(
+                        "SELECT global_params AS params FROM module_instances \
+                         WHERE module_id = $1 FOR UPDATE",
+                    )
+                    .bind::<Text, _>(&module_id)
+                    .load(conn)
+                    .await?;
+                    let Some(previous) = current.into_iter().next().map(|row| row.params) else {
+                        return Err(diesel::result::Error::RollbackTransaction);
+                    };
+                    if previous != expected {
+                        return Err(diesel::result::Error::RollbackTransaction);
+                    }
+                    diesel::sql_query(
+                        "UPDATE module_instances SET global_params = $2, \
+                         seeded_params = COALESCE($5, seeded_params), updated_at = $3, \
+                         updated_by = $4 WHERE module_id = $1",
+                    )
+                    .bind::<Text, _>(&module_id)
+                    .bind::<Jsonb, _>(&params)
+                    .bind::<Timestamptz, _>(changed_at)
+                    .bind::<Text, _>(change.operator)
+                    .bind::<Nullable<Jsonb>, _>(&seed)
+                    .execute(conn)
+                    .await?;
+                    append(
+                        conn, version, &module_id, None, &previous, &params, change, changed_at,
+                    )
+                    .await?;
+                    Ok(version)
+                }
+                .scope_boxed()
+            })
+            .await;
+        match written {
+            Ok(version) => Ok(Some(version as u64)),
+            Err(diesel::result::Error::RollbackTransaction) => Ok(None),
+            Err(e) => Err(format!("set global params: {e}")),
+        }
+    }
+
     pub fn new(pool: Pool<AsyncPgConnection>) -> Self {
         Self { pool }
     }
@@ -422,50 +482,20 @@ impl ModuleStore for PgModuleStore {
         params: serde_json::Value,
         change: &Change<'_>,
     ) -> Result<Option<u64>, String> {
-        let changed_at = at(change)?;
-        let mut conn = self.conn().await?;
-        let (module_id, expected) = (module_id.to_string(), expected.clone());
-        let written = conn
-            .transaction::<i64, diesel::result::Error, _>(|conn| {
-                async move {
-                    let version = bump(conn).await?;
-                    let current: Vec<ParamsSql> = diesel::sql_query(
-                        "SELECT global_params AS params FROM module_instances \
-                         WHERE module_id = $1 FOR UPDATE",
-                    )
-                    .bind::<Text, _>(&module_id)
-                    .load(conn)
-                    .await?;
-                    let Some(previous) = current.into_iter().next().map(|row| row.params) else {
-                        return Err(diesel::result::Error::RollbackTransaction);
-                    };
-                    if previous != expected {
-                        return Err(diesel::result::Error::RollbackTransaction);
-                    }
-                    diesel::sql_query(
-                        "UPDATE module_instances SET global_params = $2, updated_at = $3, \
-                         updated_by = $4 WHERE module_id = $1",
-                    )
-                    .bind::<Text, _>(&module_id)
-                    .bind::<Jsonb, _>(&params)
-                    .bind::<Timestamptz, _>(changed_at)
-                    .bind::<Text, _>(change.operator)
-                    .execute(conn)
-                    .await?;
-                    append(
-                        conn, version, &module_id, None, &previous, &params, change, changed_at,
-                    )
-                    .await?;
-                    Ok(version)
-                }
-                .scope_boxed()
-            })
-            .await;
-        match written {
-            Ok(version) => Ok(Some(version as u64)),
-            Err(diesel::result::Error::RollbackTransaction) => Ok(None),
-            Err(e) => Err(format!("set global params: {e}")),
-        }
+        self.write_global_if(module_id, expected, params, change, Reseed::Keep)
+            .await
+    }
+
+    async fn set_catalog_params(
+        &self,
+        module_id: &str,
+        expected: &serde_json::Value,
+        params: serde_json::Value,
+        seed: serde_json::Value,
+        change: &Change<'_>,
+    ) -> Result<Option<u64>, String> {
+        self.write_global_if(module_id, expected, params, change, Reseed::To(seed))
+            .await
     }
 
     async fn account_params(&self, account_id: &str) -> Result<Vec<AccountParamsRow>, String> {
@@ -1283,5 +1313,69 @@ mod tests {
             .find(|row| row.module_id == module)
             .unwrap();
         assert_eq!(row.global_params, json!({ "new_name": 50 }));
+        assert_eq!(
+            row.seeded_params,
+            json!({ "old_name": 1000 }),
+            "a conditional write keeps the seed"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn adopted_catalog_params_replace_the_placeholder_and_the_seed_once() {
+        let url = test_database_url().await;
+        let store = PgModuleStore::new(build_postgres_pool_lazy(&url, 2).expect("pool"));
+        let module = format!("adopt-{}", rand::random::<u32>());
+        let t0 = "2026-10-16T00:00:00Z";
+        let file_managed = json!({ "api_key": { "$secret": "vendor-key" }, "cap": 5 });
+        store
+            .seed_instance(&module, true, &json!({}), &file_managed, t0)
+            .await
+            .unwrap();
+        let before = store.instance_version().await.unwrap();
+        assert_eq!(
+            store
+                .set_catalog_params(
+                    &module,
+                    &json!({}),
+                    json!({ "cap": "5" }),
+                    json!({ "cap": 5 }),
+                    &change(t0)
+                )
+                .await
+                .unwrap(),
+            Some(before + 1)
+        );
+        let row = store
+            .instances()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.module_id == module)
+            .unwrap();
+        assert_eq!(
+            row.global_params,
+            json!({ "cap": "5" }),
+            "the normalized params apply"
+        );
+        assert_eq!(
+            row.seeded_params,
+            json!({ "cap": 5 }),
+            "the seed is the catalog value as written"
+        );
+        assert_eq!(
+            store
+                .set_catalog_params(
+                    &module,
+                    &json!({}),
+                    json!({ "cap": 9 }),
+                    json!({ "cap": 9 }),
+                    &change(t0)
+                )
+                .await
+                .unwrap(),
+            None,
+            "params that are no longer the placeholder are not adopted over"
+        );
     }
 }

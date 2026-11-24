@@ -82,9 +82,10 @@ Rules every module follows:
   underscores. `message` is logged by the Guardian and never shown to clients;
   `client_message` (plain text, at most 256 characters) is shown only where
   the operator allows it.
-- Return `ModuleError` rather than allow when the request lacks what the module
-  needs. The operator's `on_error` setting then decides, and the default is to
-  refuse.
+- Return `ModuleError::InvalidRequest` rather than allow when the request
+  lacks what the module needs: the Guardian refuses it whatever the operator's
+  `on_error` says. Return `Unavailable` or `Internal` for the module's own
+  failures, which follow `on_error`.
 - Params arrive as UTF-8 JSON in `HookRequest.params` on every call: the
   module keeps no params of its own, so operator changes apply on the next
   request.
