@@ -154,7 +154,7 @@ will pick them up (hot-reload is already supported by
 ## Policy modules panel
 
 The `Policy modules` panel drives the operator module endpoints (RFC 0002,
-issue #251; not in a release yet). Endpoint semantics are in
+from 0.20.0). Endpoint semantics are in
 [`docs/DASHBOARD.md`](../../docs/DASHBOARD.md#policy-modules) and the
 walkthrough is the
 [policy modules guide](../../docs/guides/policy-modules/README.md). The panel

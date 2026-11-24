@@ -403,7 +403,7 @@ Allowlist payload shapes and enrollment flow:
 
 ## Runtime: policy modules
 
-Prototype (RFC 0002, issue #251); not in a release yet. See the [policy
+From 0.20.0 ([RFC 0002](./rfcs/0002-guardian-modules.md)). See the [policy
 modules guide](./guides/policy-modules/README.md).
 
 | Variable | Default | Notes |

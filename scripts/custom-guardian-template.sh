@@ -4,7 +4,7 @@
 # dependency to the versions in the release's Cargo.lock. Operators add their own module crates
 # to it and build with --locked (RFC 0002, section 2.5).
 #
-#   scripts/custom-guardian-template.sh --tag v0.19.0 --out dist/custom-guardian
+#   scripts/custom-guardian-template.sh --tag v0.20.0 --out dist/custom-guardian
 #   scripts/custom-guardian-template.sh --rev "$(git rev-parse HEAD)" \
 #     --git "file://$PWD" --out /tmp/custom-guardian        # try a local commit
 #

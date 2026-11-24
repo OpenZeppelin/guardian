@@ -309,12 +309,9 @@ startup, and the published image carries none, so on this stack it travels in
 the image:
 
 1. Build an image from the published one that copies your catalog in, push it
-   to the stack's ECR repository and deploy it as the server image. Use a
-   release that includes policy modules: no published image does yet, so until
-   one does, build the base image from the source
-   (`docker build --build-arg GUARDIAN_SERVER_FEATURES=postgres .`). Copy any
-   file the catalog names relative to itself, such as a `tls.ca_file`, next to
-   it:
+   to the stack's ECR repository and deploy it as the server image. Policy
+   modules need `0.20.0` or later. Copy any file the catalog names relative to
+   itself, such as a `tls.ca_file`, next to it:
 
    ```dockerfile
    FROM ghcr.io/openzeppelin/guardian:<version>

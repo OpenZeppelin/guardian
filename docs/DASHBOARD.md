@@ -360,7 +360,7 @@ the parser rejects both.
 
 ## Policy modules
 
-M2a (RFC 0002, issue #251); not in a release yet. The endpoints
+From 0.20.0 ([RFC 0002](./rfcs/0002-guardian-modules.md)). The endpoints
 manage the module instances the catalog file declares
 ([`GUARDIAN_MODULES_CONFIG`](./CONFIGURATION.md#runtime-policy-modules));
 they cannot add, remove or reconfigure an instance. Every write takes a
