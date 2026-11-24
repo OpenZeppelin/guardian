@@ -79,9 +79,15 @@ impl Stored {
         })
     }
 
-    /// The instances this Guardian has run before.
+    /// The instances this Guardian has run before: those stored as enabled, which passed the
+    /// startup checks, or the checks of a runtime enable, to get there. A disabled instance
+    /// has a row whether or not its module ever answered.
     fn known(&self) -> HashSet<String> {
-        self.rows.keys().cloned().collect()
+        self.rows
+            .values()
+            .filter(|row| row.enabled)
+            .map(|row| row.module_id.clone())
+            .collect()
     }
 
     fn contains(&self, module_id: &str) -> bool {
@@ -123,7 +129,15 @@ impl Stored {
             let placeholder = row.global_params == serde_json::json!({});
             if config.file_managed_params {
                 if !placeholder {
-                    tracing::warn!(module = %config.id, "Params now come from the catalog file (they reference secrets); the operator-managed global params stored for this instance no longer apply");
+                    tracing::warn!(module = %config.id, "Params now come from the catalog file (they reference secrets); the operator-managed global params stored for this instance no longer apply and are replaced by the empty placeholder");
+                }
+                if !placeholder || row.seeded_params != config.params {
+                    applied.adopted.push(CatalogParams {
+                        module_id: config.id.clone(),
+                        expected: row.global_params.clone(),
+                        stored_seed: row.seeded_params.clone(),
+                        reason: "params moved into the catalog file",
+                    });
                 }
             } else if was_file_managed && placeholder {
                 tracing::warn!(module = %config.id, "Params moved out of the catalog file; the catalog params apply and are stored as the operator-managed global params");
@@ -191,7 +205,8 @@ impl StartupWrites<'_> {
     }
 
     /// Seeds every catalog instance without a stored row: with the module's normalized form of
-    /// the catalog params when it is storable, an empty object for file-managed params (whose
+    /// the catalog params when it is storable, the catalog params as written when the catalog
+    /// locks them (which is what evaluation uses), an empty object for file-managed params (whose
     /// seed records the catalog params as written, secret references included, so a later
     /// start can tell the params were file-managed).
     async fn seed_new(
@@ -207,6 +222,8 @@ impl StartupWrites<'_> {
         {
             let (seed, catalog) = if config.file_managed_params {
                 (serde_json::json!({}), config.params.clone())
+            } else if !config.operator_can_set_params {
+                (config.params.clone(), config.params.clone())
             } else {
                 let seed = normalized
                     .get(&config.id)
@@ -224,7 +241,8 @@ impl StartupWrites<'_> {
 
     /// Stores the catalog params of adopted instances (for params that moved out of the catalog
     /// file, in the module's normalized form when it is storable; for locked params, as
-    /// written, which is what evaluation uses), with the catalog value as written as their seed, only while the stored
+    /// written, which is what evaluation uses; for params that moved into the catalog file, the
+    /// empty placeholder), with the catalog value as written as their seed, only while the stored
     /// global params are still the value startup read, so an operator's newer write is never
     /// overwritten. Params and seed already in place are not written again.
     async fn store_adopted(
@@ -241,7 +259,10 @@ impl StartupWrites<'_> {
             else {
                 continue;
             };
-            let params = if config.operator_can_set_params {
+            let placeholder = serde_json::json!({});
+            let params = if config.file_managed_params {
+                &placeholder
+            } else if config.operator_can_set_params {
                 normalized
                     .get(&config.id)
                     .filter(|params| storable(self.limits, params).is_ok())
@@ -606,6 +627,52 @@ params = { old_name = 5 }
     }
 
     #[tokio::test]
+    async fn a_new_locked_instance_is_seeded_with_its_params_as_written() {
+        use crate::modules::testing::{FixedFactory, ProtocolStub};
+        let catalog = Catalog::parse(
+            r#"
+[[module]]
+id = "locked"
+kind = "protocol-stub"
+scope = "all"
+hooks = ["before_transaction_approved"]
+timeout_ms = 50
+operator_can_set_params = false
+params = { old_name = 5 }
+"#,
+            None,
+        )
+        .unwrap();
+        let mut stub = ProtocolStub::new();
+        stub.normalized = Some(serde_json::json!({ "new_name": 5 }));
+        let mut registry = Registry::first_party();
+        registry
+            .register("protocol-stub", Arc::new(FixedFactory(Arc::new(stub))))
+            .unwrap();
+        let store: Arc<dyn ModuleStore> =
+            Arc::new(crate::modules::store::FsModuleStore::in_memory());
+        let start = || {
+            ModulePipeline::new(
+                "local",
+                catalog.clone(),
+                &registry,
+                store.clone(),
+                "2026-10-16T00:00:00Z".to_string(),
+                crate::modules::limits::Limits::default(),
+            )
+        };
+        start().await.unwrap();
+        assert_eq!(
+            store.instances().await.unwrap()[0].global_params,
+            serde_json::json!({ "old_name": 5 }),
+            "the params evaluation uses, on the first start as on every later one"
+        );
+        let version = store.instance_version().await.unwrap();
+        start().await.unwrap();
+        assert_eq!(store.instance_version().await.unwrap(), version);
+    }
+
+    #[tokio::test]
     async fn params_moved_out_of_the_catalog_file_apply_and_are_stored() {
         use crate::modules::testing::{FixedFactory, ProtocolStub};
         let catalog = |params: &str| {
@@ -694,6 +761,38 @@ params = {params}
             row.seeded_params,
             serde_json::json!({ "cap": 5 }),
             "the adopted params became the seed"
+        );
+
+        let raised = crate::modules::store::Change {
+            operator: "0xoperator",
+            reason: "raise the cap",
+            at: "2026-10-18T00:00:00Z".to_string(),
+            expected_version: None,
+        };
+        store
+            .set_global("vendor", serde_json::json!({ "cap": 9 }), &raised)
+            .await
+            .unwrap();
+        let mut moved_in = catalog(r#"{ api_key = { "$secret" = "vendor-key" }, cap = 6 }"#);
+        moved_in.resolve_secrets(Some(&VendorKey)).await;
+        start(moved_in).await.unwrap();
+        let row = store.instances().await.unwrap().remove(0);
+        assert_eq!(
+            row.global_params,
+            serde_json::json!({}),
+            "params moved into the catalog file replace the operator's with the placeholder"
+        );
+        assert_eq!(
+            row.seeded_params,
+            serde_json::json!({ "api_key": { "$secret": "vendor-key" }, "cap": 6 }),
+            "the seed records the references, never what they resolve to"
+        );
+
+        start(catalog("{ cap = 6 }")).await.unwrap();
+        assert_eq!(
+            store.instances().await.unwrap()[0].global_params,
+            serde_json::json!({ "cap": 6 }),
+            "moved out again, the catalog params apply, not the operator's older cap"
         );
     }
 
@@ -890,6 +989,35 @@ timeout_ms = 50
             .expect("a wrong endpoint in a new catalog entry is found at deploy time");
         assert!(refused.contains("screening"), "{refused}");
         assert!(store.instances().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_disabled_instance_that_never_answered_must_answer_once_the_catalog_enables_it() {
+        let module = crate::modules::testing::Outage::new(true);
+        let store: Arc<dyn ModuleStore> =
+            Arc::new(crate::modules::store::FsModuleStore::in_memory());
+        start_with(
+            module.clone(),
+            &format!("{OUTAGE_CATALOG}enabled = false\n"),
+            store.clone(),
+        )
+        .await
+        .expect("a disabled instance that fails its checks does not stop startup");
+        assert_eq!(
+            store.instances().await.unwrap().len(),
+            1,
+            "but it has a row"
+        );
+
+        let refused = start_with(
+            module,
+            &format!("{OUTAGE_CATALOG}operator_can_disable = false\n"),
+            store,
+        )
+        .await
+        .err()
+        .expect("it never passed a check, so it is not known");
+        assert!(refused.contains("screening"), "{refused}");
     }
 
     #[tokio::test]
