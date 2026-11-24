@@ -138,7 +138,7 @@ While the pair is in `resync_required` or `gap_pending` the module is not called
 ### CircuitBreaker (per instance)
 
 ```
- closed ── N consecutive failures ──► open ── health probe ok ──► half_open
+ closed ── N consecutive failures and a failed probe ──► open ── health probe ok ──► half_open
    ▲                                   ▲                              │
    └────────── next call ok ───────────┴──────── next call fails ─────┘
 ```

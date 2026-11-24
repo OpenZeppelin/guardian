@@ -125,7 +125,7 @@ impl Registry {
                 Err((Unhealthy::Unreachable(error), Some(module)))
                     if config.enabled && known.contains(&config.id) =>
                 {
-                    tracing::warn!(module = %config.id, %error, "Enabled module did not answer its startup checks; it starts unavailable and its accounts follow on_error until a health probe passes");
+                    tracing::error!(module = %config.id, %error, "Enabled module did not answer its startup checks; it starts unavailable and its accounts follow on_error until a health probe passes. If its endpoint, kind or tls changed in this catalog, check them");
                     unreachable.insert(config.id.clone());
                     (module, None)
                 }
