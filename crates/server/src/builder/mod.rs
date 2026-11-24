@@ -68,6 +68,7 @@ pub struct ServerBuilder {
     body_limit_config: Option<BodyLimitConfig>,
     metrics_config: Option<MetricsConfig>,
     module_kinds: Vec<(String, Arc<dyn guardian_module_sdk::ModuleFactory>)>,
+    startup_recovery: handle::StartupRecoveryMode,
     http_enabled: bool,
     http_port: u16,
     grpc_enabled: bool,
@@ -96,6 +97,7 @@ impl ServerBuilder {
             body_limit_config: None,
             metrics_config: None,
             module_kinds: Vec::new(),
+            startup_recovery: handle::StartupRecoveryMode::Off,
             http_enabled: true,
             http_port: 3000,
             grpc_enabled: true,
@@ -233,6 +235,13 @@ impl ServerBuilder {
     /// stored as `None`.
     pub fn with_block_watch(mut self, config: Option<BlockWatchConfig>) -> Self {
         self.block_watch = config.filter(|config| config.enabled);
+        self
+    }
+
+    /// The startup account recovery [`ServerHandle::start`](handle::ServerHandle::start) runs
+    /// before serving. Off by default.
+    pub fn with_startup_recovery(mut self, mode: handle::StartupRecoveryMode) -> Self {
+        self.startup_recovery = mode;
         self
     }
 
@@ -854,6 +863,7 @@ impl ServerBuilder {
             release_sweep_leader,
             #[cfg(feature = "postgres")]
             account_recovery,
+            startup_recovery: self.startup_recovery,
             startup_info,
             cors_layer: self.cors_layer,
             rate_limit_config: Some(rate_limit_config),

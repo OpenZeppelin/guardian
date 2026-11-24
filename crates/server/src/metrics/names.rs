@@ -777,7 +777,7 @@ pub const REGISTRY: &[MetricDef] = &[
         name: MODULE_REQUEST_REFUSED_TOTAL,
         kind: MetricKind::Counter,
         labels: &[LABEL_MODULE, LABEL_REASON],
-        help: "Requests refused without calling a policy module, whatever its on_error, because the Guardian could not build them (reason unavailable) or they exceed the size cap (reason too_large), by instance.",
+        help: "Requests refused whatever the policy module's on_error, because the Guardian could not build them (reason unavailable), they exceed the size cap (reason too_large) or the module rejected them as ones it cannot judge (reason rejected), by instance.",
     },
     MetricDef {
         name: MODULE_UP,

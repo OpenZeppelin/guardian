@@ -2301,6 +2301,7 @@ describe('GuardianOperatorHttpClient — account pausing (feature 001)', () => {
       scope: 'all',
       circuit: 'closed',
       operatorCanDisable: true,
+      operatorCanSetParams: true,
       params: { max_per_transaction: { '0xaa': '5' } },
     });
     expect(catalog.undeclared).toEqual([{ moduleId: 'retired', enabled: false, params: {} }]);
@@ -2838,6 +2839,7 @@ const INSTANCE = {
         catalog_enabled: true,
         enabled_drift: false,
         operator_can_disable: true,
+        operator_can_set_params: true,
         params: { max_per_transaction: { '0xaa': '5' } },
         params_drift: false,
         file_managed_params: false,

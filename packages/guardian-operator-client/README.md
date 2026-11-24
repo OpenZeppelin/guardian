@@ -313,8 +313,8 @@ await client.setModuleGlobalParams('blocklist', { denylist: ['0x0a1b2c3d4e5f6071
 await client.setAccountModuleLayer(accountId, 'blocklist', { denylist: ['0x1c2d3e4f5a6b70819203b4c5d6e7f8'] }, 'OP-91'); // policies:write
 await client.removeAccountModuleLayer(accountId, 'blocklist', 'OP-92');
 await client.setAccountModules(accountId, [{ moduleId: 'treasury-allowlist', params: {} }], 'OP-93');
-await client.disableModule('risk-scorer', 'incident'); // policies:write or modules:disable
-await client.enableModule('risk-scorer', 'recovered'); // policies:write
+await client.disableModule('risk-scorer', 'incident'); // policies:write_global or modules:disable
+await client.enableModule('risk-scorer', 'recovered'); // policies:write_global
 
 const modules = await client.getAccountModules(accountId); // evaluation order; orphaned entries are skipped
 const page = await client.getModuleParamsHistory('blocklist', { limit: 50 }); // newest first
@@ -498,7 +498,7 @@ const canRead = permissions.includes(DASHBOARD_READ);
 
 The constants cover every permission the server defines: `DASHBOARD_READ`,
 `ACCOUNTS_PAUSE`, `POLICIES_WRITE`, `POLICIES_WRITE_GLOBAL` (policy module
-global params), `MODULES_DISABLE` (disabling a module instance the catalog
+changes for every account: global params, enable and disable), `MODULES_DISABLE` (disabling a module instance the catalog
 marks `operator_can_disable`) and `STATS_REFRESH`.
 
 The session endpoint re-reads permissions from the allowlist on every

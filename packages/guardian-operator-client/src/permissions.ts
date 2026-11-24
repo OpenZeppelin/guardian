@@ -11,8 +11,9 @@
 export const DASHBOARD_READ = 'dashboard:read' as const;
 export const ACCOUNTS_PAUSE = 'accounts:pause' as const;
 export const POLICIES_WRITE = 'policies:write' as const;
-/** May change the global params of a policy module, which apply to every
- * account (`PUT /dashboard/modules/{module_id}/params`). */
+/** May make policy module changes that apply to every account: global params
+ * (`PUT /dashboard/modules/{module_id}/params`), and enabling or disabling an
+ * instance. */
 export const POLICIES_WRITE_GLOBAL = 'policies:write_global' as const;
 /** May disable a policy module instance the catalog marks
  * `operator_can_disable`, and nothing else. */

@@ -262,7 +262,7 @@ pub async fn set_global_params(
         (status = 200, description = "Instance enabled", body = ModuleInstanceView),
         (status = 400, description = "Invalid params, reason or assignment, or no policy modules are configured", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
-        (status = 403, description = "Missing policies:write permission", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing policies:write_global permission", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
         (status = 503, description = "The module failed its startup checks; nothing changed", body = crate::openapi::ApiErrorResponse),
     )
@@ -290,7 +290,7 @@ pub async fn enable_module(
         (status = 200, description = "Instance disabled", body = ModuleInstanceView),
         (status = 400, description = "Invalid params, reason or assignment, or no policy modules are configured", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
-        (status = 403, description = "Missing policies:write or modules:disable permission", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing policies:write_global or modules:disable permission", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
         (status = 409, description = "The catalog does not mark the instance operator_can_disable", body = crate::openapi::ApiErrorResponse),
     )
@@ -677,5 +677,80 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn the_global_permission_disables_and_enables_an_instance() {
+        let admin = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests_with_permissions(vec![operator(
+            &admin,
+            &[Permission::DashboardRead, Permission::PoliciesWriteGlobal],
+        )]));
+        let mut scorer = instance_with_params(
+            "risk-scorer",
+            &[HookName::BeforeTransactionApproved],
+            Arc::new(RecipientPolicy),
+            json!({}),
+        );
+        scorer.config.operator_can_disable = true;
+        state.modules = Some(pipeline(vec![scorer]));
+        state
+            .modules
+            .as_deref()
+            .unwrap()
+            .store()
+            .seed_instance(
+                "risk-scorer",
+                true,
+                &json!({}),
+                &json!({}),
+                "2026-10-15T00:00:00Z",
+            )
+            .await
+            .unwrap();
+        let app = create_router(state);
+        let cookie = login(&app, &admin).await;
+        for (path, enabled) in [
+            ("/dashboard/modules/risk-scorer/disable", false),
+            ("/dashboard/modules/risk-scorer/enable", true),
+        ] {
+            let (status, view) = send(
+                &app,
+                post(path, &cookie, json!({ "reason": "maintenance" })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{path}: {view}");
+            assert_eq!(view["enabled"], enabled, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn switching_an_instance_for_every_account_needs_the_global_permission() {
+        let support = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests_with_permissions(vec![operator(
+            &support,
+            &[Permission::DashboardRead, Permission::PoliciesWrite],
+        )]));
+        state.modules = Some(pipeline(vec![instance_with_params(
+            "risk-scorer",
+            &[HookName::BeforeTransactionApproved],
+            Arc::new(RecipientPolicy),
+            json!({}),
+        )]));
+        let app = create_router(state);
+        let cookie = login(&app, &support).await;
+        for path in [
+            "/dashboard/modules/risk-scorer/disable",
+            "/dashboard/modules/risk-scorer/enable",
+        ] {
+            let (status, _) = send(
+                &app,
+                post(path, &cookie, json!({ "reason": "per-account operator" })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+        }
     }
 }
