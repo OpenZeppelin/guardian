@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use guardian_module_sdk::proto::guardian_module_client::GuardianModuleClient;
-use guardian_module_sdk::secrecy::ExposeSecret;
+use guardian_module_sdk::secrecy::{ExposeSecret, SecretString};
 use guardian_module_sdk::{
     Decision, DescribeRequest, HookRequest, Module, ModuleError, ModuleFactory, ModuleInfo,
     ModuleInstanceConfig, ParamsVerdict, ValidateParamsRequest,
@@ -73,23 +73,15 @@ impl ModuleFactory for GrpcFactory {
             .keep_alive_while_idle(true)
             .tcp_keepalive(Some(KEEP_ALIVE_INTERVAL))
             .connect_lazy();
-        let authorization = instance
-            .auth_token
-            .as_ref()
-            .map(|token| {
-                MetadataValue::try_from(format!("Bearer {}", token.expose_secret())).map(
-                    |mut value| {
-                        value.set_sensitive(true);
-                        value
-                    },
-                )
-            })
-            .transpose()
-            .map_err(|_| ModuleError::InvalidRequest("token is not a valid header value".into()))?;
+        if let Some(token) = &instance.auth_token {
+            bearer(token).map_err(|_| {
+                ModuleError::InvalidRequest("token is not a valid header value".into())
+            })?;
+        }
         Ok(Arc::new(GrpcModule {
             client: GuardianModuleClient::new(channel),
             instance_id: instance.id.clone(),
-            authorization,
+            token: instance.auth_token.clone(),
         }))
     }
 }
@@ -97,19 +89,28 @@ impl ModuleFactory for GrpcFactory {
 struct GrpcModule {
     client: GuardianModuleClient<Channel>,
     instance_id: String,
-    authorization: Option<MetadataValue<tonic::metadata::Ascii>>,
+    token: Option<SecretString>,
 }
 
 impl GrpcModule {
     fn request<T>(&self, message: T) -> tonic::Request<T> {
         let mut request = tonic::Request::new(message);
-        if let Some(value) = &self.authorization {
-            request
-                .metadata_mut()
-                .insert("authorization", value.clone());
+        if let Some(value) = self.token.as_ref().and_then(|token| bearer(token).ok()) {
+            request.metadata_mut().insert("authorization", value);
         }
         request
     }
+}
+
+/// The `authorization` value for `token`, marked sensitive so it is never logged. Checked when
+/// the instance is created, so it does not fail on a request.
+fn bearer(
+    token: &SecretString,
+) -> Result<MetadataValue<tonic::metadata::Ascii>, tonic::metadata::errors::InvalidMetadataValue> {
+    MetadataValue::try_from(format!("Bearer {}", token.expose_secret())).map(|mut value| {
+        value.set_sensitive(true);
+        value
+    })
 }
 
 fn module_error(status: tonic::Status) -> ModuleError {
