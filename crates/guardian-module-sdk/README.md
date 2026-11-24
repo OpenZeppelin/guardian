@@ -11,8 +11,8 @@ The crate has:
   compiled into a Guardian build.
 - The `guardian.module.v1` protocol types (`HookRequest`, `Decision`,
   `ModuleInfo`, the Miden transaction and account projections). Protocol
-  version 1 is not frozen yet: it freezes with the first published release of
-  this crate, and after that new features arrive as named capabilities.
+  version 1 is frozen from this crate's first release (0.20.0): it changes only
+  additively, and new features arrive as named capabilities.
 - `serve`, a gRPC harness that exposes any `Module` as a remote service with a
   bearer token per instance.
 - `policies`, the Guardian's built-in policy kinds, one concern each, as a
@@ -130,7 +130,7 @@ auth = { token_secret = "guardian/modules/no-private-notes-token" }
 
 ```toml
 [dev-dependencies]
-guardian-module-sdk = { version = "0.19.0-rc.1", features = ["conformance"] }
+guardian-module-sdk = { version = "0.20.0", features = ["conformance"] }
 ```
 
 ```rust
