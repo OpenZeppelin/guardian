@@ -765,6 +765,19 @@ mod executor {
     }
 
     async fn proposal_expiring_after(declare_bound_block: bool, approval_blocks: u32) -> Proposal {
+        proposal_on_chain(declare_bound_block, approval_blocks, 0).await
+    }
+
+    /// A proposal on a chain that charges a fee, from an account that holds the fee asset.
+    async fn fee_paying_proposal() -> Proposal {
+        proposal_on_chain(true, 1_000, 50).await
+    }
+
+    async fn proposal_on_chain(
+        declare_bound_block: bool,
+        approval_blocks: u32,
+        base_fee: u32,
+    ) -> Proposal {
         let cosigners: Vec<SecretKey> = (0..2).map(|_| SecretKey::new()).collect();
         let commitments: Vec<Word> = cosigners
             .iter()
@@ -778,6 +791,21 @@ mod executor {
         let account = MultisigGuardianBuilder::new(config)
             .build_existing()
             .unwrap();
+        let fee_faucet = miden_protocol::testing::account_id::ACCOUNT_ID_FEE_FAUCET
+            .try_into()
+            .unwrap();
+        let account = if base_fee == 0 {
+            account
+        } else {
+            let (id, _vault, storage, code, nonce, _seed) = account.into_parts();
+            let vault = miden_protocol::asset::AssetVault::new(&[
+                miden_protocol::asset::FungibleAsset::new(fee_faucet, 1_000_000)
+                    .unwrap()
+                    .into(),
+            ])
+            .unwrap();
+            Account::new_unchecked(id, vault, storage, code, nonce, None)
+        };
 
         let new_guardian = SecretKey::new().public_key().to_commitment();
         let scheme_id = SignatureScheme::Falcon.auth_scheme_id();
@@ -794,10 +822,18 @@ mod executor {
             Some(blocks) => auth_args.with_approval_expiration_delta(blocks).unwrap(),
             None => auth_args,
         };
+        let auth_args = if base_fee == 0 {
+            auth_args
+        } else {
+            auth_args.with_conversion_info(
+                miden_standards::account::auth::FeeConversionInfo::one_to_one(fee_faucet),
+            )
+        };
         let commitment = auth_args.to_commitment();
 
         let mut chain = MockChainBuilder::with_accounts([account.clone()])
             .unwrap()
+            .verification_base_fee(base_fee)
             .build()
             .unwrap();
         chain.prove_until_block(bound).unwrap();
@@ -1354,6 +1390,19 @@ mod executor {
             }
             miden_client::transaction::TransactionProver::prove(&self.local, witness).await
         }
+    }
+
+    #[tokio::test]
+    async fn a_fee_paying_execution_matches_the_signed_summary() {
+        let proposal = fee_paying_proposal().await;
+        assert_eq!(proposal.summary.output_notes().num_notes(), 0);
+        let executor = MidenExecutor::new(
+            proposal.rpc.clone(),
+            Arc::new(LocalTransactionProver::default()),
+        );
+        let mut attempt = executor.prepare(proposal.input(&[0, 1])).await.unwrap();
+        attempt.execute(None).await.unwrap();
+        attempt.prove().await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]

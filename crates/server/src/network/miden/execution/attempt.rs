@@ -22,11 +22,12 @@ use miden_protocol::account::Account;
 use miden_protocol::account::auth::Signature as AccountSignature;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::transaction::{
-    ExecutedTransaction, ProvenTransaction, TransactionSummary, TransactionVerifier,
-    TransactionWitness,
+    ExecutedTransaction, ProvenTransaction, RawOutputNote, RawOutputNotes, TransactionSummary,
+    TransactionVerifier, TransactionWitness,
 };
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::Eip712TransactionSummary;
+use miden_standards::note::TxFeeNote;
 use miden_tx::auth::UnreachableAuth;
 use miden_tx::{TransactionExecutor, TransactionExecutorError};
 use serde::Deserialize;
@@ -775,7 +776,8 @@ impl ExecutionAttempt for MidenAttempt {
             })?;
 
         if executed.input_notes().commitment() != self.summary.input_notes().commitment()
-            || executed.output_notes().commitment() != self.summary.output_notes().commitment()
+            || signed_output_notes_commitment(&executed)
+                != Some(self.summary.output_notes().commitment())
         {
             return Err(ExecutionFailure::new(
                 ExecutionFailureCode::BindingMismatch,
@@ -1001,6 +1003,25 @@ pub(super) async fn send_batch(
             reason: format!("the node did not answer within {}s", deadline.as_secs()),
         },
     }
+}
+
+/// The commitment of the executed output notes the cosigners signed. The kernel creates the fee
+/// note after the auth procedure builds the signed summary, so the summary never holds it.
+fn signed_output_notes_commitment(executed: &ExecutedTransaction) -> Option<Word> {
+    let notes = executed
+        .output_notes()
+        .iter()
+        .filter(|note| !is_fee_note(note))
+        .cloned()
+        .collect();
+    RawOutputNotes::new(notes)
+        .ok()
+        .map(|notes| notes.commitment())
+}
+
+fn is_fee_note(note: &RawOutputNote) -> bool {
+    note.recipient()
+        .is_some_and(|recipient| recipient.script().root() == TxFeeNote::script_root())
 }
 
 /// The chain's time per block, measured over the blocks since the attempt's reference block, or
