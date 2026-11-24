@@ -30,7 +30,7 @@ turned into a standalone project:
 - `rust-toolchain.toml` pins the release's compiler.
 
 ```sh
-tar xzf custom-guardian-v0.19.0.tar.gz && cd custom-guardian
+tar xzf custom-guardian-v0.20.0.tar.gz && cd custom-guardian
 # add your crate to [dependencies], register its kind in src/main.rs
 cargo build --release --locked --features postgres
 docker build -t my-guardian .

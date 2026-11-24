@@ -933,7 +933,7 @@ newest candidate held (issue #517).
   `GET /delta` for each `queue[].nonce`: it serves the candidate's payload,
   whose transaction summary lists its input notes.
 
-### Policy modules (0.19.0)
+### Policy modules (0.20.0)
 
 Policy modules are off unless the operator configures a catalog, so a
 deployment without one behaves as before. With one:
@@ -942,11 +942,11 @@ deployment without one behaves as before. With one:
   `GUARDIAN_MODULE_UNAVAILABLE` (503, retryable) on proposal creation, delta
   push and registration; `GUARDIAN_EXECUTION_MODULE_DENIED` and
   `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` as Guardian execution failure codes.
-  SDKs from 0.18.x surface the request codes as an untyped server error and
+  SDKs up to 0.19.x surface the request codes as an untyped server error and
   reject the two execution codes as unknown.
 - **Rolling back with a catalog.** A Guardian execution a module refuses is
   stored with one of the two new execution failure codes, which servers up to
-  0.18.x cannot decode: after a rollback, the execution status of those
+  0.19.x cannot decode: after a rollback, the execution status of those
   proposals (`GET /delta/proposal/execution`) fails with a storage error. To
   roll back, first restart the new release without a catalog
   (`GUARDIAN_MODULES_DISABLED=true` in production) or with
@@ -965,10 +965,10 @@ deployment without one behaves as before. With one:
   `checkTransaction`, Rust `check_custom_transaction`, session operations 15 (`GetPolicies`) and 16
   (`CheckDeltaProposal`), and the operator client's module routes and the
   `policies:write_global` and `modules:disable` permissions. An operator client
-  from 0.18.x fails to parse a session that holds either permission.
-- **Module authors.** `guardian.module.v1` is not frozen until the first
-  published `guardian-module-sdk` release; see
-  [RFC 0002](./rfcs/0002-guardian-modules.md), section 7.
+  up to 0.19.x fails to parse a session that holds either permission.
+- **Module authors.** `guardian-module-sdk` is published from this release,
+  and `guardian.module.v1` is frozen with it: later releases change it only
+  additively ([RFC 0002](./rfcs/0002-guardian-modules.md), section 3.5).
 - **Custom server builds.** `ServerBuilder::from_env()` configures the server
   from the environment as the `server` binary does, and a release attaches a
   `custom-guardian-<tag>.tar.gz` template that registers extra module kinds

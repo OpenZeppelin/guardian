@@ -5,12 +5,11 @@ rules, and your own checks, consulted before the Guardian signs. A module only
 answers allow or deny. A deny refuses the Guardian's acknowledgement, so the
 transaction cannot execute; a module can never produce a signature.
 
-> **Not released yet.** Modules are implemented on the
-> [`251-modules-m2a`](https://github.com/OpenZeppelin/guardian/tree/251-modules-m2a)
-> branch and are not in a release. The design is
-> [RFC 0002](../../rfcs/0002-guardian-modules.md). No published image includes
-> modules yet, so this guide runs the server from source instead of Docker
-> Compose.
+> Policy modules ship from Guardian **0.20.0**; the design is
+> [RFC 0002](../../rfcs/0002-guardian-modules.md). This guide runs the server
+> and the example modules from a checkout of the repository. To run the
+> published image with a catalog, see
+> [`SERVER_AWS_DEPLOY.md`](../../SERVER_AWS_DEPLOY.md#policy-modules).
 
 This guide assembles the pieces; the reference lives elsewhere:
 [`CONFIGURATION.md`](../../CONFIGURATION.md#runtime-policy-modules) for the
@@ -104,9 +103,7 @@ operator-managed: on that start the new catalog params apply and are stored, a
 warning is logged, and from then on operators change them through the API like
 any other instance's. The other way round, adding secret references to an
 instance operators managed, makes the catalog params apply and logs that the
-stored operator params no longer do. (An instance first stored before this
-release keeps the old behaviour on that first switch: it starts from the empty
-placeholder, so set its params through the API right after that deploy.)
+stored operator params no longer do.
 
 In
 [`built-in.toml`](./built-in.toml), `caps` discloses its params and
@@ -114,7 +111,8 @@ In
 
 ## Setup
 
-Run everything from the repository root, on the `251-modules-m2a` branch.
+Run everything from the repository root of a checkout at a release tag,
+`v0.20.0` or later.
 
 ### 1. Operator key
 
@@ -277,7 +275,6 @@ For outages, a module that refuses too much, and break-glass steps, see the
 | `module caps: invalid params: …` at startup | The catalog's seed params fail the module's validation on a first start: fix the catalog; nothing is stored until every instance passes. On a later start it is the stored params that fail (the catalog's are no longer read): see the [runbook](../../runbooks/policy-modules.md). |
 | `GUARDIAN_MODULES_CONFIG is set but empty` or `declares no module` at startup | An empty value or an empty catalog would silently run without any policy. Point the variable at a catalog, or unset it to run without modules. |
 | `module caps-remote: …` at startup | An enabled remote module rejected the token or answered incompatibly, or it is new to this Guardian and unreachable. Start the module first, or set `enabled = false` until it runs. A module that has started here before and is merely down does not stop startup: the instance starts unavailable and recovers on a health probe. |
-| `relation "module_state_version" does not exist` | A Postgres database that ran an earlier prototype migration. Drop the `module_*` tables and the functions `guardian_module_snapshot` and `guardian_module_seed_assignment`, delete the module rows in `__diesel_schema_migrations` (versions `20261015000001`, `20261109000001`, `20261110000001` and `20261110000002`, whichever exist), then restart so every module migration runs again. |
 | `GUARDIAN public key commitment 0x… does not match account commitment 0x…` | The server started with different signing keys from the ones the account registered with, usually because `GUARDIAN_ACK_SECRET_PROVIDER=file` was not set (Setup step 2). Keys made without it are gone after a restart: register a new account. |
 | `login failed: no session cookie` | The server did not load the key: check `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` and the `public_key` in it. |
 | The client shows a generic error | The server log names the module, reason code and layer for every refusal. |

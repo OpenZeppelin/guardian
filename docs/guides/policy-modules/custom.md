@@ -122,7 +122,7 @@ hook its module does not list.
 | `subject.transaction.proposer` | The verified signer commitment that created the matching proposal; empty when there is none |
 | `subject.transaction.unverified_metadata` | UTF-8 JSON the proposer asserted; never base a decision on it alone |
 | `subject.transaction.raw` | The transaction in its network's own encoding (`encoding = "miden.transaction_summary"`), for modules that decode it themselves; tied to the Guardian's Miden version |
-| `subject.transaction.pending` | Empty until commit notifications ship (M2b) |
+| `subject.transaction.pending` | Always empty: commit notifications for stateful modules are future work ([RFC 0002](../../rfcs/0002-guardian-modules.md), section 7) |
 | `subject.registration.initial_state` | The account about to be accepted: its whole vault and every storage slot, map entries included. Read the Miden variant with `subject.miden()` |
 
 An account view (`before`, `after`) carries the account `commitment`, its
@@ -372,8 +372,8 @@ another language can port these cases to its own tests. `note-policy` and the fo
 
 - Use `serve(YourModule).instance(id, token)` from the SDK, or implement the
   `GuardianModule` service from the proto in any language with gRPC support.
-- Keep the module stateless for now. Limits that count across transactions
-  (daily caps) need the commit notifications of the RFC's M2b slice.
+- Keep the module stateless. Limits that count across transactions (daily
+  caps) need commit notifications, which are future work (RFC 0002, section 7).
 - Run the conformance suite in your CI, with requests that cover every rule.
 - Prefer the remote path for code you do not own. In process, the rule that a
   module can only refuse, never sign, holds by code review rather than by
