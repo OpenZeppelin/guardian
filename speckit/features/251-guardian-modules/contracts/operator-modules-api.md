@@ -13,8 +13,8 @@
 | `PUT /dashboard/accounts/{account_id}/modules/{module_id}/params` | `policies:write` | M2a | `ParamsBody` | 200 `AccountModulesView` |
 | `DELETE /dashboard/accounts/{account_id}/modules/{module_id}/params` | `policies:write` | M2a | `ReasonBody` | 200 `AccountModulesView` |
 | `GET /dashboard/modules/{module_id}/params/history` | `dashboard:read` | M2a | `?before=<id>&limit=<n>`, newest first | 200 `ParamsHistory` |
-| `POST /dashboard/modules/{module_id}/enable` | `policies:write` | M2a | `ReasonBody` | 200 `ModuleInstanceView` |
-| `POST /dashboard/modules/{module_id}/disable` | `policies:write` or `modules:disable` | M2a | `ReasonBody` | 200 `ModuleInstanceView` |
+| `POST /dashboard/modules/{module_id}/enable` | `policies:write_global` | M2a | `ReasonBody` | 200 `ModuleInstanceView` |
+| `POST /dashboard/modules/{module_id}/disable` | `policies:write_global` or `modules:disable` | M2a | `ReasonBody` | 200 `ModuleInstanceView` |
 | `POST /dashboard/modules/{module_id}/resync` | `policies:write` | M2b | `ResyncBody` | 200 `ResyncResult` |
 
 Enable and disable are idempotent: enabling an enabled instance or disabling a disabled one returns 200 with the unchanged view and writes an audit record.
@@ -38,6 +38,7 @@ ModuleInstanceView {
   enabled: bool,                // runtime flag
   enabled_drift: bool,          // catalog_enabled != enabled
   operator_can_disable: bool,
+  operator_can_set_params: bool, // false: global params writes are refused (catalog-managed)
   params: object,               // current global params; secret references unresolved
   params_drift: bool,           // catalog file params differ from seeded_params (the raw catalog value at seeding); operator writes and module migrations do not count
   file_managed_params: bool,    // params hold secret references, so only the file changes them
