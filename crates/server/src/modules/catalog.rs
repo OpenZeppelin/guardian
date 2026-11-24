@@ -22,6 +22,16 @@ pub enum Scope {
     Assigned,
 }
 
+impl Scope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Scope::All => "all",
+            Scope::Default => "default",
+            Scope::Assigned => "assigned",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OnError {
@@ -131,6 +141,8 @@ struct InstanceEntry {
     enabled: bool,
     #[serde(default)]
     operator_can_disable: bool,
+    #[serde(default = "enabled_default")]
+    operator_can_set_params: bool,
     #[serde(default)]
     disclosure: Disclosure,
     description: Option<String>,
@@ -203,6 +215,10 @@ pub struct InstanceConfig {
     /// The catalog's `enabled`, a seed only; kept to report drift.
     pub catalog_enabled: bool,
     pub operator_can_disable: bool,
+    /// `false` keeps the global params in the catalog file: the operator API refuses to write
+    /// them, and each start stores the catalog's. Only for `scope = "all"`, where per-account
+    /// writes can only add restrictions.
+    pub operator_can_set_params: bool,
     pub disclosure: Disclosure,
     pub description: Option<String>,
     pub client_reason: ClientReason,
@@ -216,6 +232,16 @@ pub struct InstanceConfig {
     pub params: serde_json::Value,
     /// Params holding secret references stay file-managed: the operator API cannot change them.
     pub file_managed_params: bool,
+}
+
+impl InstanceConfig {
+    /// Whether the global params come from the catalog file whatever is stored: params that
+    /// reference secrets, and params the catalog locks (`operator_can_set_params = false`).
+    /// Evaluation reads them from the catalog, so a stored value written by a replica on an
+    /// older catalog never applies, and nothing but startup stores them.
+    pub fn catalog_managed_params(&self) -> bool {
+        self.file_managed_params || !self.operator_can_set_params
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -461,6 +487,12 @@ impl Catalog {
                     "module {id}: scope = \"default\" copies its params into each new account, and secret references cannot be stored per account; use scope \"all\" or \"assigned\""
                 ));
             }
+            if !entry.operator_can_set_params && entry.scope != Scope::All {
+                return Err(format!(
+                    "module {id}: operator_can_set_params = false protects the global params of a scope \"all\" instance; per-account params of a \"{}\" instance replace them, so it cannot lock them",
+                    entry.scope.as_str()
+                ));
+            }
             if entry.disclosure == Disclosure::Params && contains_secret_reference(&params) {
                 return Err(format!(
                     "module {id}: disclosure = \"params\" would show cosigners the secret references in its params; use \"summary\" or \"none\""
@@ -520,6 +552,7 @@ impl Catalog {
                 enabled: entry.enabled,
                 catalog_enabled: entry.enabled,
                 operator_can_disable: entry.operator_can_disable,
+                operator_can_set_params: entry.operator_can_set_params,
                 disclosure: entry.disclosure,
                 description,
                 client_reason: entry.client_reason,
@@ -563,6 +596,24 @@ hooks = ["before_account_registered"]
 timeout_ms = 20
 on_error = "allow"
 "#;
+
+    #[test]
+    fn operator_can_set_params_defaults_to_true_and_can_lock_an_all_instance() {
+        let catalog = parse(VALID).unwrap();
+        assert!(
+            catalog
+                .instances
+                .iter()
+                .all(|config| config.operator_can_set_params)
+        );
+        let locked = parse(&VALID.replacen(
+            "timeout_ms = 20\nparams",
+            "timeout_ms = 20\noperator_can_set_params = false\nparams",
+            1,
+        ))
+        .unwrap();
+        assert!(!locked.instances[0].operator_can_set_params);
+    }
 
     fn timed(instances: &[(&str, &str, u64)]) -> Catalog {
         let text: String = instances
@@ -652,6 +703,14 @@ on_error = "allow"
             (
                 "duplicate id",
                 VALID.replacen(r#"id = "signers""#, r#"id = "caps""#, 1),
+            ),
+            (
+                "params locked on an instance whose per-account params replace them",
+                VALID.replacen(
+                    r#"on_error = "allow""#,
+                    "on_error = \"allow\"\noperator_can_set_params = false",
+                    1,
+                ),
             ),
             (
                 "grpc without endpoint",

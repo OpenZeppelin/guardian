@@ -52,8 +52,8 @@ own data.
   default) refuses with `503 GUARDIAN_MODULE_UNAVAILABLE`; `"allow"` continues
   and records the failure on the signed delta. A request the Guardian cannot build,
   one over the size cap, or one the module rejects as one it cannot judge is
-  refused whatever `on_error` says, since a requester can cause each on
-  purpose.
+  refused whatever `on_error` says, since each depends on the request rather
+  than on the module.
 - **Refusal.** A deny returns `403 GUARDIAN_MODULE_DENIED` with `module`,
   `reason_code` and `layer` (`global` or `account`) in `meta`, plus the
   module's `client_message` when it sets one. The Rust and TypeScript clients
@@ -83,7 +83,11 @@ Cosigners use two client endpoints:
 - `POST /delta/proposal/check` runs proposal creation without storing
   anything: it answers `{ "allowed": true, "complete": … }` or the error
   creation would return. At most `GUARDIAN_MODULE_CHECK_RATE_PER_MIN` (30)
-  checks per account and signer per minute.
+  checks per account and signer per minute; the same number of denied
+  creations per minute, counted apart (a creation in flight holds a place
+  until it finishes), then creation is refused for the rest of the minute. For a list whose entries must stay secret, set
+  `client_reason = "generic"` and `dry_run = false` on its instance: the
+  limits are per account, so they slow probing rather than stop it.
 
 The multisig SDKs wrap both: Rust `get_policies`, `check_transaction` and
 `check_custom_transaction`, TypeScript `getPolicies` and `checkTransaction`,
@@ -229,9 +233,10 @@ value outside these rules, stops startup with `invalid module catalog`.
 | `hooks` | yes | Non-empty list of `before_account_registered`, `before_proposal_created`, `before_transaction_approved`; each must be one the module supports |
 | `timeout_ms` | yes | 1 to 1000 |
 | `on_error` | no | `deny` (default) or `allow`: what happens when the module fails or does not answer |
-| `params` | no | The instance's global params, seeded on first start and changed through the operator API afterwards. Params with `$secret` references stay in this file; they are refused for `grpc` instances and for `scope = "default"` (whose params are copied per account) |
+| `params` | no | The instance's global params, seeded on first start and changed through the operator API afterwards, unless `operator_can_set_params = false` keeps them in this file. Params with `$secret` references stay in this file; they are refused for `grpc` instances and for `scope = "default"` (whose params are copied per account) |
 | `enabled` | no | `true` (default). Read only the first time the instance is seen; the runtime flag applies afterwards |
 | `operator_can_disable` | no | `false` (default). Whether the operator API may switch the instance off |
+| `operator_can_set_params` | no | `true` (default). `false` keeps the global params in this file: the operator API refuses to change them, and each start applies and stores the file's. Only for `scope = "all"`. With `operator_can_disable = false`, a rule no operator session can loosen. Before setting it on a running instance, copy its current params (`admin GET /modules`) into the file, or the file's replace them at the next start |
 | `disclosure` | no | `none` (default), `summary` or `params`: what `get_policies` shows cosigners. `params` is refused when the params reference secrets |
 | `description` | unless `disclosure = "none"` | Up to 500 characters, shown with `disclosure = summary` or `params` |
 | `client_reason` | no | `full` (default: module, reason code and message) or `generic` (`policy_denied` only) |

@@ -895,6 +895,9 @@ export interface ModuleInstance {
   catalogEnabled: boolean;
   enabledDrift: boolean;
   operatorCanDisable: boolean;
+  /** `false` when the catalog locks the global params (`operator_can_set_params = false`):
+   * `setModuleGlobalParams` is refused for this instance. */
+  operatorCanSetParams: boolean;
   /** Current global params; secret references are shown unresolved. */
   params: ModuleParams;
   paramsDrift: boolean;

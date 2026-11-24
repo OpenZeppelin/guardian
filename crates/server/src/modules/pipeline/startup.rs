@@ -4,12 +4,14 @@
 //! 1. The catalog's params are checked against the size cap.
 //! 2. The stored instance rows are read and applied to the catalog: the stored enabled flag and
 //!    operator-managed global params replace the catalog's, except that an instance the catalog
-//!    requires is enabled ([`Stored::apply_to`]).
+//!    requires is enabled, and params that moved out of the catalog file or that the catalog
+//!    locks (`operator_can_set_params = false`) come from the catalog ([`Stored::apply_to`]).
 //! 3. The instances are built and checked against their modules
 //!    ([`Registry::instantiate`](crate::modules::registry::Registry::instantiate)). A failure here
 //!    stops startup before anything is written.
 //! 4. The startup writes ([`StartupWrites`]): the catalog-required enables, the seeds of
-//!    instances new to this Guardian, and the params a module migrated.
+//!    instances new to this Guardian, the catalog params of step 2 stored as global params,
+//!    and the params a module migrated.
 //! 5. Instances whose module did not answer start with their breaker held open, and each health
 //!    probe runs their checks until they pass.
 
@@ -47,9 +49,22 @@ struct Applied {
     /// Instances stored as disabled that the catalog declares enabled and not
     /// operator-disableable, so startup enables them.
     enabled_by_catalog: Vec<String>,
-    /// Instances whose params moved out of the catalog file: their catalog params apply now and
-    /// are stored in place of the empty placeholder a file-managed instance keeps.
-    adopted: Vec<String>,
+    /// Instances whose catalog params apply now and are stored as their global params: params
+    /// that moved out of the catalog file, and params the catalog locks.
+    adopted: Vec<CatalogParams>,
+}
+
+/// Catalog params startup stores as an instance's global params, while the stored params are
+/// still `expected`.
+struct CatalogParams {
+    module_id: String,
+    expected: serde_json::Value,
+    stored_seed: serde_json::Value,
+    reason: &'static str,
+}
+
+fn adopts(adopted: &[CatalogParams], module_id: &str) -> bool {
+    adopted.iter().any(|entry| entry.module_id == module_id)
 }
 
 impl Stored {
@@ -113,7 +128,23 @@ impl Stored {
             } else if was_file_managed && placeholder {
                 tracing::warn!(module = %config.id, "Params moved out of the catalog file; the catalog params apply and are stored as the operator-managed global params");
                 applied.seed_drift.remove(&config.id);
-                applied.adopted.push(config.id.clone());
+                applied.adopted.push(CatalogParams {
+                    module_id: config.id.clone(),
+                    expected: row.global_params.clone(),
+                    stored_seed: row.seeded_params.clone(),
+                    reason: "params moved out of the catalog file",
+                });
+            } else if !config.operator_can_set_params {
+                if row.global_params != config.params {
+                    tracing::warn!(module = %config.id, "The catalog locks the global params (operator_can_set_params = false); its params apply and replace the stored ones");
+                }
+                applied.seed_drift.remove(&config.id);
+                applied.adopted.push(CatalogParams {
+                    module_id: config.id.clone(),
+                    expected: row.global_params.clone(),
+                    stored_seed: row.seeded_params.clone(),
+                    reason: "params set in the catalog file (operator_can_set_params = false)",
+                });
             } else if row.global_params != config.params {
                 tracing::warn!(module = %config.id, "Catalog params differ from the operator-managed global params; the stored params apply");
                 applied
@@ -191,36 +222,53 @@ impl StartupWrites<'_> {
         Ok(())
     }
 
-    /// Stores the catalog params of instances whose params moved out of the catalog file (in the
-    /// module's normalized form when it is storable), only while the stored global params are
-    /// still the empty placeholder, so an operator's newer write is never overwritten.
+    /// Stores the catalog params of adopted instances (for params that moved out of the catalog
+    /// file, in the module's normalized form when it is storable; for locked params, as
+    /// written, which is what evaluation uses), with the catalog value as written as their seed, only while the stored
+    /// global params are still the value startup read, so an operator's newer write is never
+    /// overwritten. Params and seed already in place are not written again.
     async fn store_adopted(
         &self,
         catalog: &Catalog,
-        adopted: &[String],
+        adopted: &[CatalogParams],
         normalized: &HashMap<String, serde_json::Value>,
     ) -> Result<(), String> {
-        for config in catalog
-            .instances
-            .iter()
-            .filter(|config| adopted.contains(&config.id))
-        {
-            let params = normalized
-                .get(&config.id)
-                .filter(|params| storable(self.limits, params).is_ok())
-                .unwrap_or(&config.params);
+        for entry in adopted {
+            let Some(config) = catalog
+                .instances
+                .iter()
+                .find(|config| config.id == entry.module_id)
+            else {
+                continue;
+            };
+            let params = if config.operator_can_set_params {
+                normalized
+                    .get(&config.id)
+                    .filter(|params| storable(self.limits, params).is_ok())
+                    .unwrap_or(&config.params)
+            } else {
+                &config.params
+            };
             if let Err(error) = storable(self.limits, params) {
                 tracing::warn!(module = %config.id, %error, "Catalog params break the params rules; they apply but are not stored");
                 continue;
             }
-            self.store
-                .adopt_catalog_params(
+            if *params == entry.expected && config.params == entry.stored_seed {
+                continue;
+            }
+            let written = self
+                .store
+                .set_catalog_params(
                     &config.id,
+                    &entry.expected,
                     params.clone(),
                     config.params.clone(),
-                    &self.change("catalog", "params moved out of the catalog file"),
+                    &self.change("catalog", entry.reason),
                 )
                 .await?;
+            if written.is_none() {
+                tracing::info!(module = %config.id, "Global params changed while starting (another replica or an operator wrote first); the catalog params are stored at the next start");
+            }
         }
         Ok(())
     }
@@ -233,10 +281,10 @@ impl StartupWrites<'_> {
         instances: &[Instance],
         stored: &Stored,
         normalized: &HashMap<String, serde_json::Value>,
-        adopted: &[String],
+        adopted: &[CatalogParams],
     ) -> Result<(), String> {
         for instance in instances.iter().filter(|instance| {
-            !instance.config.file_managed_params && !adopted.contains(&instance.config.id)
+            !instance.config.catalog_managed_params() && !adopts(adopted, &instance.config.id)
         }) {
             let (Some(params), Some(read)) = (
                 normalized.get(&instance.config.id),
@@ -646,6 +694,79 @@ params = {params}
             row.seeded_params,
             serde_json::json!({ "cap": 5 }),
             "the adopted params became the seed"
+        );
+    }
+
+    #[tokio::test]
+    async fn params_the_catalog_locks_replace_an_operator_write_and_are_stored_once() {
+        use crate::modules::testing::{FixedFactory, ProtocolStub};
+        let catalog = |lock: &str| {
+            Catalog::parse(
+                &format!(
+                    r#"
+[[module]]
+id = "sanctions"
+kind = "protocol-stub"
+scope = "all"
+hooks = ["before_transaction_approved"]
+timeout_ms = 50
+{lock}
+params = {{ cap = 5 }}
+"#
+                ),
+                None,
+            )
+            .unwrap()
+        };
+        let mut registry = Registry::first_party();
+        registry
+            .register(
+                "protocol-stub",
+                Arc::new(FixedFactory(Arc::new(ProtocolStub::new()))),
+            )
+            .unwrap();
+        let store: Arc<dyn ModuleStore> =
+            Arc::new(crate::modules::store::FsModuleStore::in_memory());
+        let start = |catalog: Catalog| {
+            ModulePipeline::new(
+                "local",
+                catalog,
+                &registry,
+                store.clone(),
+                "2026-10-16T00:00:00Z".to_string(),
+                crate::modules::limits::Limits::default(),
+            )
+        };
+        start(catalog("")).await.unwrap();
+        let loosened = crate::modules::store::Change {
+            operator: "0xoperator",
+            reason: "loosen",
+            at: "2026-10-17T00:00:00Z".to_string(),
+            expected_version: None,
+        };
+        store
+            .set_global("sanctions", serde_json::json!({ "cap": 9 }), &loosened)
+            .await
+            .unwrap();
+
+        start(catalog("operator_can_set_params = false"))
+            .await
+            .unwrap();
+        let row = store.instances().await.unwrap().remove(0);
+        assert_eq!(
+            row.global_params,
+            serde_json::json!({ "cap": 5 }),
+            "once locked, the catalog params replace the operator's"
+        );
+        let version = store.instance_version().await.unwrap();
+
+        start(catalog("operator_can_set_params = false"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.instance_version().await.unwrap(),
+            version,
+            "params already in place are not written again"
         );
     }
 

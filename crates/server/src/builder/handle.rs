@@ -614,7 +614,8 @@ pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Ro
     };
 
     // Policy modules: reads under `dashboard:read`, per-account writes under `policies:write`,
-    // global params under their own `policies:write_global`.
+    // global params and enabling under `policies:write_global`, disabling under that or
+    // `modules:disable`.
     let dashboard_routes = {
         use crate::api::dashboard_modules as modules;
         use axum::routing::{delete, put};
@@ -646,12 +647,12 @@ pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Ro
             .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
         let disable_authz = AuthzState::any_of(
             state.clone(),
-            &[Permission::PoliciesWrite, Permission::ModulesDisable],
+            &[Permission::PoliciesWriteGlobal, Permission::ModulesDisable],
         );
         let enable = Router::new()
             .route("/modules/{module_id}/enable", post(modules::enable_module))
             .route_layer(from_fn_with_state(
-                AuthzState::new(state.clone(), &[Permission::PoliciesWrite]),
+                AuthzState::new(state.clone(), &[Permission::PoliciesWriteGlobal]),
                 enforce_authz,
             ))
             .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));

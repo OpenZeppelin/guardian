@@ -719,7 +719,8 @@ export class GuardianOperatorHttpClient {
     );
   }
 
-  /** Enables an instance after re-running its startup checks. Requires `policies:write`. */
+  /** Enables an instance after re-running its startup checks. Requires
+   * `policies:write_global`, since the switch applies to every account. */
   async enableModule(moduleId: string, reason: string): Promise<ModuleInstance> {
     return this.request(
       new URL(`dashboard/modules/${encodeURIComponent(moduleId)}/enable`, this.baseUrl),
@@ -729,7 +730,7 @@ export class GuardianOperatorHttpClient {
   }
 
   /** Disables an instance the catalog marks `operator_can_disable`. Requires
-   * `policies:write` or `modules:disable`. */
+   * `policies:write_global` or `modules:disable`. */
   async disableModule(moduleId: string, reason: string): Promise<ModuleInstance> {
     return this.request(
       new URL(`dashboard/modules/${encodeURIComponent(moduleId)}/disable`, this.baseUrl),
@@ -2611,6 +2612,7 @@ function parseModuleInstance(value: unknown, context: string): ModuleInstance {
     catalogEnabled: requireBoolean(record, 'catalog_enabled', context),
     enabledDrift: requireBoolean(record, 'enabled_drift', context),
     operatorCanDisable: requireBoolean(record, 'operator_can_disable', context),
+    operatorCanSetParams: requireBoolean(record, 'operator_can_set_params', context),
     params: requireParams(record, 'params', context),
     paramsDrift: requireBoolean(record, 'params_drift', context),
     fileManagedParams: requireBoolean(record, 'file_managed_params', context),

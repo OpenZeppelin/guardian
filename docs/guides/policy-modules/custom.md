@@ -52,8 +52,9 @@ the token of the instance it is for, and `instance_id` in the message
 (`Describe` names no instance). A gRPC error status other than
 `INVALID_ARGUMENT` is a module failure, as is a call that outlives the
 instance's `timeout_ms`, and the instance's `on_error` decides; repeated
-failures open a circuit breaker that skips the module until a health probe
-succeeds. `INVALID_ARGUMENT` says the request cannot be judged, and the
+failures, once a `Describe` health probe also fails, open a circuit breaker
+that skips the module until a probe succeeds. Answer `Describe` only while
+`Evaluate` can work: the probe is what tells the Guardian the module is down. `INVALID_ARGUMENT` says the request cannot be judged, and the
 request is refused whatever `on_error` says (see status codes below). Requests can be up to 2 MiB encoded
 (`GUARDIAN_MODULE_REQUEST_MAX_BYTES`), so keep your server's receive limit at
 least that high (tonic's default is 4 MiB).
@@ -69,8 +70,9 @@ least that high (tonic's default is 4 MiB).
 
 Return `ModuleError::InvalidRequest` for a request you cannot judge (a
 missing projection, params you cannot read). The request is refused with
-`GUARDIAN_MODULE_UNAVAILABLE` whatever `on_error` says, since a requester can
-shape a request on purpose, so a module never allows by accident. Return
+`GUARDIAN_MODULE_UNAVAILABLE` whatever `on_error` says, since the outcome
+depends on the request rather than on the module, so a module never allows by
+accident. Return
 `ModuleError::Unavailable` or `ModuleError::Internal` for your own failures (a
 data source that is down): those are module failures and `on_error` decides.
 
@@ -214,8 +216,8 @@ What the Guardian expects on the wire:
   (`HookRequest.instance_id`), and refuse an unknown instance.
 - **Status codes.** `INVALID_ARGUMENT` means "I cannot judge this request": the
   request is refused with `GUARDIAN_MODULE_UNAVAILABLE` whatever the instance's
-  `on_error` says, since a requester can shape a request on purpose, and it
-  does not count toward the circuit breaker. `UNAVAILABLE`, `DEADLINE_EXCEEDED` and `UNKNOWN`
+  `on_error` says, since that depends on the request rather than on the
+  module, and it does not count toward the circuit breaker. `UNAVAILABLE`, `DEADLINE_EXCEEDED` and `UNKNOWN`
   mean the module is down: they count toward the breaker, and on `Describe` at
   startup an already-known instance starts unavailable instead of stopping the
   server. Any other status (`UNAUTHENTICATED`, `PERMISSION_DENIED`, `INTERNAL`,

@@ -30,7 +30,7 @@ For every instance in the catalog, know which path stops it:
   A request the Guardian cannot build (an account view it cannot read, a failed
   read), one over `GUARDIAN_MODULE_REQUEST_MAX_BYTES`, or one the module
   rejects as one it cannot judge is refused whatever `on_error` says, since a
-  requester can cause each on purpose; all three are counted in
+  request decides each of them; all three are counted in
   `guardian_module_request_refused_total{module, reason}`.
   A module that rejects every request (after a protocol or version mismatch,
   say) therefore refuses every request even with `on_error = "allow"`, and its
@@ -39,10 +39,13 @@ For every instance in the catalog, know which path stops it:
   it.
 - Give the on-call operator `modules:disable`. It allows disabling instances
   marked `operator_can_disable` and nothing else, so it is safe to hand out
-  more widely than `policies:write` ([permissions](../DASHBOARD.md#permission-vocabulary)).
+  more widely than `policies:write_global`, which enabling the instance again
+  needs ([permissions](../DASHBOARD.md#permission-vocabulary)).
 - Mark `operator_can_disable = false` only for instances that must hold even
   when they block everything (sanctions screening, for example), and agree in
   advance that their outage is resolved by fixing the module or by a deploy.
+  Set `operator_can_set_params = false` on them too, or an operator session
+  with `policies:write_global` can still empty their rule.
 - Watch `guardian_module_up`, `guardian_module_circuit_open`,
   `guardian_module_fail_open_total` and the p99 of
   `guardian_module_evaluate_duration_seconds` per `module` (see
@@ -53,7 +56,10 @@ For every instance in the catalog, know which path stops it:
   `on_error = allow`, threshold `alarm_module_fail_open_threshold`; it counts
   skips, dry-run checks included, not approved requests). Elsewhere, alert on
   `max(guardian_module_circuit_open) > 0` for 10 minutes and on any increase of
-  `guardian_module_fail_open_total`.
+  `guardian_module_fail_open_total`. A breaker opens only once a health probe
+  fails too, so a module that answers its probe but fails every evaluation
+  keeps its circuit closed: watch
+  `guardian_module_evaluate_duration_seconds_count{outcome="error"}` for it.
 
 Every API change requires a `reason` and is recorded in the instance's params
 history (`GET /dashboard/modules/{id}/params/history`), with the operator and
@@ -73,7 +79,8 @@ Symptoms: clients get `503 GUARDIAN_MODULE_UNAVAILABLE` with `meta.module`
 `Policy module failed; refusing` at `warn`;
 `guardian_module_circuit_open{module}` is 1 once a replica has seen
 `GUARDIAN_MODULE_BREAKER_FAILURES` (5) failures in a row (failed calls and
-unanswered probes count, dry-run checks do not), or at once when a probe finds
+unanswered probes count, dry-run checks do not) and at least one health probe
+has failed, or at once when a probe finds
 the module incompatible with this Guardian, after which the
 module is skipped without waiting for its timeout. It reads 0 again once the
 instance is disabled, since a disabled instance is not called, so the alarm
@@ -231,9 +238,8 @@ the catalog while those tables hold state is refused unless
 - Re-enable what was disabled, with a reason that references the incident.
 - Check `guardian_module_fail_open_total` for the window: deltas signed while
   a fail-open module was failing carry `modules.failed_open` naming it on the
-  dashboard delta detail. Proposals created and accounts registered past a
-  failing fail-open module are in the audit log as `modules.failed_open`
-  events.
+  dashboard delta detail. Every request let past a failing fail-open module,
+  approvals included, is in the audit log as a `modules.failed_open` event.
 - If the outage showed that an instance should not stop approvals, change its
   `on_error` or `operator_can_disable` in the catalog now, not during the
   next one.

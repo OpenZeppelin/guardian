@@ -901,8 +901,9 @@ Guardian execution ends `failed` with `GUARDIAN_EXECUTION_MODULE_DENIED` or
    health probe (`Policy module health probe failed` at `warn`), and
    `guardian_module_circuit_open` is 1 while this replica skips the module
    after `GUARDIAN_MODULE_BREAKER_FAILURES` consecutive failures (failed
-   calls and unanswered probes both count); the next successful probe lets a
-   call through again. `Policy module cannot be used by this Guardian; its
+   calls and unanswered probes both count), once a health probe has failed
+   too: failed calls alone, which can depend on the request, never open it. The
+   next successful probe lets a call through again. `Policy module cannot be used by this Guardian; its
    circuit is open until a probe passes` at `warn` means the module answered `Describe` with a protocol version,
    capability or hook set the Guardian cannot use, usually after the module
    was redeployed: its circuit opens at once and stays open until the module
@@ -931,8 +932,17 @@ sustained allowance for HTTP calls from the same client, and vice versa.
 The burst limit is keyed per IP and endpoint, and HTTP paths never
 collide with gRPC method names, so burst buckets are not shared.
 The rejection counter `guardian_rate_limit_rejections_total` carries a
-`transport` label to tell the two surfaces apart. Rate-limit rejections
-happen before any handler runs, so retrying after the hint is always safe.
+`transport` label to tell the two surfaces apart. These rejections happen
+before any handler runs, so retrying after the hint is always safe.
+
+Two policy module limits are per account and signer instead, with their own
+`scope` in the envelope: `proposal_check` for dry-run checks, and
+`proposal_denials` once the policy modules have denied
+`GUARDIAN_MODULE_CHECK_RATE_PER_MIN` of that signer's proposals within a
+minute (creations still in flight hold a place too), after which proposal
+creation is refused until the window frees up. Fix the proposal the modules
+refuse before retrying after the hint; resending it unchanged is refused
+again.
 
 ALB gRPC health checks (`/guardian.Guardian/GetPubkey`) are metered like
 any other traffic, keyed per ALB-node address. Their volume is far below

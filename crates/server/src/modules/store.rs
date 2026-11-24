@@ -198,16 +198,19 @@ pub trait ModuleStore: Send + Sync {
         change: &Change<'_>,
     ) -> Result<Option<u64>, String>;
 
-    /// Stores catalog params that moved out of the catalog file: replaces the global params
-    /// with `params` (in the module's normalized form when it has one) only while they are
-    /// still the empty placeholder a file-managed seed left, and records `seed`, the catalog
-    /// value as written, as the instance's seed, so a later start no longer sees a
-    /// file-managed seed and does not adopt over an operator's later write, `{}` included.
-    /// Returns the version it committed as, or `None` when it did not write (an operator wrote
-    /// first; the seed then stays file-managed until a later start adopts).
-    async fn adopt_catalog_params(
+    /// Stores params the catalog file sets, as a write by the catalog: replaces the global
+    /// params with `params` (in the module's normalized form when it has one) only while they
+    /// still equal `expected`, and records `seed`, the catalog value as written, as the
+    /// instance's seed. Used for params that moved out of the catalog file (`expected` is the
+    /// empty placeholder a file-managed seed left, so a later start no longer sees a
+    /// file-managed seed and does not adopt over an operator's later write, `{}` included) and
+    /// for params the catalog locks (`operator_can_set_params = false`). Returns the version it
+    /// committed as, or `None` when it did not write (an operator wrote first; a later start
+    /// tries again).
+    async fn set_catalog_params(
         &self,
         module_id: &str,
+        expected: &serde_json::Value,
         params: serde_json::Value,
         seed: serde_json::Value,
         change: &Change<'_>,
@@ -646,20 +649,15 @@ impl ModuleStore for FsModuleStore {
         self.write_global_if(module_id, expected, params, change, Reseed::Keep)
     }
 
-    async fn adopt_catalog_params(
+    async fn set_catalog_params(
         &self,
         module_id: &str,
+        expected: &serde_json::Value,
         params: serde_json::Value,
         seed: serde_json::Value,
         change: &Change<'_>,
     ) -> Result<Option<u64>, String> {
-        self.write_global_if(
-            module_id,
-            &serde_json::json!({}),
-            params,
-            change,
-            Reseed::To(seed),
-        )
+        self.write_global_if(module_id, expected, params, change, Reseed::To(seed))
     }
 
     async fn account_params(&self, account_id: &str) -> Result<Vec<AccountParamsRow>, String> {
@@ -1300,8 +1298,9 @@ mod tests {
             .unwrap();
         assert!(
             store
-                .adopt_catalog_params(
+                .set_catalog_params(
                     "vendor",
+                    &json!({}),
                     json!({ "cap": "5" }),
                     json!({ "cap": 5 }),
                     &change()
@@ -1323,8 +1322,9 @@ mod tests {
         );
         assert_eq!(
             store
-                .adopt_catalog_params(
+                .set_catalog_params(
                     "vendor",
+                    &json!({}),
                     json!({ "cap": 9 }),
                     json!({ "cap": 9 }),
                     &change()

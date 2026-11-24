@@ -486,21 +486,16 @@ impl ModuleStore for PgModuleStore {
             .await
     }
 
-    async fn adopt_catalog_params(
+    async fn set_catalog_params(
         &self,
         module_id: &str,
+        expected: &serde_json::Value,
         params: serde_json::Value,
         seed: serde_json::Value,
         change: &Change<'_>,
     ) -> Result<Option<u64>, String> {
-        self.write_global_if(
-            module_id,
-            &serde_json::json!({}),
-            params,
-            change,
-            Reseed::To(seed),
-        )
-        .await
+        self.write_global_if(module_id, expected, params, change, Reseed::To(seed))
+            .await
     }
 
     async fn account_params(&self, account_id: &str) -> Result<Vec<AccountParamsRow>, String> {
@@ -1340,8 +1335,9 @@ mod tests {
         let before = store.instance_version().await.unwrap();
         assert_eq!(
             store
-                .adopt_catalog_params(
+                .set_catalog_params(
                     &module,
+                    &json!({}),
                     json!({ "cap": "5" }),
                     json!({ "cap": 5 }),
                     &change(t0)
@@ -1369,8 +1365,9 @@ mod tests {
         );
         assert_eq!(
             store
-                .adopt_catalog_params(
+                .set_catalog_params(
                     &module,
+                    &json!({}),
                     json!({ "cap": 9 }),
                     json!({ "cap": 9 }),
                     &change(t0)

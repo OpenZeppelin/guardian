@@ -1821,7 +1821,7 @@
             }
           },
           "403": {
-            "description": "Missing policies:write or modules:disable permission",
+            "description": "Missing policies:write_global or modules:disable permission",
             "content": {
               "application/json": {
                 "schema": {
@@ -1937,7 +1937,7 @@
             }
           },
           "403": {
-            "description": "Missing policies:write permission",
+            "description": "Missing policies:write_global permission",
             "content": {
               "application/json": {
                 "schema": {
@@ -4490,6 +4490,7 @@
           "catalog_enabled",
           "enabled_drift",
           "operator_can_disable",
+          "operator_can_set_params",
           "params",
           "params_drift",
           "file_managed_params",
@@ -4551,6 +4552,10 @@
           },
           "operator_can_disable": {
             "type": "boolean"
+          },
+          "operator_can_set_params": {
+            "type": "boolean",
+            "description": "`false` when the catalog locks the global params: the operator API refuses to write them."
           },
           "params": {
             "type": "object"

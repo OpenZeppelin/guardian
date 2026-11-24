@@ -736,8 +736,8 @@ component schemas.
 | dashboard | `GET /dashboard/modules` | session + `dashboard:read` | Policy module catalog with runtime state (enabled, params, drift, circuit, undeclared stored instances) |
 | dashboard | `GET /dashboard/modules/{module_id}/params/history` | session + `dashboard:read` | Params history of an instance, newest first (`before`, `limit`) |
 | dashboard | `PUT /dashboard/modules/{module_id}/params` | session + `policies:write_global` | Replace an instance's global params (validated by the module; `reason` required) |
-| dashboard | `POST /dashboard/modules/{module_id}/enable` | session + `policies:write` | Enable an instance after its startup checks |
-| dashboard | `POST /dashboard/modules/{module_id}/disable` | session + `policies:write` or `modules:disable` | Disable an instance the catalog marks `operator_can_disable` |
+| dashboard | `POST /dashboard/modules/{module_id}/enable` | session + `policies:write_global` | Enable an instance after its startup checks |
+| dashboard | `POST /dashboard/modules/{module_id}/disable` | session + `policies:write_global` or `modules:disable` | Disable an instance the catalog marks `operator_can_disable` |
 | dashboard | `GET /dashboard/accounts/{account_id}/modules` | session + `dashboard:read` | The modules that apply to an account, its layers and assignments |
 | dashboard | `PUT /dashboard/accounts/{account_id}/modules/{module_id}/params` | session + `policies:write` | Set an account's layer on an `all` instance |
 | dashboard | `DELETE /dashboard/accounts/{account_id}/modules/{module_id}/params` | session + `policies:write` | Remove that layer |

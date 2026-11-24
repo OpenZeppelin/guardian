@@ -48,7 +48,7 @@ impl ModulePipeline {
         params: serde_json::Value,
     ) {
         let id = instance.config.id.as_str();
-        if instance.config.file_managed_params || &params == read {
+        if instance.config.catalog_managed_params() || &params == read {
             return;
         }
         if let Err(error) = super::startup::storable(&self.limits, &params) {

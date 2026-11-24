@@ -1059,9 +1059,9 @@ export default function App() {
           </div>
 
           <p className="hint">
-            RFC 0002 / issue #251. Reads need <code>dashboard:read</code>. Account layers,
-            assignments and enable need <code>policies:write</code>; global params need{' '}
-            <code>policies:write_global</code>; disable takes <code>policies:write</code> or{' '}
+            RFC 0002 / issue #251. Reads need <code>dashboard:read</code>. Account layers and
+            assignments need <code>policies:write</code>; global params and enable need{' '}
+            <code>policies:write_global</code>; disable takes <code>policies:write_global</code> or{' '}
             <code>modules:disable</code>. Account calls use the <strong>Account ID</strong> from
             the Accounts panel, and every write sends the reason below.
           </p>
@@ -1145,6 +1145,10 @@ export default function App() {
                       <div>
                         <span className="label">Operator can disable</span>
                         <strong>{instance.operatorCanDisable ? 'yes' : 'no'}</strong>
+                      </div>
+                      <div>
+                        <span className="label">Operator can set params</span>
+                        <strong>{instance.operatorCanSetParams ? 'yes' : 'no'}</strong>
                       </div>
                       <div>
                         <span className="label">Build</span>

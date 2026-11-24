@@ -59,7 +59,8 @@ fn refuse_every_signer() -> Value {
     json!({ "check": "all", "allowlist": [UNLISTED_SIGNER] })
 }
 
-/// The operator API, logged in as the operator holding `policies:write`.
+/// The operator API, logged in as the operator holding `policies:write` and
+/// `policies:write_global` (enable and disable apply to every account).
 struct Operator<'a> {
     runner: &'a Runner,
     base: String,

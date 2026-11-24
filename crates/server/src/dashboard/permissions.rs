@@ -41,8 +41,8 @@ pub const ACCOUNTS_PAUSE: &str = "accounts:pause";
 /// Wire string for [`Permission::PoliciesWrite`].
 pub const POLICIES_WRITE: &str = "policies:write";
 
-/// Wire string for [`Permission::PoliciesWriteGlobal`]: may change the global params of a policy
-/// module, which apply to every account.
+/// Wire string for [`Permission::PoliciesWriteGlobal`]: may make policy module changes that apply
+/// to every account: global params, and enabling or disabling an instance.
 pub const POLICIES_WRITE_GLOBAL: &str = "policies:write_global";
 
 /// Wire string for [`Permission::ModulesDisable`]: may disable a policy module instance the

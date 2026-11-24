@@ -117,6 +117,7 @@ pub fn instance(
             secrets: Default::default(),
             credentials: Ok(Default::default()),
             params: serde_json::json!({}),
+            operator_can_set_params: true,
             file_managed_params: false,
         },
         module,
@@ -380,9 +381,10 @@ impl super::store::ModuleStore for RacingStore {
             .await
     }
 
-    async fn adopt_catalog_params(
+    async fn set_catalog_params(
         &self,
         module_id: &str,
+        expected: &serde_json::Value,
         params: serde_json::Value,
         seed: serde_json::Value,
         change: &super::store::Change<'_>,
@@ -390,7 +392,7 @@ impl super::store::ModuleStore for RacingStore {
         let writes = std::mem::take(&mut *self.before_set_global_if.lock().unwrap());
         self.commit(writes).await?;
         self.inner
-            .adopt_catalog_params(module_id, params, seed, change)
+            .set_catalog_params(module_id, expected, params, seed, change)
             .await
     }
 

@@ -163,11 +163,12 @@ Neither setting hides *who is on a list*. A cosigner who proposes a payment to
 an address of their choosing learns from the answer whether that address is
 blocked (or, under the allowlist, verified), and an add-signer proposal tests a
 signer against `kyc_signers` the same way. The catalog sets `dry_run = false`
-on `compliance`, so cosigners cannot run that test for free with
+on both instances, so cosigners cannot run that test for free with
 `checkTransaction` / `check_transaction` ([dry runs](./custom.md#dry-runs)):
 each probe is then a signed proposal request, subject to the request rate
-limits, and every refusal is logged by the Guardian with the submitter
-(`Policy module denied the request`). A refused proposal is not stored, so
+limits and to the limit on denied proposals per account and signer
+(`GUARDIAN_MODULE_CHECK_RATE_PER_MIN`), and every refusal is logged by the
+Guardian with the submitter (`Policy module denied the request`). A refused proposal is not stored, so
 watch those log lines rather than the account's history. Treat list membership as
 something an account's own cosigners can find out, and do not put on the lists
 anything that must stay secret from them.
@@ -214,15 +215,16 @@ the request whatever the instance's `on_error` says.
   and alert on `<stack>-module-circuit-open` (see
   [the runbook](../../runbooks/policy-modules.md)).
 - **Break-glass, and who can switch screening off.** `compliance` is not
-  `operator_can_disable`, so the disable route refuses it. Its params can
-  still turn it off: an operator with `policies:write_global` can set
-  `{"signers":"off","recipients":"off"}` and screening stops for every account
-  on the next request, recorded in the params history with the operator and
-  reason. Grant `policies:write_global` only to the people who may make that
-  decision, and alert on changes to this instance's params history. If no
-  operator should be able to do it, remove `off` from the values your module
-  accepts. `treasury-screening` can also be disabled outright by an operator
-  with `modules:disable`.
+  `operator_can_disable`, so the disable route refuses it, and it sets
+  `operator_can_set_params = false`, so the operator API refuses its global
+  params too: `{"signers":"off","recipients":"off"}` can only arrive through a
+  deploy of the catalog, which each start stores and applies. Account layers
+  on it can still only add restrictions. To let an operator session switch
+  screening off in an emergency, remove `operator_can_set_params = false` and
+  grant `policies:write_global` only to the people who may make that decision.
+  `treasury-screening` can be disabled outright by an operator with
+  `modules:disable`, and like `compliance` it does not answer dry-run checks,
+  since its allowlist is a list of verified counterparties.
 - **Timeouts.** `timeout_ms` (200 here) bounds each call, including the
   connection setup after a reconnect. Both instances together must stay within
   `GUARDIAN_MODULE_EVALUATION_BUDGET_MS` (1,000 by default) at each hook.
