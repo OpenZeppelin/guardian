@@ -59,6 +59,7 @@ pub struct ServerHandle {
         std::sync::Arc<crate::storage::postgres::recovery::RecoveryStore>,
         crate::metadata::MidenNetworkType,
     )>,
+    pub(crate) startup_recovery: StartupRecoveryMode,
     pub(crate) startup_info: StartupInfo,
     pub(crate) cors_layer: Option<CorsLayer>,
     pub(crate) rate_limit_config: Option<RateLimitConfig>,
@@ -90,6 +91,31 @@ impl std::str::FromStr for StartupRecoveryMode {
         }
     }
 }
+
+/// The environment variable [`ServerBuilder::from_env`](super::ServerBuilder::from_env) reads
+/// the [`StartupRecoveryMode`] from.
+pub const STARTUP_RECOVERY_ENV: &str = "GUARDIAN_STARTUP_ACCOUNT_RECOVERY";
+
+impl StartupRecoveryMode {
+    /// The mode `GUARDIAN_STARTUP_ACCOUNT_RECOVERY` sets; unset is [`StartupRecoveryMode::Off`].
+    pub fn from_env() -> Result<Self, String> {
+        match std::env::var(STARTUP_RECOVERY_ENV) {
+            Ok(value) => value
+                .parse()
+                .map_err(|error| format!("{STARTUP_RECOVERY_ENV} {error}")),
+            Err(std::env::VarError::NotPresent) => Ok(Self::Off),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err(format!("{STARTUP_RECOVERY_ENV} must be valid UTF-8"))
+            }
+        }
+    }
+}
+
+/// Why [`ServerHandle::start`] did not serve: account recovery may be running in another
+/// process, so serving now could race it.
+#[derive(Debug, thiserror::Error)]
+#[error("Cannot serve while account recovery may be active elsewhere: {0}")]
+pub struct RecoveryElsewhere(String);
 
 #[cfg(feature = "postgres")]
 #[derive(Debug, thiserror::Error)]
@@ -153,7 +179,41 @@ impl ServerHandle {
         }
     }
 
-    /// Run the server with the configured settings
+    /// What the stock `server` binary does once built: runs the startup account recovery the
+    /// builder was given ([`ServerBuilder::from_env`](super::ServerBuilder::from_env) reads
+    /// `GUARDIAN_STARTUP_ACCOUNT_RECOVERY`), then serves. Recovery that did not finish is
+    /// logged and the server serves without it; recovery that may be running elsewhere stops
+    /// the start.
+    pub async fn start(self) -> Result<(), RecoveryElsewhere> {
+        #[cfg(not(feature = "postgres"))]
+        if self.startup_recovery != StartupRecoveryMode::Off {
+            tracing::error!(
+                "Startup account recovery requires a Postgres build; serving without it"
+            );
+        }
+        #[cfg(feature = "postgres")]
+        match self
+            .recover_accounts_on_startup(self.startup_recovery)
+            .await
+        {
+            Ok(()) => {}
+            Err(error @ StartupRecoveryError::Incomplete(_)) => {
+                tracing::error!(%error, "Startup account recovery did not finish; serving without it");
+            }
+            Err(
+                error @ (StartupRecoveryError::LeaseBusy
+                | StartupRecoveryError::LeaseUnavailable(_)),
+            ) => {
+                tracing::error!(%error, "Cannot serve while account recovery may be active elsewhere");
+                return Err(RecoveryElsewhere(error.to_string()));
+            }
+        }
+        self.run().await;
+        Ok(())
+    }
+
+    /// Serves with the configured settings until shut down, without the startup account
+    /// recovery the builder was given: use [`Self::start`] to run it first.
     pub async fn run(self) {
         self.startup_info.log();
 
@@ -554,7 +614,8 @@ pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Ro
     };
 
     // Policy modules: reads under `dashboard:read`, per-account writes under `policies:write`,
-    // global params under their own `policies:write_global`.
+    // global params and enabling under `policies:write_global`, disabling under that or
+    // `modules:disable`.
     let dashboard_routes = {
         use crate::api::dashboard_modules as modules;
         use axum::routing::{delete, put};
@@ -586,12 +647,12 @@ pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Ro
             .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
         let disable_authz = AuthzState::any_of(
             state.clone(),
-            &[Permission::PoliciesWrite, Permission::ModulesDisable],
+            &[Permission::PoliciesWriteGlobal, Permission::ModulesDisable],
         );
         let enable = Router::new()
             .route("/modules/{module_id}/enable", post(modules::enable_module))
             .route_layer(from_fn_with_state(
-                AuthzState::new(state.clone(), &[Permission::PoliciesWrite]),
+                AuthzState::new(state.clone(), &[Permission::PoliciesWriteGlobal]),
                 enforce_authz,
             ))
             .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));

@@ -65,8 +65,12 @@ ServerBuilder::from_env()
     .build()
     .await
     .expect("Failed to build server")
-    .run()
-    .await;
+    .start()
+    .await
+    .unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1)
+    });
 ```
 
 The catalog (`GUARDIAN_MODULES_CONFIG`) then names it with

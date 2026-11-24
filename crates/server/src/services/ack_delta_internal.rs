@@ -194,6 +194,7 @@ pub(crate) async fn acknowledge_applied(
         modules,
     } = applied;
     let approval = approve(state, delta, modules, submitter, proposal_match).await?;
+    let audited = approval.clone();
     let matching_proposal = proposal_match.payload();
     let mut derived_metadata =
         crate::delta_summary::build_metadata(&delta.delta_payload, matching_proposal);
@@ -215,6 +216,9 @@ pub(crate) async fn acknowledge_applied(
     acknowledged = state.ack.ack_delta(acknowledged, scheme).await?;
     acknowledged.ack_pubkey = state.ack.pubkey(scheme);
     acknowledged.ack_scheme = scheme.as_str().to_string();
+    if let Some(approval) = audited {
+        audit_failed_open(state, delta, approval);
+    }
 
     Ok(AcknowledgedDelta {
         delta: acknowledged,
@@ -273,6 +277,34 @@ async fn approve(
             proposer,
         })
     })
+}
+
+/// Records the failures `on_error = allow` let through for an acknowledgement the Guardian
+/// signed, as at proposal creation and registration, so they are on record even when the
+/// acknowledged delta is never stored.
+fn audit_failed_open(state: &AppState, delta: &DeltaObject, approval: ModuleApproval) {
+    let submitter = approval.submitter.clone();
+    crate::modules::pipeline::Evaluation {
+        catalog_hash: approval.catalog_hash,
+        params_version: approval.params_version,
+        account_params_version: approval.account_params_version,
+        failed_open: approval.failed_open,
+    }
+    .audit_failed_open(
+        state.auditor.as_ref(),
+        HookName::BeforeTransactionApproved,
+        &delta.account_id,
+        &submitter,
+        [
+            ("nonce".to_string(), delta.nonce.into()),
+            (
+                "prev_commitment".to_string(),
+                delta.prev_commitment.clone().into(),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
 }
 
 /// The `delta_proposals` row matching a delta, as far as storage could tell.

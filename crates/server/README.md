@@ -17,8 +17,10 @@ let builder = ServerBuilder::new()
 ## Custom builds
 
 `ServerBuilder::from_env()` configures the server from the environment exactly
-as the `server` binary does; the binary is that call and `build`. A custom
-build adds its own policy module kinds and runs:
+as the `server` binary does, and `ServerHandle::start()` runs the startup
+account recovery `GUARDIAN_STARTUP_ACCOUNT_RECOVERY` asks for, then serves; the
+binary is those calls. A custom build adds its own policy module kinds and
+starts:
 
 ```rust
 ServerBuilder::from_env()
@@ -26,8 +28,8 @@ ServerBuilder::from_env()
     .with_module_kind("acme-sanctions", Arc::new(acme_sanctions::Factory))
     .build()
     .await?
-    .run()
-    .await;
+    .start()
+    .await?;
 ```
 
 Builder methods called after `from_env` override what the environment set.

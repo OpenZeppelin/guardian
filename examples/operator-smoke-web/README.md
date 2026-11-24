@@ -217,9 +217,9 @@ permissions apply:
 | Panel action | Permission |
 |---|---|
 | Load catalog, params history, account modules | `dashboard:read` |
-| Set or clear an account layer, replace assignment, enable | `policies:write` |
-| Set global params | `policies:write_global` |
-| Disable | `policies:write` or `modules:disable` |
+| Set or clear an account layer, replace assignment | `policies:write` |
+| Set global params, enable | `policies:write_global` |
+| Disable | `policies:write_global` or `modules:disable` |
 
 To see the `403` path, drop a permission from the entry and repeat the
 write; the allowlist is reread without a restart. With `built-in.toml`, try

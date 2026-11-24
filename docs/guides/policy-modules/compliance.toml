@@ -7,8 +7,9 @@
 # Every account: every signer KYC-verified, no payment to a sanctioned account.
 # Clients learn only that a policy refused (client_reason = "generic"), not which rule, and
 # cannot run it as a free dry-run check (dry_run = false), which would let a cosigner test
-# addresses against the lists at no cost. It is not operator-disableable, but an operator with
-# policies:write_global can still set its params to "off"; see the guide.
+# addresses against the lists at no cost. It is neither operator-disableable nor are its params
+# writable through the operator API (operator_can_set_params = false): only a deploy of this
+# file turns screening off; see the guide.
 [[module]]
 id = "compliance"
 kind = "grpc"
@@ -19,6 +20,7 @@ timeout_ms = 200
 on_error = "deny"
 client_reason = "generic"
 dry_run = false
+operator_can_set_params = false
 auth = { token_secret = "compliance.token" }
 params = { signers = "all", recipients = "blocklist" }
 
@@ -35,6 +37,7 @@ hooks = ["before_proposal_created", "before_transaction_approved"]
 timeout_ms = 200
 on_error = "deny"
 client_reason = "generic"
+dry_run = false
 operator_can_disable = true
 auth = { token_secret = "treasury-screening.token" }
 params = { signers = "off", recipients = "allowlist" }

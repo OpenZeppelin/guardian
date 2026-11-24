@@ -344,8 +344,8 @@ load time so a typo surfaces explicitly
 |---|---|
 | `dashboard:read` | Read access to all `/dashboard/*` read endpoints. |
 | `accounts:pause` | Pause/unpause accounts. |
-| `policies:write` | Policy module writes for one account (account layers, assignments) and enabling or disabling module instances ([Policy modules](#policy-modules)). |
-| `policies:write_global` | Policy module global params, which apply to every account. |
+| `policies:write` | Policy module writes for one account: account layers and assignments ([Policy modules](#policy-modules)). |
+| `policies:write_global` | Policy module changes that apply to every account: global params, and enabling or disabling module instances. |
 | `modules:disable` | Disabling a module instance that the catalog marks `operator_can_disable`, without any other policy write. |
 | `stats:refresh` | Request an out-of-cycle refresh of the `/dashboard/stats` aggregate (`POST /dashboard/stats/refresh`, issue #371). |
 
@@ -373,11 +373,12 @@ Which configuration approved a signed delta is on its detail,
 `catalog_hash`, `params_version`, `account_params_version`, `signed_at`,
 `submitter`, `proposer`, and under `failed_open` each module failure an `on_error = "allow"` instance let
 through (`module_id`, `layer`, `failure`). It is absent when no module ran for
-the delta, and client routes never return it. The same skips at proposal
-creation and account registration, where nothing is signed, are written to the
-audit log as `modules.failed_open` events (`operator_identity` `system`, with
+the delta, and client routes never return it. Every such skip, at approval as
+well as at proposal creation and account registration, is also written to the
+audit log as a `modules.failed_open` event (`operator_identity` `system`, with
 the hook, submitter, catalog hash, both params versions and, for a proposal,
-its `proposal_id`). Operator writes are audited with the version they
+its `proposal_id`, or for an approval the delta's `nonce` and
+`prev_commitment`). Operator writes are audited with the version they
 committed as (`params_version` for an instance write, `account_params_version`
 for a write to one account), or `null` for an enable or disable that changed
 nothing.
@@ -403,8 +404,8 @@ catalog hash this replica loaded as `backend.module_catalog_hash`.
 | `PUT /dashboard/accounts/{account_id}/modules/{module_id}/params` | `policies:write` | `{"params": {...}, "reason": "...", "expected_version": n}` (`expected_version` optional) |
 | `DELETE /dashboard/accounts/{account_id}/modules/{module_id}/params` | `policies:write` | `{"reason": "...", "expected_version": n}` (`expected_version` optional) |
 | `PUT /dashboard/accounts/{account_id}/modules` | `policies:write` | `{"modules": [{"module_id": "...", "params": {...}}], "reason": "...", "expected_version": n}` (`expected_version` optional) |
-| `POST /dashboard/modules/{module_id}/enable` | `policies:write` | `{"reason": "..."}` |
-| `POST /dashboard/modules/{module_id}/disable` | `policies:write` or `modules:disable` | `{"reason": "..."}` |
+| `POST /dashboard/modules/{module_id}/enable` | `policies:write_global` | `{"reason": "..."}` |
+| `POST /dashboard/modules/{module_id}/disable` | `policies:write_global` or `modules:disable` | `{"reason": "..."}` |
 
 On a `scope = all` instance the per-account params are a layer evaluated
 after the global params, and both must allow, so a layer only adds
@@ -412,7 +413,9 @@ restrictions. A `scope = default` instance is copied into an account's
 assignment when it first registers and is then replaced or removed with the
 account's other assignments; a `scope = assigned` one applies only where it
 is assigned. Disabling an instance the catalog does not mark
-`operator_can_disable` returns `409 GUARDIAN_MODULE_NOT_DISABLEABLE`.
+`operator_can_disable` returns `409 GUARDIAN_MODULE_NOT_DISABLEABLE`, and
+writing the global params of one that sets `operator_can_set_params = false`
+returns `400 invalid_input` (the listing shows `operator_can_set_params`).
 
 The four params writes (global params, account layer set or removed, assignment)
 accept an optional `expected_version`: the catalog-wide `params_version` from

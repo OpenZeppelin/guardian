@@ -304,7 +304,8 @@ testnet run of this line fails them along with everything else on 0.17.
 Five scenarios cover policy modules ([RFC 0002](./rfcs/0002-guardian-modules.md)). Every
 instance in the stack's catalog is scoped `assigned`, so it applies only to an account a
 scenario assigns it to through the operator API, and the operator in the allowlist holds
-`policies:write` for that.
+`policies:write` for that, and `policies:write_global` for enabling and disabling an
+instance.
 
 - `det-module-refusal` (deterministic, both SDKs): `qual-gate` is assigned to the fixture
   account with a signer allowlist that names none of its signers. The proposal is refused at

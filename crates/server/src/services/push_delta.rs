@@ -2626,7 +2626,7 @@ mod tests {
         String,
         MockNetworkClient,
     ) {
-        push_on_projected(module, Some(projection), proposal).await
+        push_on_projected(module, Some(projection), proposal, None).await
     }
 
     /// [`push_on`] where the network decodes the transaction to `projection`, or fails to
@@ -2635,6 +2635,7 @@ mod tests {
         module: Option<crate::modules::registry::Instance>,
         projection: Option<guardian_module_sdk::MidenTransaction>,
         proposal: impl FnOnce(&str) -> std::result::Result<DeltaObject, String>,
+        auditor: Option<crate::testing::helpers::CapturingAuditor>,
     ) -> (
         Result<PushDeltaResult>,
         MockStorageBackend,
@@ -2699,6 +2700,9 @@ mod tests {
             Arc::new(metadata),
         );
         state.modules = module.map(|module| pipeline(vec![module]));
+        if let Some(auditor) = auditor {
+            state.auditor = Arc::new(auditor);
+        }
         let params = PushDeltaParams {
             delta: DeltaObject {
                 account_id: account_id.clone(),
@@ -2778,8 +2782,13 @@ mod tests {
     /// does not let it through: the requester shapes the transaction.
     #[tokio::test]
     async fn a_transaction_that_cannot_be_projected_is_refused_even_by_a_fail_open_module() {
-        let (refused, storage, _, _) =
-            push_on_projected(Some(cap_of_1000()), None, stored_proposal_labelled("p2id")).await;
+        let (refused, storage, _, _) = push_on_projected(
+            Some(cap_of_1000()),
+            None,
+            stored_proposal_labelled("p2id"),
+            None,
+        )
+        .await;
         assert!(
             matches!(refused, Err(GuardianError::ModuleUnavailable { .. })),
             "{refused:?}"
@@ -2789,7 +2798,7 @@ mod tests {
         let mut lenient = cap_of_1000();
         lenient.config.on_error = crate::modules::catalog::OnError::Allow;
         let (still_refused, storage, _, _) =
-            push_on_projected(Some(lenient), None, stored_proposal_labelled("p2id")).await;
+            push_on_projected(Some(lenient), None, stored_proposal_labelled("p2id"), None).await;
         assert!(
             matches!(still_refused, Err(GuardianError::ModuleUnavailable { .. })),
             "{still_refused:?}"
@@ -2974,6 +2983,36 @@ mod tests {
             }
             other => panic!("unexpected subject {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_failure_let_through_at_approval_is_audited_when_the_guardian_signs() {
+        use crate::modules::catalog::OnError;
+        use crate::modules::testing::{Behaviour, StubModule};
+        use crate::testing::helpers::CapturingAuditor;
+
+        let auditor = CapturingAuditor::new();
+        let (result, _, signer, _) = push_on_projected(
+            Some(crate::modules::testing::instance(
+                "caps",
+                &[HookName::BeforeTransactionApproved],
+                OnError::Allow,
+                StubModule::new(Behaviour::Fail),
+            )),
+            Some(guardian_module_sdk::MidenTransaction::default()),
+            |_| Err("proposal not found".to_string()),
+            Some(auditor.clone()),
+        )
+        .await;
+        result.expect("a fail-open module does not stop the push");
+        let events = auditor.snapshot();
+        assert_eq!(events.len(), 1, "{events:?}");
+        let event = &events[0];
+        assert_eq!(event.action_kind, crate::audit::kinds::MODULES_FAILED_OPEN);
+        assert_eq!(event.payload["hook"], "before_transaction_approved");
+        assert_eq!(event.payload["submitter"], signer);
+        assert_eq!(event.payload["nonce"], 1);
+        assert_eq!(event.payload["failed_open"][0]["module_id"], "caps");
     }
 
     #[tokio::test]

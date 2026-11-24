@@ -88,8 +88,8 @@ Each refusal carries a fixed `client_message` naming the rule (for example
 never a list entry or a limit, so a `client_reason = "full"` instance tells
 users what to change without disclosing params. The exact amounts and
 entries go to the server log. A request a kind cannot judge (a transaction
-without a Miden projection, say) is an error, not an allow, so the instance's
-`on_error` applies.
+without a Miden projection, say) is not an allow: it is refused with
+`GUARDIAN_MODULE_UNAVAILABLE` whatever the instance's `on_error` says.
 
 ## The example catalog
 
@@ -97,7 +97,7 @@ without a Miden projection, say) is an error, not an allow, so the instance's
 |---|---|---|
 | `caps` (`spending-limit`) | all | At most 5 of one asset per transaction; can be switched off; discloses its params to cosigners |
 | `blocklist` (`recipient-policy`) | all | Recipient denylist, empty until you fill it; denies generically |
-| `signers` (`signer-policy`) | all | One signer may never be added; the catalog protects it from being switched off |
+| `signers` (`signer-policy`) | all | One signer may never be added; the catalog protects it from being switched off and its list from being changed through the API |
 | `treasury-allowlist` (`recipient-policy`) | assigned | Opt-in: applies only to accounts you assign it to |
 
 ## Try it
@@ -165,7 +165,10 @@ disable.
 
 ## What persists
 
-The catalog's `params` are only a seed. After the first start the stored
-params apply, and editing the catalog shows up as drift (`params_drift: true`
-in `GET /modules`) without changing behaviour. Params that hold secret
-references stay managed in the file and cannot be changed through the API.
+The catalog's `params` are a seed for most instances. After the first start the
+stored params apply, and editing the catalog shows up as drift
+(`params_drift: true` in `GET /modules`) without changing behaviour. Params that
+hold secret references, and params of an instance that sets
+`operator_can_set_params = false` (`signers` in this catalog), stay managed in
+the file: the API cannot change them, and an edit to the file applies at the
+next start.

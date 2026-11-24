@@ -40,11 +40,12 @@ out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text(
     json.dumps(
         [
-            # accounts:pause and policies:write as well as read: the pause and
-            # policy module scenarios need one identity that can act, and the
-            # denial scenario proves the negative through the restricted
-            # operator instead.
-            {"public_key": public_keys["reader"], "permissions": ["dashboard:read", "accounts:pause", "policies:write"]},
+            # accounts:pause, policies:write and policies:write_global as well
+            # as read: the pause and policy module scenarios (assignments, and
+            # enabling or disabling an instance) need one identity that can
+            # act, and the denial scenario proves the negative through the
+            # restricted operator instead.
+            {"public_key": public_keys["reader"], "permissions": ["dashboard:read", "accounts:pause", "policies:write", "policies:write_global"]},
             {"public_key": public_keys["restricted"], "permissions": restricted},
         ],
         indent=2,
