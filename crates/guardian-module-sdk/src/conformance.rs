@@ -74,7 +74,7 @@ impl Expected {
             (Expected::DenyWith(code), Ok(decision)) => {
                 decision.effect == Effect::Deny as i32 && &decision.reason_code == code
             }
-            (Expected::Error, Err(_)) => true,
+            (Expected::Error, Err(code)) => *code == tonic::Code::InvalidArgument,
             (_, _) => false,
         }
     }
@@ -86,7 +86,7 @@ impl fmt::Display for Expected {
             Expected::Allow => write!(f, "an allow"),
             Expected::Deny => write!(f, "a deny"),
             Expected::DenyWith(code) => write!(f, "a deny with reason code {code}"),
-            Expected::Error => write!(f, "an error"),
+            Expected::Error => write!(f, "an InvalidRequest error (INVALID_ARGUMENT)"),
         }
     }
 }
@@ -140,8 +140,10 @@ impl<M: Module + 'static> Suite<M> {
         self.expecting(name, request, Some(Expected::DenyWith(reason_code.into())))
     }
 
-    /// A request the module cannot judge and must answer with an error, so the instance's
-    /// `on_error` decides, never an allow.
+    /// A request the module cannot judge: it must answer `InvalidRequest` (gRPC
+    /// `INVALID_ARGUMENT`), which the Guardian refuses whatever the instance's `on_error` says,
+    /// never an allow. Any other error would be read as the module's own failure, which a
+    /// fail-open instance lets through and which counts toward its circuit breaker.
     pub fn fails(self, name: impl Into<String>, request: HookRequest) -> Self {
         self.expecting(name, request, Some(Expected::Error))
     }

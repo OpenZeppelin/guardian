@@ -9,10 +9,10 @@
 | `GUARDIAN_MODULES_CONFIG` | unset | M2a | Path to the catalog TOML; unset disables the feature |
 | `GUARDIAN_MODULES_STATE` | `<GUARDIAN_METADATA_PATH>/modules` | M2a | Filesystem backend only: directory of the module state file; Postgres keeps module state in its tables |
 | `GUARDIAN_MODULE_PARAMS_MAX_BYTES` | `65536` | M2a | Largest params value (JCS-encoded) accepted at startup or through the operator API |
-| `GUARDIAN_MODULE_CHECK_RATE_PER_MIN` | `30` | M2a | Dry-run checks per minute per account and signer (RFC 0002 section 2.7) |
+| `GUARDIAN_MODULE_CHECK_RATE_PER_MIN` | `30` | M2a | Dry-run checks per minute per account and signer, and, counted apart, proposals the modules deny at creation before creation is refused (RFC 0002 section 2.7) |
 | `GUARDIAN_MODULE_EVALUATION_BUDGET_MS` | `1000` | M2a | Total module time per hook invocation |
 | `GUARDIAN_MODULE_REQUEST_MAX_BYTES` | `2097152` | M2a | Encoded request size cap |
-| `GUARDIAN_MODULE_BREAKER_FAILURES` | `5` | M2a | Consecutive failures that open the circuit |
+| `GUARDIAN_MODULE_BREAKER_FAILURES` | `5` | M2a | Consecutive failures that open the circuit once a health probe has failed |
 | `GUARDIAN_MODULE_PROBE_INTERVAL_MS` | `5000` | M2a | Health probe interval |
 | `GUARDIAN_MODULE_PENDING_MAX` | `256` | M2b | Backlog cap per account and module |
 | `GUARDIAN_MODULE_EVENT_RETENTION` | `14d` | M2b | Undelivered event retention |
@@ -29,6 +29,7 @@ timeout_ms = 20                       # required
 on_error = "deny"                     # deny (default) | allow
 enabled = true                        # seed only
 operator_can_disable = false
+operator_can_set_params = false       # all scope only; global params stay in this file
 params = { check = "all", allowlist = ["0x…"] }  # seed for the global params
 
 [[module]]
