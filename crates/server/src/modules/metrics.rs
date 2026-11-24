@@ -33,8 +33,8 @@ pub fn evaluated(module: &str, outcome: Outcome, took: Duration) {
     .record(took.as_secs_f64());
 }
 
-/// A request refused before the module was called, because it could not be built or exceeds
-/// the size cap.
+/// A request refused whatever the instance's `on_error`: it could not be built, exceeds the
+/// size cap, or the module rejected it as one it cannot judge.
 pub fn request_refused(module: &str, reason: &'static str) {
     metrics::counter!(
         names::MODULE_REQUEST_REFUSED_TOTAL,

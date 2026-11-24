@@ -3,9 +3,9 @@
 use serde::Serialize;
 
 use super::catalog::{ClientReason, Disclosure, Scope, contains_secret_reference};
-use super::pipeline::ModulePipeline;
+use super::pipeline::{ModulePipeline, Rows};
 use super::registry::{Instance, Unhealthy, validate_params};
-use super::store::{Assigned, Change, HistoryEntry, ParamsKind, WriteError};
+use super::store::{Assigned, Change, HistoryEntry, InstanceRow, ParamsKind, WriteError};
 use crate::audit::{AuditEvent, AuditOutcome, kinds};
 use crate::dashboard::AuthenticatedOperator;
 use crate::error::{GuardianError, Result};
@@ -22,6 +22,8 @@ pub struct ModuleInstanceView {
     pub catalog_enabled: bool,
     pub enabled_drift: bool,
     pub operator_can_disable: bool,
+    /// `false` when the catalog locks the global params: the operator API refuses to write them.
+    pub operator_can_set_params: bool,
     #[schema(value_type = Object)]
     pub params: serde_json::Value,
     pub params_drift: bool,
@@ -89,14 +91,6 @@ pub struct AccountModulesView {
 pub struct ParamsHistoryView {
     pub module_id: String,
     pub entries: Vec<HistoryEntry>,
-}
-
-fn scope_name(scope: Scope) -> &'static str {
-    match scope {
-        Scope::All => "all",
-        Scope::Default => "default",
-        Scope::Assigned => "assigned",
-    }
 }
 
 fn pipeline(state: &AppState) -> Result<&ModulePipeline> {
@@ -188,14 +182,6 @@ async fn existing_account(state: &AppState, account_id: &str) -> Result<String> 
     Err(GuardianError::AccountNotFound(account_id.to_string()))
 }
 
-async fn version(pipeline: &ModulePipeline) -> Result<u64> {
-    pipeline
-        .store()
-        .instance_version()
-        .await
-        .map_err(GuardianError::StorageError)
-}
-
 fn audit(
     state: &AppState,
     operator: &AuthenticatedOperator,
@@ -274,20 +260,50 @@ async fn instance_view(
     pipeline: &ModulePipeline,
     instance: &Instance,
 ) -> Result<ModuleInstanceView> {
-    let params = pipeline.global_params(instance).await?;
-    let enabled = pipeline.enabled(instance).await?;
-    let seeded = pipeline
+    let stored = stored_instances(pipeline).await?;
+    Ok(view_in(pipeline, instance, &rows_of(&stored), &stored))
+}
+
+fn rows_of(stored: &[InstanceRow]) -> Rows {
+    std::sync::Arc::new(
+        stored
+            .iter()
+            .map(|row| {
+                (
+                    row.module_id.clone(),
+                    (row.global_params.clone(), row.enabled),
+                )
+            })
+            .collect(),
+    )
+}
+
+async fn stored_instances(pipeline: &ModulePipeline) -> Result<Vec<InstanceRow>> {
+    pipeline
         .store()
         .instances()
         .await
-        .map_err(GuardianError::StorageError)?
-        .into_iter()
+        .map_err(GuardianError::StorageError)
+}
+
+/// One instance as `rows` and `stored` show it, so every instance in a listing comes from the
+/// same reads.
+fn view_in(
+    pipeline: &ModulePipeline,
+    instance: &Instance,
+    rows: &Rows,
+    stored: &[InstanceRow],
+) -> ModuleInstanceView {
+    let params = ModulePipeline::global_params_in(rows, instance);
+    let enabled = ModulePipeline::enabled_in(rows, instance);
+    let seeded = stored
+        .iter()
         .find(|row| row.module_id == instance.config.id)
-        .map(|row| row.seeded_params);
-    Ok(ModuleInstanceView {
+        .map(|row| &row.seeded_params);
+    ModuleInstanceView {
         module_id: instance.config.id.clone(),
         kind: instance.config.kind.clone(),
-        scope: scope_name(instance.config.scope),
+        scope: instance.config.scope.as_str(),
         hooks: instance
             .config
             .hooks
@@ -298,8 +314,9 @@ async fn instance_view(
         catalog_enabled: instance.config.catalog_enabled,
         enabled_drift: enabled != instance.config.catalog_enabled,
         operator_can_disable: instance.config.operator_can_disable,
+        operator_can_set_params: instance.config.operator_can_set_params,
         params_drift: !instance.config.file_managed_params
-            && seeded.is_some_and(|seeded| seeded != instance.config.params),
+            && seeded.is_some_and(|seeded| *seeded != instance.config.params),
         params,
         file_managed_params: instance.config.file_managed_params,
         build: instance.build.clone(),
@@ -308,20 +325,28 @@ async fn instance_view(
         client_reason: instance.config.client_reason,
         dry_run: instance.config.dry_run,
         circuit: pipeline.breakers().state(&instance.config.id).as_str(),
-    })
+    }
 }
 
+/// The catalog from one read of the stored instances, with `params_version` read before it,
+/// so a write landing between the two reads pairs newer params with the older version: a
+/// fenced write based on the listing is then refused as stale, never applied over the newer
+/// params.
 pub async fn catalog_view(state: &AppState) -> Result<ModuleCatalogView> {
     let pipeline = pipeline(state)?;
-    let mut modules = Vec::with_capacity(pipeline.instances().len());
-    for instance in pipeline.instances() {
-        modules.push(instance_view(pipeline, instance).await?);
-    }
-    let undeclared = pipeline
+    let params_version = pipeline
         .store()
-        .instances()
+        .instance_version()
         .await
-        .map_err(GuardianError::StorageError)?
+        .map_err(GuardianError::StorageError)?;
+    let stored = stored_instances(pipeline).await?;
+    let rows = rows_of(&stored);
+    let modules = pipeline
+        .instances()
+        .iter()
+        .map(|instance| view_in(pipeline, instance, &rows, &stored))
+        .collect();
+    let undeclared = stored
         .into_iter()
         .filter(|row| pipeline.instance(&row.module_id).is_none())
         .map(|row| UndeclaredInstanceView {
@@ -332,7 +357,7 @@ pub async fn catalog_view(state: &AppState) -> Result<ModuleCatalogView> {
         .collect();
     Ok(ModuleCatalogView {
         catalog_hash: pipeline.catalog_hash.clone(),
-        params_version: version(pipeline).await?,
+        params_version,
         modules,
         undeclared,
     })
@@ -378,7 +403,7 @@ async fn view_of(state: &AppState, account_id: &str) -> Result<AccountModulesVie
             module_id: row.module_id.clone(),
             scope: pipeline
                 .instance(&row.module_id)
-                .map_or("all", |instance| scope_name(instance.config.scope)),
+                .map_or("all", |instance| instance.config.scope.as_str()),
             enabled: false,
             orphaned: true,
             global_params: None,
@@ -392,7 +417,7 @@ async fn view_of(state: &AppState, account_id: &str) -> Result<AccountModulesVie
     {
         let instance = pipeline.instance(&row.module_id);
         modules.push(AccountModuleEntry {
-            scope: instance.map_or("assigned", |instance| scope_name(instance.config.scope)),
+            scope: instance.map_or("assigned", |instance| instance.config.scope.as_str()),
             enabled: match instance {
                 Some(instance) => ModulePipeline::enabled_in(&instance_rows, instance),
                 None => false,
@@ -470,7 +495,7 @@ pub async fn enable(
                 tracing::warn!(module = %module_id, %error, "Module's normalized params break the params rules; kept the stored params");
             })
             .is_ok();
-        if checked.params != params && !instance.config.file_managed_params && storable {
+        if checked.params != params && !instance.config.catalog_managed_params() && storable {
             let migrator = format!(
                 "module:{}",
                 instance.build.as_deref().unwrap_or(&instance.config.kind)
@@ -570,6 +595,11 @@ pub async fn set_global<'a>(
     if instance.config.file_managed_params {
         return Err(GuardianError::ModuleWriteRefused(format!(
             "module {module_id}: params with secret references are managed in the catalog file"
+        )));
+    }
+    if !instance.config.operator_can_set_params {
+        return Err(GuardianError::ModuleWriteRefused(format!(
+            "module {module_id}: the catalog sets operator_can_set_params = false, so its global params are managed in the catalog file"
         )));
     }
     let params = validated(pipeline, instance, &params).await?;
@@ -900,6 +930,55 @@ mod tests {
             secret,
         ]));
         state
+    }
+
+    #[tokio::test]
+    async fn global_params_the_catalog_locks_cannot_be_written() {
+        let mut state = state();
+        let hooks = [HookName::BeforeTransactionApproved];
+        let mut locked = instance_with_params(
+            "sanctions",
+            &hooks,
+            Arc::new(RecipientPolicy),
+            json!({ "denylist": ["0x000000000000000000000000000aaa"] }),
+        );
+        locked.config.operator_can_set_params = false;
+        state.modules = Some(pipeline(vec![locked]));
+        let refused = set_global(&state, &operator(), "sanctions", json!({}), "OP-1", None).await;
+        assert!(
+            matches!(refused, Err(GuardianError::ModuleWriteRefused(ref detail)) if detail.contains("operator_can_set_params")),
+            "{refused:?}"
+        );
+        let pipeline = state.modules.as_deref().unwrap();
+        pipeline
+            .store()
+            .seed_instance(
+                "sanctions",
+                true,
+                &json!({}),
+                &json!({}),
+                "2026-10-15T00:00:00Z",
+            )
+            .await
+            .unwrap();
+        let older_replica = super::super::store::Change {
+            operator: "0xop",
+            reason: "written by a replica on an older catalog",
+            at: "2026-10-16T00:00:00Z".into(),
+            expected_version: None,
+        };
+        pipeline
+            .store()
+            .set_global("sanctions", json!({ "denylist": [] }), &older_replica)
+            .await
+            .unwrap();
+        let view = catalog_view(&state).await.unwrap();
+        assert!(!view.modules[0].operator_can_set_params);
+        assert_eq!(
+            view.modules[0].params,
+            json!({ "denylist": ["0x000000000000000000000000000aaa"] }),
+            "locked params come from the catalog, whatever is stored"
+        );
     }
 
     /// A catalog that changes an instance's `scope` leaves rows evaluation no longer reads: they
