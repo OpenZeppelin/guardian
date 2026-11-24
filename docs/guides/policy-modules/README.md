@@ -102,8 +102,9 @@ later catalog drops the secret references, the instance becomes
 operator-managed: on that start the new catalog params apply and are stored, a
 warning is logged, and from then on operators change them through the API like
 any other instance's. The other way round, adding secret references to an
-instance operators managed, makes the catalog params apply and logs that the
-stored operator params no longer do.
+instance operators managed, makes the catalog params apply and replaces the
+stored operator params with the empty placeholder, so removing the references
+again later applies the catalog params, not the old operator value.
 
 In
 [`built-in.toml`](./built-in.toml), `caps` discloses its params and
@@ -274,7 +275,7 @@ For outages, a module that refuses too much, and break-glass steps, see the
 | `cannot read module catalog` | `GUARDIAN_MODULES_CONFIG` is relative to the directory you started the server in; start from the repository root. |
 | `module caps: invalid params: …` at startup | The catalog's seed params fail the module's validation on a first start: fix the catalog; nothing is stored until every instance passes. On a later start it is the stored params that fail (the catalog's are no longer read): see the [runbook](../../runbooks/policy-modules.md). |
 | `GUARDIAN_MODULES_CONFIG is set but empty` or `declares no module` at startup | An empty value or an empty catalog would silently run without any policy. Point the variable at a catalog, or unset it to run without modules. |
-| `module caps-remote: …` at startup | An enabled remote module rejected the token or answered incompatibly, or it is new to this Guardian and unreachable. Start the module first, or set `enabled = false` until it runs. A module that has started here before and is merely down does not stop startup: the instance starts unavailable and recovers on a health probe. |
+| `module caps-remote: …` at startup | An enabled remote module rejected the token or answered incompatibly, or it is new to this Guardian and unreachable. Start the module first, or set `enabled = false` until it runs. A module whose instance has run enabled here before and is merely down does not stop startup: the instance starts unavailable and recovers on a health probe. |
 | `GUARDIAN public key commitment 0x… does not match account commitment 0x…` | The server started with different signing keys from the ones the account registered with, usually because `GUARDIAN_ACK_SECRET_PROVIDER=file` was not set (Setup step 2). Keys made without it are gone after a restart: register a new account. |
 | `login failed: no session cookie` | The server did not load the key: check `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` and the `public_key` in it. |
 | The client shows a generic error | The server log names the module, reason code and layer for every refusal. |
