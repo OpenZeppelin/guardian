@@ -84,7 +84,9 @@ pub struct ModuleInstanceConfig {
     pub auth_token: Option<secrecy::SecretString>,
     pub tls: Option<ModuleTls>,
     pub timeout: std::time::Duration,
-    /// The catalog params, with any `$secret` references unresolved.
+    /// The catalog params, with any `$secret` references unresolved. They are the catalog's
+    /// value only: operators can replace the global params later and set per-account params, so
+    /// a module judges each request by `HookRequest::params`, never by these.
     pub params: serde_json::Value,
     /// The values of the `$secret` references in `params`, by secret name. Only in-process
     /// instances receive them; a remote module holds its own credentials.

@@ -19,6 +19,7 @@ pub fn serve<M: Module + 'static>(module: M) -> Serve<M> {
         module: Arc::new(module),
         tokens: HashMap::new(),
         access: Access::Instances,
+        request_max_bytes: None,
     }
 }
 
@@ -35,6 +36,7 @@ pub struct Serve<M> {
     module: Arc<M>,
     tokens: HashMap<String, String>,
     access: Access,
+    request_max_bytes: Option<usize>,
 }
 
 impl<M: Module + 'static> Serve<M> {
@@ -57,12 +59,24 @@ impl<M: Module + 'static> Serve<M> {
         self
     }
 
+    /// Accepts requests up to `bytes` encoded bytes. Set it to the Guardian's
+    /// `GUARDIAN_MODULE_REQUEST_MAX_BYTES` when that is above gRPC's default receive limit of
+    /// 4 MiB, or the harness refuses the largest requests the Guardian sends.
+    pub fn request_max_bytes(mut self, bytes: usize) -> Self {
+        self.request_max_bytes = Some(bytes);
+        self
+    }
+
     pub fn into_service(self) -> GuardianModuleServer<Harness<M>> {
-        GuardianModuleServer::new(Harness {
+        let server = GuardianModuleServer::new(Harness {
             module: self.module,
             tokens: Arc::new(self.tokens),
             access: self.access,
-        })
+        });
+        match self.request_max_bytes {
+            Some(bytes) => server.max_decoding_message_size(bytes),
+            None => server,
+        }
     }
 
     pub async fn run(self, addr: SocketAddr) -> Result<(), tonic::transport::Error> {
