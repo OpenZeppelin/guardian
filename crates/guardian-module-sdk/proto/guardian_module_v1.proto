@@ -1,7 +1,7 @@
 // guardian.module.v1, extracted from docs/rfcs/0002-guardian-modules.md section 3 (revision 35).
 // The proto in RFC section 3 is authoritative; regenerate this file when it changes.
-// Protocol version 1 is not frozen yet: it freezes with the first published guardian-module-sdk
-// release, and from then on changes within it are additive only (RFC section 3.5).
+// Protocol version 1 is frozen from the first published guardian-module-sdk release (0.20.0):
+// changes within it are additive only (RFC section 3.5).
 
 syntax = "proto3";
 package guardian.module.v1;
