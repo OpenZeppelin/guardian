@@ -216,7 +216,7 @@ impl<M: Module + 'static> Suite<M> {
         self.check_expectations(&baseline, &mut report);
         self.check_purity(&baseline, &mut report).await;
         self.check_instances(&remote, &baseline, &mut report).await;
-        self.check_size_cap(&remote, &mut report).await;
+        self.check_size_cap(&remote, &baseline, &mut report).await;
         let _ = shutdown.send(());
         report
     }
@@ -231,6 +231,7 @@ impl<M: Module + 'static> Suite<M> {
         let service = serve(Arc::clone(&self.module))
             .instance(INSTANCE_A, TOKEN_A)
             .instance(INSTANCE_B, TOKEN_B)
+            .request_max_bytes(self.request_max_bytes)
             .into_service();
         let (shutdown, stopped) = oneshot::channel::<()>();
         tokio::spawn(async move {
@@ -499,7 +500,7 @@ impl<M: Module + 'static> Suite<M> {
         }
     }
 
-    async fn check_size_cap(&self, remote: &Remote, report: &mut Report) {
+    async fn check_size_cap(&self, remote: &Remote, baseline: &[Outcome], report: &mut Report) {
         let Some((name, request)) = self.requests.first() else {
             return;
         };
@@ -512,6 +513,12 @@ impl<M: Module + 'static> Suite<M> {
                 "size cap",
                 &case,
                 format!("over gRPC {served:?}, in process {local:?}"),
+            );
+        } else if baseline.first().is_some_and(Result::is_ok) && served.is_err() {
+            report.fail(
+                "size cap",
+                &case,
+                format!("the module decides this request at its own size but answers {served:?} at the cap"),
             );
         }
     }
@@ -865,6 +872,43 @@ mod tests {
             .run()
             .await;
         assert!(checks(&report).contains(&"params"), "{report}");
+    }
+
+    /// Denies a request up to 64 KiB and rejects every larger one as unjudgeable.
+    struct SmallOnly;
+
+    #[async_trait]
+    impl Module for SmallOnly {
+        async fn describe(&self, _: &DescribeRequest) -> Result<ModuleInfo, ModuleError> {
+            Ok(info())
+        }
+
+        async fn validate_params(&self, params: &[u8]) -> Result<ParamsVerdict, ModuleError> {
+            Fixed(Decision::allow()).validate_params(params).await
+        }
+
+        async fn evaluate(&self, request: &HookRequest) -> Result<Decision, ModuleError> {
+            if prost::Message::encoded_len(request) > 64 * 1024 {
+                Err(ModuleError::InvalidRequest("too large".into()))
+            } else {
+                Ok(Decision::deny("blocked", "no"))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn refusing_requests_at_the_cap_is_caught() {
+        let report = suite(SmallOnly).run().await;
+        assert_eq!(checks(&report), vec!["size cap"], "{report}");
+    }
+
+    #[tokio::test]
+    async fn a_raised_cap_is_served() {
+        suite(Fixed(Decision::deny("blocked", "no")))
+            .request_max_bytes(8 * 1024 * 1024)
+            .run()
+            .await
+            .assert_conformant();
     }
 
     #[test]

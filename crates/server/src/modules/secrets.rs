@@ -47,10 +47,19 @@ impl FileSecrets {
 impl SecretSource for FileSecrets {
     async fn read(&self, name: &str) -> Result<SecretString, String> {
         let path = self.path(name)?;
-        ensure_owner_only(&path)?;
-        std::fs::read_to_string(&path)
-            .map(SecretString::from)
-            .map_err(|e| format!("cannot read secret file {}: {e}", path.display()))
+        let unreadable =
+            |e: std::io::Error| format!("cannot read secret file {}: {e}", path.display());
+        if !std::fs::metadata(&path).map_err(unreadable)?.is_file() {
+            return Err(format!(
+                "secret file {} is not a regular file",
+                path.display()
+            ));
+        }
+        let mut file = std::fs::File::open(&path).map_err(unreadable)?;
+        ensure_owner_only(&file, &path)?;
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut file, &mut text).map_err(unreadable)?;
+        Ok(SecretString::from(text))
     }
 }
 
@@ -129,11 +138,12 @@ impl SecretRefs {
         };
         let auth_token = match &self.token {
             Some(name) => {
-                let token = read(name).await?.expose_secret().trim().to_owned();
+                let read = read(name).await?;
+                let token = read.expose_secret().trim();
                 if token.is_empty() {
                     return Err(format!("secret {name}: the token is empty"));
                 }
-                Some(SecretString::from(token))
+                Some(SecretString::from(token.to_owned()))
             }
             None => None,
         };
@@ -186,14 +196,21 @@ impl Catalog {
     }
 }
 
+/// Checks the opened file itself, so a file replaced after the check is never the one read.
 #[cfg(unix)]
-fn ensure_owner_only(path: &Path) -> Result<(), String> {
+fn ensure_owner_only(file: &std::fs::File, path: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
-    let mode = std::fs::metadata(path)
-        .map_err(|e| format!("cannot read secret file {}: {e}", path.display()))?
-        .permissions()
-        .mode();
+    let metadata = file
+        .metadata()
+        .map_err(|e| format!("cannot read secret file {}: {e}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "secret file {} is not a regular file",
+            path.display()
+        ));
+    }
+    let mode = metadata.permissions().mode();
     if mode & 0o077 == 0 {
         Ok(())
     } else {
@@ -205,7 +222,7 @@ fn ensure_owner_only(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(unix))]
-fn ensure_owner_only(_path: &Path) -> Result<(), String> {
+fn ensure_owner_only(_file: &std::fs::File, _path: &Path) -> Result<(), String> {
     Ok(())
 }
 
@@ -363,6 +380,9 @@ tls = { client_cert_secret = "risk-cert", client_key_secret = "risk-key" }"#,
         }
         let error = source.read("open").await.unwrap_err();
         assert!(error.contains("0600"), "{error}");
+        std::fs::create_dir(dir.join("folder")).unwrap();
+        let error = source.read("folder").await.unwrap_err();
+        assert!(error.contains("not a regular file"), "{error}");
         std::fs::remove_dir_all(dir).ok();
     }
 }

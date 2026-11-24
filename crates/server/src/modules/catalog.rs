@@ -126,6 +126,46 @@ pub struct Credentials {
     pub params: BTreeMap<String, guardian_module_sdk::secrecy::SecretString>,
 }
 
+/// Describes a catalog that does not parse by position and the parser's message, leaving out
+/// the source excerpt the parser's own `Display` quotes and every value the message quotes
+/// (`invalid type: string "..."`, ``unknown variant `...` ``), since a line can hold a value an
+/// operator pasted by mistake.
+fn parse_error(text: &str, error: &toml::de::Error) -> String {
+    let message = without_quoted(error.message());
+    match error.span() {
+        Some(span) => {
+            let before = &text[..span.start.min(text.len())];
+            let line = before.matches('\n').count() + 1;
+            let column = before.len() - before.rfind('\n').map_or(0, |at| at + 1) + 1;
+            format!("invalid module catalog at line {line}, column {column}: {message}")
+        }
+        None => format!("invalid module catalog: {message}"),
+    }
+}
+
+/// `message` with the text between each pair of `"` or `` ` `` replaced by `...`.
+fn without_quoted(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut open: Option<char> = None;
+    for c in message.chars() {
+        match open {
+            Some(quote) if c == quote => {
+                out.push_str("...");
+                out.push(c);
+                open = None;
+            }
+            Some(_) => {}
+            None => {
+                out.push(c);
+                if c == '"' || c == '`' {
+                    open = Some(c);
+                }
+            }
+        }
+    }
+    out
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InstanceEntry {
@@ -421,8 +461,7 @@ impl Catalog {
     }
 
     pub fn parse(text: &str, base_dir: Option<&Path>) -> Result<Self, String> {
-        let file: CatalogFile =
-            toml::from_str(text).map_err(|e| format!("invalid module catalog: {e}"))?;
+        let file: CatalogFile = toml::from_str(text).map_err(|e| parse_error(text, &e))?;
 
         let mut seen = HashSet::new();
         let mut instances = Vec::with_capacity(file.modules.len());
@@ -596,6 +635,23 @@ hooks = ["before_account_registered"]
 timeout_ms = 20
 on_error = "allow"
 "#;
+
+    #[test]
+    fn a_catalog_that_does_not_parse_is_reported_without_the_values_in_it() {
+        let entry = "[[module]]\nid = \"m\"\nkind = \"spending-limit\"\nscope = \"all\"\nhooks = [\"before_transaction_approved\"]\n";
+        for (field, expected_line) in [
+            ("token = very-secret-token", "line 6"),
+            ("timeout_ms = \"very-secret-token\"", "line 6"),
+            (
+                "timeout_ms = 20\non_error = \"very-secret-token\"",
+                "line 7",
+            ),
+        ] {
+            let error = parse(&format!("{entry}{field}\n")).unwrap_err();
+            assert!(error.contains(expected_line), "{field}: {error}");
+            assert!(!error.contains("very-secret-token"), "{field}: {error}");
+        }
+    }
 
     #[test]
     fn operator_can_set_params_defaults_to_true_and_can_lock_an_all_instance() {
