@@ -57,6 +57,8 @@ services:
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - server
     healthcheck:
@@ -69,7 +71,7 @@ services:
     image: grafana/grafana:11.4.0
     ports:
       # 3001 avoids clashing with the server's HTTP port 3000.
-      - "127.0.0.1:3001:3000"
+      - "127.0.0.1:3002:3000"
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
