@@ -83,7 +83,9 @@ impl Breakers {
     }
 
     /// Whether the module may be called now, and how; when not, the instance's `on_error`
-    /// applies at once instead. A half-open breaker admits one request at a time as its trial.
+    /// applies at once instead. A half-open breaker admits one request at a time as its trial,
+    /// and every dry-run check, whose result decides nothing: a check neither closes nor reopens
+    /// it, so checks stay answered while the breaker waits for a real call.
     /// A request admitted reports back with [`Self::answered`] or [`Self::failed`].
     pub fn admit(&self, instance: &str, caller: Caller) -> Option<Admission> {
         let mut breakers = self.by_instance.lock().ok()?;
@@ -94,11 +96,13 @@ impl Breakers {
             });
         };
         match (breaker.state, caller) {
-            (CircuitState::Closed, _) => Some(Admission {
-                generation: breaker.generation,
-                trial: false,
-            }),
-            (CircuitState::Open, _) | (CircuitState::HalfOpen, Caller::DryRun) => None,
+            (CircuitState::Closed, _) | (CircuitState::HalfOpen, Caller::DryRun) => {
+                Some(Admission {
+                    generation: breaker.generation,
+                    trial: false,
+                })
+            }
+            (CircuitState::Open, _) => None,
             (CircuitState::HalfOpen, Caller::Request) if breaker.trial_in_flight => None,
             (CircuitState::HalfOpen, Caller::Request) => {
                 breaker.trial_in_flight = true;
@@ -456,15 +460,33 @@ mod tests {
     }
 
     #[test]
-    fn a_half_open_breaker_admits_one_trial_at_a_time_and_no_dry_run() {
+    fn a_half_open_breaker_admits_one_trial_at_a_time_and_dry_runs_that_decide_nothing() {
         let breakers = Breakers::new(1);
         breakers.probe_failed("m");
         breakers.probe_succeeded("m");
-        assert!(breakers.admit("m", Caller::DryRun).is_none());
+        let check = breakers
+            .admit("m", Caller::DryRun)
+            .expect("a check is let through");
+        breakers.answered("m", check);
+        assert_eq!(
+            breakers.state("m"),
+            CircuitState::HalfOpen,
+            "a check does not close it"
+        );
+        breakers.failed("m", check);
+        assert_eq!(
+            breakers.state("m"),
+            CircuitState::HalfOpen,
+            "nor count a failure"
+        );
         let dropped = call(&breakers);
         assert!(
             breakers.admit("m", Caller::Request).is_none(),
             "the trial is still out"
+        );
+        assert!(
+            breakers.admit("m", Caller::DryRun).is_some(),
+            "a check does not wait for the trial"
         );
         breakers.probe_succeeded("m");
         let trial = call(&breakers);
