@@ -17,7 +17,8 @@ description = "At most 5 base units of one asset per transaction"
 params = { max_per_transaction = { "0xREPLACE_WITH_FAUCET_ID" = "5" } }
 
 # Recipient blocklist for every account; extend it globally or per account at runtime.
-# Generic denials: clients learn that a policy refused, not which list or why.
+# Generic denials: clients learn that a policy refused, not which list or why. No dry-run
+# checks, so the list cannot be probed without submitting.
 [[module]]
 id = "blocklist"
 kind = "recipient-policy"
@@ -27,6 +28,7 @@ timeout_ms = 50
 on_error = "deny"
 operator_can_disable = true
 client_reason = "generic"
+dry_run = false
 params = { denylist = [] }
 
 # Signer rule: no account may add this signer. Protected: operators cannot disable it or

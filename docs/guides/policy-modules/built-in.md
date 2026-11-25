@@ -96,7 +96,7 @@ without a Miden projection, say) is not an allow: it is refused with
 | Instance | Scope | Rule |
 |---|---|---|
 | `caps` (`spending-limit`) | all | At most 5 of one asset per transaction; can be switched off; discloses its params to cosigners |
-| `blocklist` (`recipient-policy`) | all | Recipient denylist, empty until you fill it; denies generically |
+| `blocklist` (`recipient-policy`) | all | Recipient denylist, empty until you fill it; denies generically and skips dry-run checks, so the list cannot be probed without submitting (checks then report `complete: false`) |
 | `signers` (`signer-policy`) | all | One signer may never be added; the catalog protects it from being switched off and its list from being changed through the API |
 | `treasury-allowlist` (`recipient-policy`) | assigned | Opt-in: applies only to accounts you assign it to |
 

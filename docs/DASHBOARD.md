@@ -407,6 +407,11 @@ catalog hash this replica loaded as `backend.module_catalog_hash`.
 | `POST /dashboard/modules/{module_id}/enable` | `policies:write_global` | `{"reason": "..."}` |
 | `POST /dashboard/modules/{module_id}/disable` | `policies:write_global` or `modules:disable` | `{"reason": "..."}` |
 
+The history lists the stored changes newest first, including enable and
+disable (`{"enabled": ...}` entries). Writes to different accounts commit
+independently, so a page read while they land can miss an entry that is still
+committing: it is stored, and paging again from the newest page shows it.
+
 On a `scope = all` instance the per-account params are a layer evaluated
 after the global params, and both must allow, so a layer only adds
 restrictions. A `scope = default` instance is copied into an account's

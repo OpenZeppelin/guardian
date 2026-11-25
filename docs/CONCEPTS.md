@@ -231,8 +231,10 @@ What this means for operators:
   `message`, the account, the submitter and the reason code; they fall under
   the same retention as the rest of the server log.
 - What cosigners learn about the modules is chosen per instance
-  (`disclosure`, `client_reason`); by default they learn only that a policy
-  refused, with the module's instance id and reason code.
+  (`disclosure`, `client_reason`); by default (`client_reason = "full"`) a
+  denial tells them the module's instance id, the reason code, the layer
+  (global or account) and the module's client message when it sets one;
+  `generic` reduces that to `policy_denied`.
 
 ## Client verification checklist
 
