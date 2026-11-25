@@ -808,7 +808,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The account's effective module set, in evaluation order",
+            "description": "The account's effective module set, in evaluation order, followed by retained rows marked `orphaned` that evaluation skips and that do not count as effective modules",
             "content": {
               "application/json": {
                 "schema": {
@@ -990,6 +990,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The module did not answer the params validation; nothing changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1108,6 +1118,16 @@
           },
           "429": {
             "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The module did not answer the params validation; nothing changed",
             "content": {
               "application/json": {
                 "schema": {
@@ -2264,6 +2284,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The module did not answer the params validation; nothing changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2307,7 +2337,9 @@
             "required": false,
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "default": 100,
+              "maximum": 1000,
+              "minimum": 1
             }
           }
         ],
@@ -5802,7 +5834,7 @@
           },
           "orphaned": {
             "type": "boolean",
-            "description": "A stored entry naming an instance the catalog no longer declares; skipped at evaluation."
+            "description": "A stored row evaluation skips: its instance is no longer declared, or no longer applies\nrows of this kind (a layer left after the instance's scope changed from `all` to\n`assigned`, or an assignment left after the reverse). Not an effective module."
           },
           "params": {
             "type": [

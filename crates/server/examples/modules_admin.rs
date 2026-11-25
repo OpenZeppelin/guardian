@@ -121,5 +121,8 @@ async fn main() -> Result<(), Error> {
         .and_then(|value| serde_json::to_string_pretty(&value))
         .unwrap_or(text);
     println!("{status}\n{pretty}");
+    if !status.is_success() {
+        return Err(format!("request failed with {status}").into());
+    }
     Ok(())
 }

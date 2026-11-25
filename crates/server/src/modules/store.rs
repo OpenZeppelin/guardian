@@ -65,6 +65,7 @@ pub struct HistoryEntry {
     /// The entry's place in the history, increasing in write order: the cursor a page of
     /// history is read below.
     #[serde(default)]
+    #[schema(required = true)]
     pub id: u64,
     /// The params version the write committed as: the instance params version for an entry
     /// without `account_id`, that account's params version for one with it.
@@ -72,9 +73,9 @@ pub struct HistoryEntry {
     pub module_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
-    #[schema(value_type = Option<Object>)]
+    #[schema(value_type = Option<Object>, required = true)]
     pub previous: serde_json::Value,
-    #[schema(value_type = Option<Object>)]
+    #[schema(value_type = Option<Object>, required = true)]
     pub new: serde_json::Value,
     pub operator: String,
     pub reason: String,
@@ -254,6 +255,9 @@ pub trait ModuleStore: Send + Sync {
     /// Writes `modules` as the account's assignment only when it has no assignment and no
     /// write has touched its rows yet (account params version 0), which is how `default`
     /// instances reach a newly registered account; an operator's earlier write always wins.
+    /// `modules` carries each `default` instance's global params as registration read them, in
+    /// the snapshot its `before_account_registered` plan judged the account with, so the copy is
+    /// what that check saw; a global write that commits after that read is not in the copy.
     /// Returns whether it wrote.
     async fn seed_assignment(
         &self,
@@ -284,7 +288,7 @@ pub struct ModuleSnapshot {
     pub account_params: Vec<AccountParamsRow>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 struct Tables {
     instances: BTreeMap<String, InstanceRow>,
     account_params: Vec<AccountParamsRow>,
@@ -417,7 +421,9 @@ fn read_snapshot(dir: &std::path::Path) -> Result<Snapshot, String> {
     }
 }
 
-fn write_snapshot(dir: &std::path::Path, tables: &Tables) -> Result<(), String> {
+/// Replaces the state file with `tables`. The outer error means the old file is still in place;
+/// the inner one means the new file is in place but the directory entry may not be durable yet.
+fn write_snapshot(dir: &std::path::Path, tables: &Tables) -> Result<Result<(), String>, String> {
     use std::io::Write;
     let snapshot = Snapshot {
         instances: tables.instances.values().cloned().collect(),
@@ -434,9 +440,9 @@ fn write_snapshot(dir: &std::path::Path, tables: &Tables) -> Result<(), String> 
     file.write_all(&json).map_err(failed)?;
     file.sync_all().map_err(failed)?;
     std::fs::rename(&temp, &path).map_err(failed)?;
-    std::fs::File::open(dir)
+    Ok(std::fs::File::open(dir)
         .and_then(|dir| dir.sync_all())
-        .map_err(failed)
+        .map_err(failed))
 }
 
 impl FsModuleStore {
@@ -481,6 +487,9 @@ impl FsModuleStore {
         }
     }
 
+    /// Applies `apply` to a copy of the tables and persists it. A write that leaves the tables
+    /// as they were persists nothing. Once the new state file is in place the live tables follow
+    /// it, even when making its directory entry durable then fails.
     fn write<T, E: From<String>>(
         &self,
         apply: impl FnOnce(&mut Tables) -> Result<T, E>,
@@ -491,10 +500,15 @@ impl FsModuleStore {
             .map_err(|_| E::from("module store poisoned".to_string()))?;
         let mut next = tables.clone();
         let out = apply(&mut next)?;
-        if let Some(dir) = &self.dir {
-            write_snapshot(dir, &next).map_err(E::from)?;
+        if next == *tables {
+            return Ok(out);
         }
+        let durable = match &self.dir {
+            Some(dir) => write_snapshot(dir, &next).map_err(E::from)?,
+            None => Ok(()),
+        };
         *tables = next;
+        durable.map_err(E::from)?;
         Ok(out)
     }
 }
@@ -550,6 +564,9 @@ impl ModuleStore for FsModuleStore {
             return Ok(());
         }
         self.write(|tables| {
+            if tables.instances.contains_key(module_id) {
+                return Ok(());
+            }
             tables.instances.insert(
                 module_id.to_string(),
                 InstanceRow {
@@ -1279,6 +1296,47 @@ mod tests {
             .collect();
         assert_eq!(ids, [2, 1], "entries keep their place across a restart");
         assert_eq!(reopened.account_params("0xacc").await.unwrap().len(), 1);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_write_that_declines_persists_nothing() {
+        let dir = std::env::temp_dir().join(format!("modules_{:016x}", rand::random::<u64>()));
+        let store = FsModuleStore::open(dir.clone()).unwrap();
+        store
+            .seed_instance("caps", true, &json!({ "a": 1 }), &json!({ "a": 1 }), "t0")
+            .await
+            .unwrap();
+        let assigned = || {
+            vec![Assigned {
+                module_id: "caps".into(),
+                params: json!({}),
+            }]
+        };
+        assert!(
+            store
+                .seed_assignment("0xacc", assigned(), &change())
+                .await
+                .unwrap()
+        );
+        std::fs::create_dir(dir.join(STATE_FILE).with_extension("tmp")).unwrap();
+        assert!(
+            !store
+                .seed_assignment("0xacc", assigned(), &change())
+                .await
+                .unwrap()
+        );
+        store
+            .seed_instance("caps", false, &json!({ "a": 2 }), &json!({ "a": 2 }), "t1")
+            .await
+            .unwrap();
+        assert!(
+            store
+                .set_layer("0xacc", "caps", Some(json!({ "b": 1 })), &change())
+                .await
+                .is_err()
+        );
+        assert_eq!(account_version(&store, "0xacc").await, 1);
         std::fs::remove_dir_all(dir).ok();
     }
 
