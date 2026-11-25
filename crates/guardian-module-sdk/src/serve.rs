@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use tonic::{Request, Response, Status};
 
 use crate::proto::guardian_module_server::{GuardianModule, GuardianModuleServer};
@@ -36,19 +38,21 @@ enum Access {
 
 pub struct Serve<M> {
     module: Arc<M>,
-    tokens: HashMap<String, Vec<String>>,
+    tokens: HashMap<String, Vec<TokenDigest>>,
     access: Access,
     request_max_bytes: Option<usize>,
 }
 
 impl<M: Module + 'static> Serve<M> {
     /// Accept requests for `instance_id` when they carry `token` as a bearer credential.
-    /// Registering the same instance again adds a token it also accepts.
+    /// Registering the same instance again adds a token it also accepts. An empty token is
+    /// accepted from no one. Only the token's digest is kept.
     pub fn instance(mut self, instance_id: impl Into<String>, token: impl Into<String>) -> Self {
-        self.tokens
-            .entry(instance_id.into())
-            .or_default()
-            .push(token.into());
+        let token = token.into();
+        let tokens = self.tokens.entry(instance_id.into()).or_default();
+        if !token.is_empty() {
+            tokens.push(TokenDigest::of(&token));
+        }
         self
     }
 
@@ -95,7 +99,7 @@ impl<M: Module + 'static> Serve<M> {
 
 pub struct Harness<M> {
     module: Arc<M>,
-    tokens: Arc<HashMap<String, Vec<String>>>,
+    tokens: Arc<HashMap<String, Vec<TokenDigest>>>,
     access: Access,
 }
 
@@ -116,10 +120,9 @@ impl<M> Harness<M> {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "))
             .ok_or_else(|| Status::unauthenticated("missing bearer token"))?;
-        let any_matches = |tokens: &mut dyn Iterator<Item = &String>| {
-            tokens.fold(false, |matched, token| {
-                same_token(token, presented) | matched
-            })
+        let presented = TokenDigest::of(presented);
+        let any_matches = |tokens: &mut dyn Iterator<Item = &TokenDigest>| {
+            tokens.fold(false, |matched, token| token.matches(&presented) | matched)
         };
         let accepted = match instance_id {
             Some(id) => self
@@ -138,18 +141,20 @@ impl<M> Harness<M> {
     }
 }
 
-/// Compares in time independent of where the tokens differ and of the registered token's
-/// length: every byte up to the longer of the two is compared, so response timing reveals
-/// neither a token prefix nor how long the token is. An empty registered token matches nothing.
-fn same_token(expected: &str, presented: &str) -> bool {
-    let (expected, presented) = (expected.as_bytes(), presented.as_bytes());
-    let length_differs = expected.len() != presented.len();
-    let difference = (0..expected.len().max(presented.len())).fold(0u8, |difference, index| {
-        let a = expected.get(index).copied().unwrap_or(0);
-        let b = presented.get(index).copied().unwrap_or(0);
-        difference | (a ^ b)
-    });
-    !expected.is_empty() && !length_differs && difference == 0
+/// A bearer token as its SHA-256 digest. Tokens are compared as digests, in constant time, so the
+/// work does not depend on where two tokens differ or on how long the registered one is, and the
+/// harness keeps no copy of the token itself.
+#[derive(Clone)]
+struct TokenDigest([u8; 32]);
+
+impl TokenDigest {
+    fn of(token: &str) -> Self {
+        Self(Sha256::digest(token.as_bytes()).into())
+    }
+
+    fn matches(&self, presented: &TokenDigest) -> bool {
+        self.0.ct_eq(&presented.0).into()
+    }
 }
 
 pub(crate) fn status(error: ModuleError) -> Status {
@@ -258,12 +263,20 @@ mod tests {
 
     #[test]
     fn only_the_registered_token_matches() {
-        assert!(same_token("secret-token", "secret-token"));
+        let registered = TokenDigest::of("secret-token");
+        assert!(registered.matches(&TokenDigest::of("secret-token")));
         for presented in ["", "secret", "secret-tokeN", "secret-token-and-more", "x"] {
-            assert!(!same_token("secret-token", presented), "{presented:?}");
+            assert!(
+                !registered.matches(&TokenDigest::of(presented)),
+                "{presented:?}"
+            );
         }
-        assert!(
-            !same_token("", ""),
+        let empty = harness(serve(crate::policies::SpendingLimit).instance("caps", ""));
+        assert_eq!(
+            empty
+                .authorize(&bearer(""), Some("caps"))
+                .map_err(|status| status.code()),
+            Err(tonic::Code::PermissionDenied),
             "an empty registered token matches nothing"
         );
     }

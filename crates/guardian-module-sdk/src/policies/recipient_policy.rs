@@ -376,6 +376,10 @@ mod tests {
             json!({ "allowlist": [RECIPIENT], "deny_unknown": false }),
             json!({ "recipient_denylist": [BLOCKED] }),
             json!({ "max_per_transaction": {} }),
+            json!([[DEVNET_ADDRESS]]),
+            json!([[BLOCKED], [], false]),
+            json!("denylist"),
+            json!(null),
         ] {
             let verdict = RecipientPolicy
                 .validate_params(&serde_json::to_vec(&params).unwrap())
