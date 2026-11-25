@@ -272,10 +272,13 @@ impl Rule {
 /// object of that kind's fields only.
 pub(crate) fn parse<P: DeserializeOwned + Default>(params: &[u8]) -> Result<P, String> {
     if params.is_empty() {
-        Ok(P::default())
-    } else {
-        serde_json::from_slice(params).map_err(|e| e.to_string())
+        return Ok(P::default());
     }
+    let value: serde_json::Value = serde_json::from_slice(params).map_err(|e| e.to_string())?;
+    if !value.is_object() {
+        return Err("params must be a JSON object".into());
+    }
+    serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
 /// The verdict on `params` as a kind parsed them; valid params that name an account in

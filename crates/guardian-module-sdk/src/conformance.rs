@@ -408,11 +408,20 @@ impl<M: Module + 'static> Suite<M> {
         }
     }
 
+    /// Each re-evaluation carries a fresh `request_id`, as every Guardian invocation does, so state
+    /// a module keeps per invocation (keyed on the request id) is caught like any other.
     async fn check_purity(&self, baseline: &[Outcome], report: &mut Report) {
+        let mut rerun = 0usize;
+        let mut rerun_of = |request: &HookRequest| {
+            rerun += 1;
+            HookRequest {
+                request_id: format!("{}-rerun-{rerun}", request.request_id),
+                ..for_instance(request, INSTANCE_A)
+            }
+        };
         for ((name, request), expected) in self.requests.iter().zip(baseline) {
-            let request = for_instance(request, INSTANCE_A);
             for _ in 0..REPEATS {
-                let again = evaluate_local(&self.module, &request).await;
+                let again = evaluate_local(&self.module, &rerun_of(request)).await;
                 if &again != expected {
                     report.fail(
                         "purity",
@@ -424,7 +433,7 @@ impl<M: Module + 'static> Suite<M> {
             }
         }
         for ((name, request), expected) in self.requests.iter().zip(baseline).rev() {
-            let again = evaluate_local(&self.module, &for_instance(request, INSTANCE_A)).await;
+            let again = evaluate_local(&self.module, &rerun_of(request)).await;
             if &again != expected {
                 report.fail(
                     "purity",
@@ -437,7 +446,7 @@ impl<M: Module + 'static> Suite<M> {
         for _ in 0..REPEATS {
             for (index, (_, request)) in self.requests.iter().enumerate() {
                 let module = Arc::clone(&self.module);
-                let request = for_instance(request, INSTANCE_A);
+                let request = rerun_of(request);
                 concurrent.spawn(async move { (index, evaluate_local(&module, &request).await) });
             }
         }
@@ -894,6 +903,38 @@ mod tests {
                 Ok(Decision::deny("blocked", "no"))
             }
         }
+    }
+
+    /// Keeps state keyed on `request_id`, as a spend total that counts each invocation once
+    /// would: it denies until it has seen a second invocation, then allows.
+    #[derive(Default)]
+    struct RemembersInvocations(std::sync::Mutex<std::collections::HashSet<String>>);
+
+    #[async_trait]
+    impl Module for RemembersInvocations {
+        async fn describe(&self, _: &DescribeRequest) -> Result<ModuleInfo, ModuleError> {
+            Ok(info())
+        }
+
+        async fn validate_params(&self, params: &[u8]) -> Result<ParamsVerdict, ModuleError> {
+            Fixed(Decision::allow()).validate_params(params).await
+        }
+
+        async fn evaluate(&self, request: &HookRequest) -> Result<Decision, ModuleError> {
+            let mut seen = self.0.lock().unwrap();
+            seen.insert(request.request_id.clone());
+            Ok(if seen.len() > 1 {
+                Decision::allow()
+            } else {
+                Decision::deny("blocked", "no")
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn state_kept_per_invocation_is_caught() {
+        let report = suite(RemembersInvocations::default()).run().await;
+        assert!(checks(&report).contains(&"purity"), "{report}");
     }
 
     #[tokio::test]
