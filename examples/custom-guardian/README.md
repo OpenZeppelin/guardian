@@ -13,8 +13,9 @@ for anything else: it needs no custom build and can only refuse.
 
 ## Start from a release
 
-Each Guardian release attaches `custom-guardian-<tag>.tar.gz`, this directory
-turned into a standalone project:
+The template is this directory turned into a standalone project for one
+Guardian release. Generate it from a checkout of the release tag with
+`scripts/custom-guardian-template.sh`:
 
 - `Cargo.toml` depends on `guardian-server` and `guardian-module-sdk` at the
   release tag.
@@ -30,7 +31,9 @@ turned into a standalone project:
 - `rust-toolchain.toml` pins the release's compiler.
 
 ```sh
-tar xzf custom-guardian-v0.20.0.tar.gz && cd custom-guardian
+git checkout v0.20.0
+scripts/custom-guardian-template.sh --tag v0.20.0 --out ../custom-guardian
+cd ../custom-guardian
 # add your crate to [dependencies], register its kind in src/main.rs
 cargo build --release --locked --features postgres
 docker build -t my-guardian .
@@ -47,7 +50,7 @@ image must carry.
 Adding a crate makes `--locked` refuse the build until the lockfile has it.
 Run `cargo update --workspace`, which adds the new crates and keeps every
 pinned version, then build with `--locked` again; `git diff Cargo.lock` (or a
-diff against the archive's copy) should show only your crates. A plain
+diff against the generated copy) should show only your crates. A plain
 `cargo update` moves the pinned Guardian dependencies too.
 
 A module crate published to crates.io depends on the crates.io
@@ -59,7 +62,7 @@ The server's version info names the Guardian release commit. Pass
 `--build-arg GUARDIAN_GIT_SHA=<commit>` to stamp your own build's commit
 instead.
 
-On each Guardian release, start again from that release's template, then
+On each Guardian release, generate that release's template again, then
 rebuild, sign and redeploy your image. The official image's provenance
 attestation does not cover your build.
 
@@ -99,6 +102,5 @@ cargo run -p custom-guardian
 cargo build --release -p custom-guardian --features postgres
 ```
 
-`scripts/custom-guardian-template.sh` turns it into the release template; the
-`Custom Guardian Template` workflow runs it on every release and attaches the
-result.
+`scripts/custom-guardian-template.sh` turns it into a release's template, run
+from a checkout of that release's tag.
