@@ -1,2 +1,34 @@
 target/
+**/target/
 .git/
+
+# Local configuration, keys and state: the build copies this whole directory, and a layer
+# exported to a build cache keeps whatever it copied. Patterns here match from the directory
+# root only, so each file type is listed with **/ to match at any depth. To ship one of these
+# files in the image on purpose, add a !path exception below.
+**/.env
+**/.env.*
+**/.envrc
+**/.guardian/
+keystore/
+**/ack-keys/
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.token
+**/id_rsa*
+**/id_ed25519*
+**/operators.json
+**/storage-encryption-keys.json
+**/*.sqlite3
+**/*.sqlite3-*
+**/*.db
+**/module_state.json
+**/*.tables/
+**/*.tfvars
+**/*.tfstate
+**/*.tfstate.*
+**/.aws/
+**/.npmrc
+**/.cargo/credentials*

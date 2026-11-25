@@ -313,6 +313,24 @@ describe('GuardianOperatorHttpClient', () => {
     );
   });
 
+  it('refuses dot-segment and empty ids before sending anything', async () => {
+    const client = new GuardianOperatorHttpClient('https://guardian.example/api');
+    const refused = [
+      () => client.setAccountModuleLayer('..', 'caps', {}, 'OP-1'),
+      () => client.removeAccountModuleLayer('.', 'caps', 'OP-1'),
+      () => client.setAccountModules('..', [], 'OP-1'),
+      () => client.setAccountModuleLayer('0xacc', '..', {}, 'OP-1'),
+      () => client.enableModule('..', 'OP-1'),
+      () => client.setModuleGlobalParams('.', {}, 'OP-1'),
+      () => client.pauseAccount('', 'OP-1'),
+      () => client.getAccount('..'),
+    ];
+    for (const call of refused) {
+      await expect(call()).rejects.toBeInstanceOf(GuardianOperatorContractError);
+    }
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
   it('parses the account snapshot vault into camelCase', async () => {
     mockFetch.mockResolvedValueOnce(okJson({
       commitment: '0xc0ffee',

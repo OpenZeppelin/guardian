@@ -547,7 +547,10 @@ server reads them once, when it creates the instances, through the provider
 - **AWS (`aws`).** A name is a Secrets Manager secret id holding a secret
   string. The reference Terraform does not create these secrets: create each
   one, then list its name in `guardian_module_secret_names`, which grants the
-  ECS task runtime role `secretsmanager:GetSecretValue` on it
+  ECS task runtime role `secretsmanager:GetSecretValue` on it, and
+  `kms:Decrypt` on its customer-managed KMS key if it has one. Terraform looks
+  each listed secret up at plan time, so a listed secret that does not exist
+  fails the plan: remove a name from the list before deleting its secret
   ([deploy guide](../SERVER_AWS_DEPLOY.md#policy-modules)), before enabling
   the instance.
 - **Files (`file`).** A name is a relative path below
@@ -557,8 +560,17 @@ server reads them once, when it creates the instances, through the provider
 
 **Rotating a token.** Configure the module to accept both the old and the new
 token for the instance, update the secret, restart the Guardian replicas, then
-drop the old token from the module. A module served by the SDK harness holds one
-token per instance, so restart it with the new token right after the Guardian.
+drop the old token from the module once no replica sends it. Keep the order: a
+Guardian whose token the module refuses treats the instance as failed, so
+`on_error` decides its requests, and `on_error = "allow"` lets them through
+without the module's decision. A module served by the SDK harness accepts every
+token registered for an instance: register the instance once with each token
+(`.instance(id, old).instance(id, new)`, or `--instance ID FILE` twice for the
+`policy-module` example), restart it, roll the Guardians, then restart it with
+the new token only. The harness reads its tokens at start, so each restart
+drops the calls in flight: run at least two module replicas behind the address
+and restart them one at a time, or calls fail during the restart and `on_error`
+decides them.
 
 **Compromise.** A leaked module token lets its holder call the module as the
 Guardian: probe decisions, or, once notify ships, forge commit events. Replace

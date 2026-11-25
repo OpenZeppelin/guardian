@@ -348,6 +348,20 @@ export class GuardianOperatorContractError extends Error {
   }
 }
 
+/**
+ * One identifier as a URL path segment. An empty, `.` or `..` identifier is refused: URL
+ * resolution would drop or climb it and send the request to another route.
+ */
+function pathSegment(field: string, value: string): string {
+  if (value === '' || value === '.' || value === '..') {
+    throw new GuardianOperatorContractError(
+      field,
+      `must be a non-empty identifier other than "." and "..", got ${JSON.stringify(value)}`,
+    );
+  }
+  return encodeURIComponent(value);
+}
+
 export class GuardianOperatorHttpClient {
   private readonly baseUrl: URL;
   private readonly fetchImpl: typeof fetch;
@@ -501,7 +515,7 @@ export class GuardianOperatorHttpClient {
     accountId: string,
     reason: string,
   ): Promise<PauseAccountResponse> {
-    const encoded = encodeURIComponent(accountId);
+    const encoded = pathSegment('accountId', accountId);
     return this.request(
       new URL(`dashboard/accounts/${encoded}/pause`, this.baseUrl),
       { method: 'POST', body: JSON.stringify({ reason }) },
@@ -518,7 +532,7 @@ export class GuardianOperatorHttpClient {
     accountId: string,
     reason?: string,
   ): Promise<UnpauseAccountResponse> {
-    const encoded = encodeURIComponent(accountId);
+    const encoded = pathSegment('accountId', accountId);
     const init: RequestInit = { method: 'POST' };
     if (reason !== undefined) {
       init.body = JSON.stringify({ reason });
@@ -531,7 +545,7 @@ export class GuardianOperatorHttpClient {
   }
 
   async getAccount(accountId: string): Promise<DashboardAccountResponse> {
-    const encodedAccountId = encodeURIComponent(accountId);
+    const encodedAccountId = pathSegment('accountId', accountId);
     return this.request(
       new URL(`dashboard/accounts/${encodedAccountId}`, this.baseUrl),
       { method: 'GET' },
@@ -558,7 +572,7 @@ export class GuardianOperatorHttpClient {
    * FR-043..FR-046.
    */
   async getAccountSnapshot(accountId: string): Promise<DashboardAccountSnapshot> {
-    const encodedAccountId = encodeURIComponent(accountId);
+    const encodedAccountId = pathSegment('accountId', accountId);
     return this.request(
       new URL(`dashboard/accounts/${encodedAccountId}/snapshot`, this.baseUrl),
       { method: 'GET' },
@@ -575,7 +589,7 @@ export class GuardianOperatorHttpClient {
     accountId: string,
     options: PaginationOptions = {},
   ): Promise<PagedResult<DashboardDeltaEntry>> {
-    const encodedAccountId = encodeURIComponent(accountId);
+    const encodedAccountId = pathSegment('accountId', accountId);
     const url = new URL(
       `dashboard/accounts/${encodedAccountId}/deltas`,
       this.baseUrl,
@@ -601,7 +615,7 @@ export class GuardianOperatorHttpClient {
         `nonce must be a non-negative safe integer, got ${nonce}`,
       );
     }
-    const encodedAccountId = encodeURIComponent(accountId);
+    const encodedAccountId = pathSegment('accountId', accountId);
     const url = new URL(
       `dashboard/accounts/${encodedAccountId}/deltas/${nonce.toString()}`,
       this.baseUrl,
@@ -623,7 +637,7 @@ export class GuardianOperatorHttpClient {
     accountId: string,
     options: PaginationOptions = {},
   ): Promise<PagedResult<DashboardProposalEntry>> {
-    const encodedAccountId = encodeURIComponent(accountId);
+    const encodedAccountId = pathSegment('accountId', accountId);
     const url = new URL(
       `dashboard/accounts/${encodedAccountId}/proposals`,
       this.baseUrl,
@@ -684,7 +698,7 @@ export class GuardianOperatorHttpClient {
   /** The account's effective module set, in evaluation order. Requires `dashboard:read`. */
   async getAccountModules(accountId: string): Promise<AccountModules> {
     return this.request(
-      new URL(`dashboard/accounts/${encodeURIComponent(accountId)}/modules`, this.baseUrl),
+      new URL(`dashboard/accounts/${pathSegment('accountId', accountId)}/modules`, this.baseUrl),
       { method: 'GET' },
       parseAccountModules,
     );
@@ -696,7 +710,7 @@ export class GuardianOperatorHttpClient {
     moduleId: string,
     options: ModuleParamsHistoryOptions = {},
   ): Promise<ModuleParamsHistory> {
-    const url = new URL(`dashboard/modules/${encodeURIComponent(moduleId)}/params/history`, this.baseUrl);
+    const url = new URL(`dashboard/modules/${pathSegment('moduleId', moduleId)}/params/history`, this.baseUrl);
     if (options.before !== undefined) url.searchParams.set('before', String(options.before));
     if (options.limit !== undefined) url.searchParams.set('limit', String(options.limit));
     return this.request(url, { method: 'GET' }, parseModuleParamsHistory);
@@ -713,7 +727,7 @@ export class GuardianOperatorHttpClient {
     options: ParamsWriteOptions = {},
   ): Promise<ModuleInstance> {
     return this.request(
-      new URL(`dashboard/modules/${encodeURIComponent(moduleId)}/params`, this.baseUrl),
+      new URL(`dashboard/modules/${pathSegment('moduleId', moduleId)}/params`, this.baseUrl),
       { method: 'PUT', body: JSON.stringify({ params, reason, ...expectedVersion(options) }) },
       (value) => parseModuleInstance(value, 'module instance'),
     );
@@ -723,7 +737,7 @@ export class GuardianOperatorHttpClient {
    * `policies:write_global`, since the switch applies to every account. */
   async enableModule(moduleId: string, reason: string): Promise<ModuleInstance> {
     return this.request(
-      new URL(`dashboard/modules/${encodeURIComponent(moduleId)}/enable`, this.baseUrl),
+      new URL(`dashboard/modules/${pathSegment('moduleId', moduleId)}/enable`, this.baseUrl),
       { method: 'POST', body: JSON.stringify({ reason }) },
       (value) => parseModuleInstance(value, 'module instance'),
     );
@@ -733,7 +747,7 @@ export class GuardianOperatorHttpClient {
    * `policies:write_global` or `modules:disable`. */
   async disableModule(moduleId: string, reason: string): Promise<ModuleInstance> {
     return this.request(
-      new URL(`dashboard/modules/${encodeURIComponent(moduleId)}/disable`, this.baseUrl),
+      new URL(`dashboard/modules/${pathSegment('moduleId', moduleId)}/disable`, this.baseUrl),
       { method: 'POST', body: JSON.stringify({ reason }) },
       (value) => parseModuleInstance(value, 'module instance'),
     );
@@ -780,7 +794,7 @@ export class GuardianOperatorHttpClient {
     options: ParamsWriteOptions = {},
   ): Promise<AccountModules> {
     return this.request(
-      new URL(`dashboard/accounts/${encodeURIComponent(accountId)}/modules`, this.baseUrl),
+      new URL(`dashboard/accounts/${pathSegment('accountId', accountId)}/modules`, this.baseUrl),
       {
         method: 'PUT',
         body: JSON.stringify({
@@ -795,7 +809,7 @@ export class GuardianOperatorHttpClient {
 
   private accountModuleParamsUrl(accountId: string, moduleId: string): URL {
     return new URL(
-      `dashboard/accounts/${encodeURIComponent(accountId)}/modules/${encodeURIComponent(moduleId)}/params`,
+      `dashboard/accounts/${pathSegment('accountId', accountId)}/modules/${pathSegment('moduleId', moduleId)}/params`,
       this.baseUrl,
     );
   }

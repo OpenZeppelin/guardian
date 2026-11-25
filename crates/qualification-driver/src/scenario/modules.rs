@@ -536,7 +536,14 @@ async fn assert_switch_survived(operator: &Operator<'_>) -> ActionOutcome {
         Ok(history) => history,
         Err(outcome) => return outcome,
     };
-    if !history.iter().any(|entry| entry["reason"] == REASON) {
+    let records_the_disable = |entry: &serde_json::Value| {
+        entry["reason"] == REASON
+            && entry
+                .get("account_id")
+                .is_none_or(serde_json::Value::is_null)
+            && entry["new"] == json!({ "enabled": false })
+    };
+    if !history.iter().any(records_the_disable) {
         return ActionOutcome::failed_product(format!(
             "the params history of {SWITCH} does not record the disable: {history:?}"
         ));

@@ -817,8 +817,10 @@ result's `complete` is false when a module that opts out of checks was
 skipped. The answer is advisory, since approval still decides, and checks are
 rate limited per account and signer. Both SDKs check every typed creator and
 custom proposals (`check_custom_transaction` in Rust, `{ type: 'custom' }` in
-TypeScript). A Guardian switch is checkable only in Rust, but a switch is never
-gated by modules anyway.
+TypeScript). A Guardian switch is checkable only in Rust. A module can refuse a
+switch proposal created on the Guardian, but it cannot keep an account from
+leaving: `SwitchGuardian` executes on chain without a Guardian acknowledgement,
+and the offline switch path never reaches the current Guardian.
 
 A check and a creation build the proposal the same way: each create call first
 drafts the proposal locally (summary, metadata and payload, no signature) and

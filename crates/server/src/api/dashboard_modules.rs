@@ -166,7 +166,7 @@ pub async fn list_modules(State(state): State<AppState>) -> Result<Json<ModuleCa
     security(("operator_session" = [])),
     params(("account_id" = String, Path, description = "Account identifier")),
     responses(
-        (status = 200, description = "The account's effective module set, in evaluation order", body = AccountModulesView),
+        (status = 200, description = "The account's effective module set, in evaluation order, followed by retained rows marked `orphaned` that evaluation skips and that do not count as effective modules", body = AccountModulesView),
         (status = 400, description = "No policy modules are configured", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing dashboard:read permission", body = crate::openapi::ApiErrorResponse),
@@ -186,6 +186,7 @@ pub struct HistoryQuery {
     /// Only entries whose `id` is below this one, to page backwards.
     before: Option<u64>,
     /// At most this many entries (1 to 1,000; default 100).
+    #[param(minimum = 1, maximum = 1000, default = 100)]
     limit: Option<usize>,
 }
 
@@ -227,6 +228,7 @@ pub async fn params_history(
         (status = 403, description = "Missing policies:write_global permission", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
         (status = 409, description = "expected_version is set and the params changed since (GUARDIAN_MODULE_PARAMS_STALE)", body = crate::openapi::ApiErrorResponse),
+        (status = 503, description = "The module did not answer the params validation; nothing changed", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn set_global_params(
@@ -321,6 +323,7 @@ pub async fn disable_module(
         (status = 403, description = "Missing policies:write permission", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
         (status = 409, description = "the account params changed since expected_version, or, without it, since this write read them (GUARDIAN_MODULE_PARAMS_STALE)", body = crate::openapi::ApiErrorResponse),
+        (status = 503, description = "The module did not answer the params validation; nothing changed", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn set_account_layer(
@@ -399,6 +402,7 @@ pub async fn remove_account_layer(
         (status = 403, description = "Missing policies:write permission", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
         (status = 409, description = "the account params changed since expected_version, or, without it, since this write read them (GUARDIAN_MODULE_PARAMS_STALE)", body = crate::openapi::ApiErrorResponse),
+        (status = 503, description = "The module did not answer the params validation; nothing changed", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn set_assignment(

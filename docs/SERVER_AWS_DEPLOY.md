@@ -328,10 +328,16 @@ the image:
 
 `guardian_modules_config` sets `GUARDIAN_MODULES_CONFIG`.
 `guardian_module_secret_names` grants the task runtime role
-`secretsmanager:GetSecretValue` on exactly those secrets and sets
-`GUARDIAN_MODULE_SECRET_PROVIDER=aws`. Create each secret before the deploy
-that enables its instance ([`runbooks/secrets.md`](./runbooks/secrets.md#policy-module-secrets)):
-an enabled instance whose secret cannot be read stops startup.
+`secretsmanager:GetSecretValue` on exactly those secrets, and `kms:Decrypt` on
+the customer-managed KMS key of any secret encrypted with one (the key's policy
+must also allow the role, unless it delegates to IAM), and sets
+`GUARDIAN_MODULE_SECRET_PROVIDER=aws`. Terraform looks each listed secret up
+to find its key, so create a secret before listing it, and remove it from the
+list before deleting it: a listed secret that does not exist fails every plan.
+The deploying identity needs `secretsmanager:DescribeSecret` on the secrets and
+`kms:DescribeKey` on their keys. After moving a secret to another key, apply
+before the tasks restart. An enabled instance whose secret cannot be read stops
+startup ([`runbooks/secrets.md`](./runbooks/secrets.md#policy-module-secrets)).
 
 The catalog is deploy configuration. A change to it is a new image and a new
 task definition, which is the review bar wanted for adding, removing or
@@ -341,7 +347,20 @@ and live in the database. A remote module must be reachable from the task's
 subnets; the stack does not deploy modules.
 
 A catalog that is set but empty, or declares no module, stops startup. To run
-without modules again, clear `guardian_modules_config`.
+without modules again, clear `guardian_modules_config` and
+`guardian_module_secret_names` together (Terraform refuses secret names without
+a catalog). On a prod stack whose database holds module state, also set
+`guardian_modules_disabled = true`: without it the server refuses to start, so a
+lost catalog setting cannot run every account without its policies.
+
+**Releases keep the catalog only if you rebuild its image.** The image built in
+step 1 is the only one that carries the catalog. For each release, rebuild it
+`FROM` the new version, push it to the stack's ECR repository as `latest`, and
+deploy it with `./scripts/aws-deploy.sh deploy --skip-build`, which uses that
+image. The **AWS Deploy** workflow deploys the published image and
+`aws-deploy.sh deploy` without `--skip-build` builds the repository image:
+neither has the catalog, so with `guardian_modules_config` set their new tasks
+stop at startup and the service keeps running the old ones.
 
 ## Database TLS verification
 

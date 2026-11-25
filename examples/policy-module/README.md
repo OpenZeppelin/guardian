@@ -27,7 +27,13 @@ cargo run -p guardian-policy-module -- --kind spending-limit \
 Repeat `--instance ID TOKEN_FILE` to host several instances in one process, for
 example one per list. The Guardian reads the same token through its secrets
 backend: `auth = { token_secret = "caps.token" }` with the default `file`
-provider and the catalog in `.guardian/`.
+provider and the catalog in `.guardian/`. Giving the same `ID` twice accepts
+both tokens, which a token rotation needs
+([secrets runbook](../../docs/runbooks/secrets.md#policy-module-secrets)).
+
+The module accepts requests up to gRPC's default 4 MiB. When the Guardian's
+`GUARDIAN_MODULE_REQUEST_MAX_BYTES` is above that, pass the same value as
+`--request-max-bytes`, or the largest requests fail and `on_error` decides them.
 
 ## TLS
 

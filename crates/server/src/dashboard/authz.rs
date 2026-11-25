@@ -93,13 +93,7 @@ pub async fn enforce(
             )
         })?;
 
-    let missing = missing_permissions(&operator.effective_permissions, required);
-    let satisfied = if any_of {
-        missing.len() < required.len()
-    } else {
-        missing.is_empty()
-    };
-    if satisfied {
+    if satisfies(&operator.effective_permissions, required, any_of) {
         return Ok(next.run(request).await);
     }
 
@@ -130,8 +124,17 @@ pub async fn enforce(
     });
 
     Err(GuardianError::InsufficientOperatorPermission {
-        missing_permissions: missing,
+        missing_permissions: missing_permissions(&operator.effective_permissions, required),
     })
+}
+
+/// Whether the held permissions pass a gate: one of `required` when `any_of`, else all of them.
+fn satisfies(held: &BTreeSet<Permission>, required: RequiredPermissions, any_of: bool) -> bool {
+    if any_of {
+        required.iter().any(|permission| held.contains(permission))
+    } else {
+        required.iter().all(|permission| held.contains(permission))
+    }
 }
 
 /// Compute the set difference `required \ held`, returning a sorted
@@ -165,10 +168,16 @@ mod tests {
     fn any_of_is_satisfied_by_one_held_permission() {
         let required: RequiredPermissions =
             &[Permission::PoliciesWrite, Permission::ModulesDisable];
-        let missing = missing_permissions(&held(&[Permission::ModulesDisable]), required);
-        assert!(missing.len() < required.len());
-        let missing = missing_permissions(&held(&[Permission::DashboardRead]), required);
-        assert_eq!(missing.len(), required.len());
+        assert!(satisfies(
+            &held(&[Permission::ModulesDisable]),
+            required,
+            true
+        ));
+        assert!(!satisfies(
+            &held(&[Permission::DashboardRead]),
+            required,
+            true
+        ));
     }
 
     #[test]
@@ -200,6 +209,26 @@ mod tests {
             &[Permission::AccountsPause, Permission::AccountsPause],
         );
         assert_eq!(result, vec!["accounts:pause"]);
+    }
+
+    #[test]
+    fn any_of_needs_one_held_permission_even_when_one_is_listed_twice() {
+        let held = held(&[Permission::AccountsPause]);
+        assert!(!satisfies(
+            &held,
+            &[Permission::PoliciesWrite, Permission::PoliciesWrite],
+            true
+        ));
+        assert!(satisfies(
+            &held,
+            &[Permission::PoliciesWrite, Permission::AccountsPause],
+            true
+        ));
+        assert!(!satisfies(
+            &held,
+            &[Permission::PoliciesWrite, Permission::AccountsPause],
+            false
+        ));
     }
 
     #[test]

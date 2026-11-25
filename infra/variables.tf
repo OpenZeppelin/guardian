@@ -1066,7 +1066,7 @@ variable "guardian_modules_disabled" {
 }
 
 variable "guardian_module_secret_names" {
-  description = "Secrets Manager secret names the policy module catalog references (auth.token_secret, tls.client_cert_secret, tls.client_key_secret and $secret params). The ECS task runtime role is granted secretsmanager:GetSecretValue on each, and GUARDIAN_MODULE_SECRET_PROVIDER is set to aws so the dev stage reads them the same way as prod. The secrets themselves are created and rotated by the operator."
+  description = "Secrets Manager secret names the policy module catalog references (auth.token_secret, tls.client_cert_secret, tls.client_key_secret and $secret params). The ECS task runtime role is granted secretsmanager:GetSecretValue on each, and kms:Decrypt on the customer-managed KMS key of any that has one (each secret must exist at plan time), and GUARDIAN_MODULE_SECRET_PROVIDER is set to aws so the dev stage reads them the same way as prod. The secrets themselves are created and rotated by the operator."
   type        = list(string)
   default     = []
   validation {
