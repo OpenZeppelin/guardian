@@ -58,9 +58,9 @@ impl ServerBuilder {
     /// Returns the first setting that is invalid, or a storage backend or acknowledgement key
     /// store that cannot be opened.
     pub async fn from_env() -> Result<Self, BuildError> {
-        let keystore_path: PathBuf = std::env::var("GUARDIAN_KEYSTORE_PATH")
-            .unwrap_or_else(|_| "/var/guardian/keystore".to_string())
-            .into();
+        let keystore_path = std::env::var_os("GUARDIAN_KEYSTORE_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/var/guardian/keystore"));
 
         let (storage, metadata, auditor, coordination) = StorageMetadataBuilder::from_env()
             .build()

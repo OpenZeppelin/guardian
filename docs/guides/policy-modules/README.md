@@ -108,7 +108,7 @@ again later applies the catalog params, not the old operator value.
 
 In
 [`built-in.toml`](./built-in.toml), `caps` discloses its params and
-`blocklist` denies generically.
+`blocklist` denies generically and skips dry-run checks.
 
 ## Setup
 
