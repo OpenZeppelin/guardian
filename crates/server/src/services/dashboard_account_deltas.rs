@@ -159,7 +159,7 @@ impl DashboardDeltaEntry {
             counterparty: None,
             note_counts: None,
         };
-        if let Some(meta) = delta.metadata.as_ref() {
+        if let Some(meta) = delta.plain_metadata() {
             spread_metadata_into_entry(meta, &mut entry);
         }
         Some(entry)
@@ -330,19 +330,22 @@ mod tests {
             DashboardDeltaCategory, DeltaMetadata, NoteCounts, ProposalMetadata,
         };
         let mut d = canonical(2);
-        d.metadata = Some(DeltaMetadata {
-            category: DashboardDeltaCategory::AssetTransfer,
-            assets: Vec::new(),
-            counterparty: None,
-            note_counts: NoteCounts {
-                input: 0,
-                output: 1,
-            },
-            proposal: Some(ProposalMetadata {
-                proposal_type: "p2id".to_string(),
-                ..ProposalMetadata::default()
-            }),
-        });
+        d.metadata = Some(
+            DeltaMetadata {
+                category: DashboardDeltaCategory::AssetTransfer,
+                assets: Vec::new(),
+                counterparty: None,
+                note_counts: NoteCounts {
+                    input: 0,
+                    output: 1,
+                },
+                proposal: Some(ProposalMetadata {
+                    proposal_type: "p2id".to_string(),
+                    ..ProposalMetadata::default()
+                }),
+            }
+            .into(),
+        );
         let entry = DashboardDeltaEntry::from_delta(&d).expect("canonical delta maps");
         assert_eq!(entry.category, Some(DashboardDeltaCategory::AssetTransfer));
         assert_eq!(entry.proposal_type.as_deref(), Some("p2id"));
@@ -355,19 +358,22 @@ mod tests {
             DashboardDeltaCategory, DeltaMetadata, NoteCounts, ProposalMetadata,
         };
         let mut d = canonical(2);
-        d.metadata = Some(DeltaMetadata {
-            category: DashboardDeltaCategory::AccountStorageChange,
-            assets: Vec::new(),
-            counterparty: None,
-            note_counts: NoteCounts {
-                input: 0,
-                output: 0,
-            },
-            proposal: Some(ProposalMetadata {
-                proposal_type: "remove_signer".to_string(),
-                ..ProposalMetadata::default()
-            }),
-        });
+        d.metadata = Some(
+            DeltaMetadata {
+                category: DashboardDeltaCategory::AccountStorageChange,
+                assets: Vec::new(),
+                counterparty: None,
+                note_counts: NoteCounts {
+                    input: 0,
+                    output: 0,
+                },
+                proposal: Some(ProposalMetadata {
+                    proposal_type: "remove_signer".to_string(),
+                    ..ProposalMetadata::default()
+                }),
+            }
+            .into(),
+        );
         let entry = DashboardDeltaEntry::from_delta(&d).expect("canonical delta maps");
         assert!(entry.note_counts.is_none());
         let serialized = serde_json::to_value(&entry).expect("serializes");

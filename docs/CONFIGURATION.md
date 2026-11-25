@@ -163,11 +163,12 @@ AWS Secrets Manager. Each file holds the hex string emitted by `ack-keygen` (shi
 ### Storage encryption at rest
 
 Application-layer encryption of the sensitive stored payloads (account state,
-delta and proposal payloads). It is **opt-in by key-source presence** — configure
-a key and the server encrypts; configure none and it stores plaintext exactly as
-before. Routing/index fields (account id, nonce, commitments, status, timestamps)
-always stay plaintext, including each stored state's nonce, which reveals the
-account's transaction count.
+delta and proposal payloads, and each delta's dashboard metadata). It is
+**opt-in by key-source presence**: configure a key and the server encrypts;
+configure none and it stores plaintext exactly as before. Routing/index fields
+(account id, nonce, commitments, status, timestamps) always stay plaintext,
+including each stored state's nonce, which reveals the account's transaction
+count.
 
 **Which variable do I set?** Choose **one key source**: the direct key for
 local work, the key-document file for self-managed deployments without Secrets
@@ -205,6 +206,16 @@ first encrypted write and refuses to mix plaintext and ciphertext, so enable it
 against an empty store (e.g. after the Miden 0.16 reset, see
 [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#data-resets)). Switching an existing
 store requires an explicit re-encryption migration (not yet provided).
+
+Delta metadata (the activity summary the dashboard reads) is stored as its own
+envelope in the `metadata` column of every delta written with a key source
+set. A sealed value that does not open is logged as an error and left out; the
+delta is still served. On Postgres, a server from an earlier release reads a
+sealed value as absent, so its dashboard shows those deltas without a summary,
+and a delta it restores from the superseded archive is stored without one;
+nothing else is affected. The filesystem backend (development only) has no
+such fallback: an earlier release cannot read a delta file whose metadata is
+sealed.
 
 ### Hosted ECDSA signer backend
 
