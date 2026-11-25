@@ -533,6 +533,21 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
     }
     tracing::Span::current().record("signer_count", cosigner_sigs.len());
 
+    // The bytes the account's viable proposals hold, read before the modules run so a request
+    // that cannot be stored is refused before they judge it; creation counts them again when it
+    // inserts, which also catches a concurrent write, so a creation no module judges skips this.
+    if !already_pending && (mode == Mode::DryRun || !plans.is_empty()) {
+        let used = resolved
+            .storage
+            .viable_request_bytes(&account_id, &tail.commitment, next_nonce)
+            .await
+            .map_err(GuardianError::StorageError)?;
+        let limit = u64::from(state.execution.config.max_account_request_bytes);
+        if used.saturating_add(request_bytes) > limit {
+            return Err(GuardianError::AccountRequestCapacityExceeded { limit, used });
+        }
+    }
+
     let mut evaluations = Vec::new();
     if let Some((_, inputs)) = applied {
         let proposal = ProposalContext {
@@ -571,19 +586,6 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
         }
     }
     if mode == Mode::DryRun {
-        // Creation counts the request against the bytes the account's viable proposals hold
-        // when it inserts; a check answers as creation would, short of a concurrent write.
-        if !already_pending {
-            let used = resolved
-                .storage
-                .viable_request_bytes(&account_id, &tail.commitment, next_nonce)
-                .await
-                .map_err(GuardianError::StorageError)?;
-            let limit = u64::from(state.execution.config.max_account_request_bytes);
-            if used.saturating_add(request_bytes) > limit {
-                return Err(GuardianError::AccountRequestCapacityExceeded { limit, used });
-            }
-        }
         tracing::info!(
             account_id = %account_id,
             signer = %proposer_id,
@@ -3145,21 +3147,32 @@ mod tests {
         assert!(storage.get_submit_delta_proposal_calls().is_empty());
     }
 
-    /// The bytes the account's viable proposals hold are counted by creation only when it
-    /// inserts; a check reads them so it does not answer "would pass" for an account at its
-    /// limit (here, one whose limit was lowered below what it already holds).
+    /// A check and a creation both read the bytes the account's viable proposals hold before
+    /// the modules run, so an account at its limit (here, one whose limit was lowered below what
+    /// it already holds) is refused without a module judging the request.
     #[tokio::test]
-    async fn a_check_refuses_an_account_over_its_request_byte_limit() {
-        let module = crate::modules::testing::StubModule::allowing();
-        let (state, storage, params, _) =
-            module_setup(module, HookName::BeforeProposalCreated, |_| {});
-        let limit = u64::from(state.execution.config.max_account_request_bytes);
-        let storage = storage.with_viable_request_bytes(limit + 1);
-        assert!(matches!(
-            check_proposal(&state, params).await,
-            Err(GuardianError::AccountRequestCapacityExceeded { used, .. }) if used == limit + 1
-        ),);
-        assert!(storage.get_submit_delta_proposal_calls().is_empty());
+    async fn a_request_over_the_account_byte_limit_is_refused_before_the_modules_run() {
+        for create in [false, true] {
+            let module = crate::modules::testing::StubModule::allowing();
+            let (state, storage, params, _) =
+                module_setup(module.clone(), HookName::BeforeProposalCreated, |_| {});
+            let limit = u64::from(state.execution.config.max_account_request_bytes);
+            let storage = storage.with_viable_request_bytes(limit + 1);
+            let refused = if create {
+                push_delta_proposal(&state, params).await.map(|_| ())
+            } else {
+                check_proposal(&state, params).await.map(|_| ())
+            };
+            assert!(
+                matches!(
+                    refused,
+                    Err(GuardianError::AccountRequestCapacityExceeded { used, .. }) if used == limit + 1
+                ),
+                "create = {create}: {refused:?}"
+            );
+            assert_eq!(module.calls(), 0, "create = {create}");
+            assert!(storage.get_submit_delta_proposal_calls().is_empty());
+        }
     }
 
     #[tokio::test]
