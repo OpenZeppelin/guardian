@@ -27,8 +27,9 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Project   = "guardian"
-      ManagedBy = "terraform"
+      Project     = "guardian"
+      Environment = var.deployment_stage
+      ManagedBy   = "terraform"
     }
   }
 }
@@ -52,8 +53,9 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Project   = "guardian"
-      ManagedBy = "terraform"
+      Project     = "guardian"
+      Environment = var.deployment_stage
+      ManagedBy   = "terraform"
     }
   }
 }

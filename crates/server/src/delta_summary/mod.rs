@@ -20,7 +20,10 @@ pub mod category;
 pub mod decode;
 pub mod projection;
 
-pub use build::{build_metadata, lift_proposal_metadata, metadata_from_value, metadata_to_value};
+pub use build::{
+    build_metadata, lift_proposal_metadata, metadata_from_value, metadata_to_value,
+    plain_metadata_from_value, plain_metadata_to_value,
+};
 pub use category::{category_from_proposal_type, infer_category_from_summary};
 pub use decode::{decode_proposal_metadata, decode_transaction_summary};
 pub use projection::{
@@ -92,6 +95,31 @@ pub struct FailedOpen {
     /// `timeout`, `error`, `invalid_decision` or `circuit_open`; the
     /// detail is logged.
     pub failure: String,
+}
+
+/// What a stored delta's `metadata` column holds. With storage encryption
+/// the column carries a sealed envelope, which only the storage encryption
+/// layer opens; everything above the storage boundary sees `Plain`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum StoredDeltaMetadata {
+    Plain(Box<DeltaMetadata>),
+    Sealed(serde_json::Value),
+}
+
+impl StoredDeltaMetadata {
+    pub fn plain(&self) -> Option<&DeltaMetadata> {
+        match self {
+            Self::Plain(metadata) => Some(metadata),
+            Self::Sealed(_) => None,
+        }
+    }
+}
+
+impl From<DeltaMetadata> for StoredDeltaMetadata {
+    fn from(metadata: DeltaMetadata) -> Self {
+        Self::Plain(Box::new(metadata))
+    }
 }
 
 /// Closed, stable enumeration of action categories. Adding a value is

@@ -505,8 +505,7 @@ mod tests {
             .last()
             .expect("submit_delta was called");
         let lifted = persisted
-            .metadata
-            .as_ref()
+            .plain_metadata()
             .expect("metadata persisted on candidate row");
         assert_eq!(lifted.category, DashboardDeltaCategory::NoteConsumption);
         let proposal = lifted
@@ -609,8 +608,7 @@ mod tests {
             .last()
             .expect("submit_delta was called");
         let lifted = persisted
-            .metadata
-            .as_ref()
+            .plain_metadata()
             .expect("metadata persisted from on-chain summary alone");
         assert_eq!(
             lifted.category,
@@ -1934,10 +1932,9 @@ mod tests {
         .await;
         let pushed = result.expect("an allowing module acknowledges the push");
         assert!(
-            pushed
-                .delta
-                .metadata
-                .is_some_and(|metadata| metadata.modules.is_some()),
+            pushed.delta.metadata.is_some_and(|metadata| metadata
+                .plain()
+                .is_some_and(|metadata| metadata.modules.is_some())),
             "the approval is recorded"
         );
         assert_eq!(
@@ -2738,12 +2735,11 @@ mod tests {
                 .load(std::sync::atomic::Ordering::SeqCst),
             0
         );
-        assert!(
-            pushed
-                .delta
-                .metadata
+        assert!(pushed.delta.metadata.is_none_or(|metadata| {
+            metadata
+                .plain()
                 .is_none_or(|metadata| metadata.modules.is_none())
-        );
+        }));
         let (_, _, _, gated) = push_on(
             Some(cap_of_1000()),
             paying(500),
@@ -2966,7 +2962,9 @@ mod tests {
             pushed
                 .delta
                 .metadata
-                .and_then(|metadata| metadata.modules)
+                .and_then(|metadata| metadata
+                    .plain()
+                    .and_then(|metadata| metadata.modules.clone()))
                 .map(|approval| approval.proposer),
             Some("0xproposer".to_string()),
             "the approval records the proposer the modules saw"
@@ -3037,7 +3035,11 @@ mod tests {
         let approval = pushed
             .delta
             .metadata
-            .and_then(|metadata| metadata.modules)
+            .and_then(|metadata| {
+                metadata
+                    .plain()
+                    .and_then(|metadata| metadata.modules.clone())
+            })
             .expect("the approving module configuration is recorded");
         assert_eq!(approval.params_version, 0);
         assert_eq!(approval.proposer, "", "no stored proposal matched");

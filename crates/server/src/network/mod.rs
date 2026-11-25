@@ -767,9 +767,12 @@ impl RpcSettings {
     }
 
     /// The executor for Guardian execution on this network, when the configuration offers it.
+    /// `shutdown` is the execution drain's signal: a batch still collecting transactions is sent
+    /// as soon as it fires.
     pub(crate) fn proposal_executor(
         &self,
         config: &crate::config::execution::ExecutionConfig,
+        shutdown: tokio_util::sync::CancellationToken,
     ) -> Result<
         Option<std::sync::Arc<dyn crate::services::execute_proposal::ProposalExecutor>>,
         String,
@@ -782,6 +785,8 @@ impl RpcSettings {
                 settings.endpoint().expose_secret(),
                 settings.timeout(),
                 prover,
+                &config.batch,
+                shutdown,
             )
             .map(Some),
         }

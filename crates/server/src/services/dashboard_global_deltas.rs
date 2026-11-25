@@ -119,7 +119,7 @@ fn entry_from(delta: &DeltaObject, account_id: &str) -> Option<DashboardGlobalDe
         counterparty: None,
         note_counts: None,
     };
-    if let Some(meta) = delta.metadata.as_ref() {
+    if let Some(meta) = delta.plain_metadata() {
         entry.category = Some(meta.category);
         entry.proposal_type = meta.proposal.as_ref().map(|p| p.proposal_type.clone());
         entry.assets = meta.assets.clone();
@@ -398,7 +398,7 @@ mod tests {
             status: DeltaStatus::Canonical {
                 timestamp: format!("2026-05-25T08:0{nonce}:00Z"),
             },
-            metadata,
+            metadata: metadata.map(Into::into),
         }
     }
 

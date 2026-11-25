@@ -17,7 +17,7 @@ use super::projection::{
 };
 use super::{
     AssetKind, AssetSummary, CounterpartyDirection, CounterpartySummary, DeltaMetadata,
-    ProposalMetadata,
+    ProposalMetadata, StoredDeltaMetadata,
 };
 
 /// Build the typed [`DeltaMetadata`] blob for a delta being persisted.
@@ -129,7 +129,7 @@ fn counterparty_from_proposal(p: &ProposalMetadata) -> Option<CounterpartySummar
 /// Parse a JSONB column value into a typed [`DeltaMetadata`]. Returns
 /// `None` for null columns or when the persisted shape no longer
 /// matches the typed struct (schema drift, pre-feature rows).
-pub fn metadata_from_value(value: Value) -> Option<DeltaMetadata> {
+pub fn plain_metadata_from_value(value: Value) -> Option<DeltaMetadata> {
     if value.is_null() {
         return None;
     }
@@ -137,8 +137,26 @@ pub fn metadata_from_value(value: Value) -> Option<DeltaMetadata> {
 }
 
 /// Serialize a typed [`DeltaMetadata`] back to a JSONB-compatible value.
-pub fn metadata_to_value(metadata: &DeltaMetadata) -> Value {
+pub fn plain_metadata_to_value(metadata: &DeltaMetadata) -> Value {
     serde_json::to_value(metadata).expect("DeltaMetadata is serializable")
+}
+
+/// Read a stored `metadata` column value: the typed metadata, or the sealed
+/// envelope the storage encryption layer wrote in its place. `None` for a
+/// null column or a value that is neither.
+pub fn metadata_from_value(value: Value) -> Option<StoredDeltaMetadata> {
+    if crate::storage::encryption::is_envelope(&value) {
+        return Some(StoredDeltaMetadata::Sealed(value));
+    }
+    plain_metadata_from_value(value).map(Into::into)
+}
+
+/// The value written to the `metadata` column for a stored delta.
+pub fn metadata_to_value(metadata: &StoredDeltaMetadata) -> Value {
+    match metadata {
+        StoredDeltaMetadata::Plain(metadata) => plain_metadata_to_value(metadata),
+        StoredDeltaMetadata::Sealed(envelope) => envelope.clone(),
+    }
 }
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
@@ -413,8 +431,8 @@ mod tests {
             }),
             modules: None,
         };
-        let value = metadata_to_value(&original);
-        let round_tripped = metadata_from_value(value).expect("metadata parses");
+        let value = plain_metadata_to_value(&original);
+        let round_tripped = plain_metadata_from_value(value).expect("metadata parses");
         assert_eq!(original, round_tripped);
     }
 }

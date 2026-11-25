@@ -1403,7 +1403,9 @@ async fn an_approving_module_lets_the_execution_through_and_is_recorded_on_the_d
     assert!(
         candidate
             .metadata
-            .and_then(|metadata| metadata.modules)
+            .and_then(|metadata| metadata
+                .plain()
+                .and_then(|metadata| metadata.modules.clone()))
             .is_some(),
         "the approval is recorded on the acknowledged delta"
     );

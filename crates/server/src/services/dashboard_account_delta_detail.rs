@@ -194,8 +194,7 @@ fn project_delta_to_detail(
         };
 
     let (category, proposal, modules) = delta
-        .metadata
-        .as_ref()
+        .plain_metadata()
         .map(|m| (Some(m.category), m.proposal.clone(), m.modules.clone()))
         .unwrap_or((None, None, None));
 
@@ -524,14 +523,17 @@ mod tests {
             submitter: "0xsigner".into(),
             proposer: String::new(),
         };
-        delta.metadata = Some(crate::delta_summary::DeltaMetadata {
-            category: crate::delta_summary::DashboardDeltaCategory::AccountStorageChange,
-            assets: Vec::new(),
-            counterparty: None,
-            note_counts: crate::delta_summary::NoteCounts::default(),
-            proposal: None,
-            modules: Some(approval.clone()),
-        });
+        delta.metadata = Some(
+            crate::delta_summary::DeltaMetadata {
+                category: crate::delta_summary::DashboardDeltaCategory::AccountStorageChange,
+                assets: Vec::new(),
+                counterparty: None,
+                note_counts: crate::delta_summary::NoteCounts::default(),
+                proposal: None,
+                modules: Some(approval.clone()),
+            }
+            .into(),
+        );
         let state = build_state(Ok(Some(falcon_metadata())), Ok(delta.clone())).await;
         let detail =
             get_account_delta_detail(&state, TEST_ACCOUNT_ID, 7, DetailIncludeFlags::default())

@@ -267,9 +267,10 @@ WPrepare(w) ==
     /\ UNCHANGED <<chainVars, storeVars, wp, wtok, rcVars, procVars, budgetVars>>
 
 \* Heartbeat / Heartbeat::advance: renew_execution_reservation_tx under the
-\* worker's fence (a lease renew is a no-op in this abstraction).
+\* worker's fence (a lease renew is a no-op in this abstraction). It runs for
+\* the whole of submit, a resend after a refused batch included.
 WHeartbeat(w) ==
-    /\ wpc[w] \in {"running", "prepared", "send"}
+    /\ wpc[w] \in {"running", "prepared", "send", "resend"}
     /\ \E a \in Active :
         /\ OwnsLive(a, w, wtok[w])
         /\ ~res[a].live
@@ -325,18 +326,37 @@ WClaimRes(w) ==
             /\ UNCHANGED res
     /\ UNCHANGED <<chainVars, stored, cand, canon, parked, proposals, lease, wp, wtok, wref, rcVars, procVars, budgetVars>>
 
-\* submit: Accepted and Unknown both leave the transaction in flight. A
-\* rejection and a refusal the node made without processing it (rate limit,
-\* authentication, an unimplemented call) leave nothing in flight.
+\* One send of the transaction alone: Accepted and Unknown both leave it in
+\* flight. A rejection and a refusal the node made without processing it
+\* (rate limit, authentication, an unimplemented call, a stale encryption key)
+\* leave nothing in flight.
+SendAlone(w) ==
+    \/ /\ mempool' = mempool \cup {[kind |-> "exec", w |-> w, p |-> wp[w],
+                                    target |-> Target(wp[w]), exp |-> res[w].exp]}
+       /\ wpc' = [wpc EXCEPT ![w] = "release"]
+    \/ /\ wpc' = [wpc EXCEPT ![w] = "rejected"]
+       /\ UNCHANGED mempool
+    \/ /\ wpc' = [wpc EXCEPT ![w] = "notProcessed"]
+       /\ UNCHANGED mempool
+
+\* submit: the transaction is sent alone, or, with batching on
+\* (network/miden/execution/batch.rs), handed to the batcher. An accepted or
+\* unanswered batch leaves it in flight and a refused one is a refusal of its
+\* own (Batcher::send_built), so both are SendAlone's outcomes; the one new
+\* step is a batch the node refused as a whole, which admits none of its
+\* transactions (RFC 0001 \S3.2) and is followed by one send alone (WResend).
 WSubmit(w) ==
     /\ wpc[w] = "send"
-    /\ \/ /\ mempool' = mempool \cup {[kind |-> "exec", w |-> w, p |-> wp[w],
-                                       target |-> Target(wp[w]), exp |-> res[w].exp]}
-          /\ wpc' = [wpc EXCEPT ![w] = "release"]
-       \/ /\ wpc' = [wpc EXCEPT ![w] = "rejected"]
+    /\ \/ SendAlone(w)
+       \/ /\ wpc' = [wpc EXCEPT ![w] = "resend"]
           /\ UNCHANGED mempool
-       \/ /\ wpc' = [wpc EXCEPT ![w] = "notProcessed"]
-          /\ UNCHANGED mempool
+    /\ UNCHANGED <<hist, landed, storeVars, wp, wtok, wref, rcVars, procVars, budgetVars>>
+
+\* Batcher::send_built after a refused batch: Member::send_alone sends the same
+\* proven transaction once more, alone, and its own answer decides.
+WResend(w) ==
+    /\ wpc[w] = "resend"
+    /\ SendAlone(w)
     /\ UNCHANGED <<hist, landed, storeVars, wp, wtok, wref, rcVars, procVars, budgetVars>>
 
 \* SubmissionOutcome::Rejected -> resolve_execution under the worker's fence.
@@ -590,7 +610,7 @@ Next ==
     \/ ClientPush
     \/ \E w \in Workers :
         \/ ReqAcquire(w) \/ ReqCreate(w) \/ WPrepare(w) \/ WHeartbeat(w) \/ WFail(w)
-        \/ WAdmit(w) \/ WClaimLease(w) \/ WClaimRes(w) \/ WSubmit(w)
+        \/ WAdmit(w) \/ WClaimLease(w) \/ WClaimRes(w) \/ WSubmit(w) \/ WResend(w)
         \/ WResolveRejected(w) \/ WResolveNotProcessed(w) \/ WRelease(w)
     \/ \E r \in Reconcilers :
         \/ RcList(r) \/ RcAcquire(r) \/ RcClaim(r) \/ RcFailPre(r)
