@@ -470,8 +470,7 @@ mod tests {
             .last()
             .expect("submit_delta was called");
         let lifted = persisted
-            .metadata
-            .as_ref()
+            .plain_metadata()
             .expect("metadata persisted on candidate row");
         assert_eq!(lifted.category, DashboardDeltaCategory::NoteConsumption);
         let proposal = lifted
@@ -574,8 +573,7 @@ mod tests {
             .last()
             .expect("submit_delta was called");
         let lifted = persisted
-            .metadata
-            .as_ref()
+            .plain_metadata()
             .expect("metadata persisted from on-chain summary alone");
         assert_eq!(
             lifted.category,

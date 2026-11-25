@@ -174,7 +174,7 @@ Paths are relative to `crates/server/src/`.
 | `WFail` | any failure before the boundary (`approach_boundary`, `ensure_guarded_by_this_guardian`, `ensure_admissible`, `ensure_sendable`, a failed admission, shutdown) → `fail` → `fail_execution` = `resolve_execution_tx(.., false)` |
 | `WAdmit` | `cross_boundary` → `admit_execution_candidate_tx`: moves a parked row at the nonce to `superseded_deltas` (`archive_parked_delta`, when retention is on) and deletes it, inserts the candidate and the evidence |
 | `WClaimLease`, `WClaimRes` | `claim_send` → `Renewal::attempt` (lease `renew`, then `renew_execution_reservation_tx` recording `Sent`). A storage error is retried, fenced, while the lease and send window last; a retry is the same claim taken later, which the model already allows since workers get no fairness |
-| `WSubmit`, `WResolveRejected`, `WResolveNotProcessed` | `submit`: Accepted and Unknown leave the transaction in flight; Rejected → `resolve_execution`, deleting the proposal; NotProcessed (a refusal before the node processed the send, a stale transaction encryption key included) → `resolve_execution` keeping the proposal (`ExecutionFailureCode::ends_proposal`). `network/miden/execution/attempt.rs` `classify_submission_error` picks the branch |
+| `WSubmit`, `WResend`, `WResolveRejected`, `WResolveNotProcessed` | `submit`: Accepted and Unknown leave the transaction in flight; Rejected → `resolve_execution`, deleting the proposal; NotProcessed (a refusal before the node processed the send, a stale transaction encryption key included) → `resolve_execution` keeping the proposal (`ExecutionFailureCode::ends_proposal`). `network/miden/execution/attempt.rs` `classify_submission_error` (through `send_transaction`) picks the branch. With batching on, `MidenAttempt::submit` hands the transaction to `network/miden/execution/batch.rs`: an accepted or unanswered batch (`send_batch`, `BatchAnswer::of_error`) is the same in-flight outcome, and a batch the node refused as a whole is `WSubmit`'s resend branch, after which `Batcher::send_built` sends it once more alone (`WResend`, `Member::send_alone`), whose answer decides. A send window that closed first sends nothing and is Unknown, the same as a lost send |
 | `WRelease` | `run_execution`'s `release_quietly` |
 | `RcList` | `jobs/execution_reconcile/mod.rs` `Reconciler::pass` (`list_active_executions`) and the Owned check at the top of `reconcile` |
 | `RcAcquire`, `RcClaim` | `take_ownership` (`try_acquire`, then `claim_execution_reservation_tx` unless the fence is already ours) |
@@ -206,7 +206,10 @@ Paths are relative to `crates/server/src/`.
   real ordering of deadlines.
 - Chain reads may lag by any amount but never lie, and there are no
   reorgs. A node rejection is definitive: a rejected transaction never
-  lands.
+  lands. So is a node's refusal of a whole batch: it admits none of the
+  batch's transactions, so each may be sent once more alone. Batch
+  membership is not modeled (one account per model), so a batch's
+  failure coupling between accounts is out of scope.
 - The executed transaction's result is the proposal's target whatever
   the chain did; a proposal executed on a base the chain already left can
   never land.
@@ -235,6 +238,11 @@ Each of these breaks a property (mutations run against this model):
 - `resolve_execution_tx` without the boundary-side check:
   `LandedNeverFailed`.
 - the send allowed before the boundary commit: `SentAfterBoundary`.
+- a refused batch that the node did admit after all (`WSubmit`'s resend
+  branch also adding the transaction to the mempool), followed by a resend
+  the node rejects: `LandedNeverFailed`. This is why only a definite batch
+  refusal is resent (RFC 0001 §3.2 cites the node source for it) and an
+  unanswered batch never is.
 - `create_execution_reservation_tx` without the candidate check:
   `ExecutionExcludesClientCandidate`.
 - promoting a candidate while the chain is still at its base:

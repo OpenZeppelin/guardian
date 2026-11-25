@@ -32,6 +32,7 @@ use miden_tx::{TransactionExecutor, TransactionExecutorError};
 use serde::Deserialize;
 
 use super::aborts::Abort;
+use super::batch::{BatchSettings, Batcher, Member};
 use super::chain::{ChainViewError, build_chain_view_from, fetch_genesis};
 use super::foreign::ForeignAccountUnavailable;
 use super::request::{StoredRequest, approval_expiration_block};
@@ -64,6 +65,8 @@ pub struct MidenExecutor {
     submission_rpc: Arc<dyn NodeRpcClient>,
     prover: Arc<dyn TransactionProver + Send + Sync>,
     genesis: tokio::sync::OnceCell<BlockHeader>,
+    /// Set when transactions of different accounts are submitted together (#239).
+    batcher: Option<Arc<Batcher>>,
 }
 
 impl MidenExecutor {
@@ -76,13 +79,33 @@ impl MidenExecutor {
             rpc,
             prover,
             genesis: tokio::sync::OnceCell::new(),
+            batcher: None,
         }
     }
 
     /// Sends transactions through `rpc`, a client whose own deadline is long enough for the
     /// slowest send the expiration window allows; reads keep the node's shorter deadline.
     pub fn with_submission_rpc(mut self, rpc: Arc<dyn NodeRpcClient>) -> Self {
+        self.batcher = self
+            .batcher
+            .map(|batcher| batcher.sending_through(rpc.clone()));
         self.submission_rpc = rpc;
+        self
+    }
+
+    /// Submits the transactions of attempts past the no-retry boundary through one batcher, which
+    /// sends those of different accounts arriving within `settings.window` as one proven batch.
+    pub(crate) fn with_batching(
+        mut self,
+        settings: BatchSettings,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) -> Self {
+        self.batcher = Some(Batcher::new(
+            settings,
+            self.rpc.clone(),
+            self.submission_rpc.clone(),
+            shutdown,
+        ));
         self
     }
 
@@ -487,6 +510,7 @@ impl SelectedProposal for MidenSelected {
         Ok(Box::new(MidenAttempt {
             rpc: node.rpc.clone(),
             submission_rpc: node.submission_rpc.clone(),
+            batcher: node.batcher.clone(),
             prover: node.prover.clone(),
             genesis: genesis.clone(),
             account,
@@ -582,6 +606,7 @@ fn log_output_note_difference(signed: &TransactionSummary, reproduced: &Transact
 struct MidenAttempt {
     rpc: Arc<dyn NodeRpcClient>,
     submission_rpc: Arc<dyn NodeRpcClient>,
+    batcher: Option<Arc<Batcher>>,
     prover: Arc<dyn TransactionProver + Send + Sync>,
     genesis: BlockHeader,
     account: Account,
@@ -592,7 +617,7 @@ struct MidenAttempt {
     requires_ack: bool,
     store: ExecutionDataStore,
     executed: Option<ExecutedTransaction>,
-    proven: Option<ProvenTransaction>,
+    proven: Option<Arc<ProvenTransaction>>,
     sealed: Option<SealedTransactionInputs>,
 }
 
@@ -827,7 +852,7 @@ impl ExecutionAttempt for MidenAttempt {
             reference_block: self.reference_block(),
             expiration_block: proven.expiration_block_num().as_u32(),
         };
-        self.proven = Some(proven);
+        self.proven = Some(Arc::new(proven));
         Ok(info)
     }
 
@@ -891,19 +916,92 @@ impl ExecutionAttempt for MidenAttempt {
             .sealed
             .take()
             .expect("the attempt seals before it submits, and submits once");
-        match tokio::time::timeout(
-            deadline,
-            self.submission_rpc
-                .submit_proven_transaction(proven, sealed),
-        )
-        .await
-        {
-            Ok(Ok(_)) => SubmissionOutcome::Accepted,
-            Ok(Err(error)) => classify_submission_error(&error),
-            Err(_) => SubmissionOutcome::Unknown {
-                reason: format!("the node did not answer within {}s", deadline.as_secs()),
+        match &self.batcher {
+            Some(batcher) => {
+                batcher
+                    .submit(
+                        &self.genesis,
+                        Member {
+                            proven: Arc::clone(proven),
+                            sealed,
+                            send_by: tokio::time::Instant::now() + deadline,
+                        },
+                    )
+                    .await
+            }
+            None => send_transaction(self.submission_rpc.as_ref(), proven, sealed, deadline).await,
+        }
+    }
+}
+
+/// Sends one proven transaction, waiting at most `deadline` for the node's answer. An attempt
+/// sends its transaction this way without batching, and a batch sends each of its transactions
+/// this way when the batch is not sent or the node refused it.
+pub(super) async fn send_transaction(
+    rpc: &dyn NodeRpcClient,
+    proven: &ProvenTransaction,
+    sealed: SealedTransactionInputs,
+    deadline: Duration,
+) -> SubmissionOutcome {
+    match tokio::time::timeout(deadline, rpc.submit_proven_transaction(proven, sealed)).await {
+        Ok(Ok(_)) => SubmissionOutcome::Accepted,
+        Ok(Err(error)) => classify_submission_error(&error),
+        Err(_) => SubmissionOutcome::Unknown {
+            reason: format!("the node did not answer within {}s", deadline.as_secs()),
+        },
+    }
+}
+
+/// What the node said about a proven batch.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum BatchAnswer {
+    Accepted,
+    /// No definite answer: the batch may still land.
+    Unknown {
+        reason: String,
+    },
+    /// Refused definitely, so none of its transactions is in flight. Each can still be sent alone
+    /// and judged on its own.
+    Refused {
+        reason: String,
+    },
+}
+
+impl BatchAnswer {
+    /// Reads the node's error for a batch as a single send's error is read. Every definite refusal
+    /// is one, whatever it names: the client tells a stale encryption key apart only by its gRPC
+    /// code (`FailedPrecondition`), so the batcher does not act on that, and each member's own
+    /// send then decides its outcome.
+    fn of_error(outcome: SubmissionOutcome) -> Self {
+        match outcome {
+            SubmissionOutcome::Rejected { reason } | SubmissionOutcome::NotProcessed { reason } => {
+                Self::Refused { reason }
+            }
+            SubmissionOutcome::Unknown { reason } => Self::Unknown { reason },
+            // An error is never an acceptance. Were one read as such, the batch may still have
+            // been admitted, so it is no reason to send again.
+            SubmissionOutcome::Accepted => Self::Unknown {
+                reason: "the node's error for the batch was read as an acceptance".to_string(),
             },
         }
+    }
+}
+
+/// Sends one proven batch, waiting at most `deadline` for the node's answer. The node classifies
+/// a batch refusal as it does a single one, and Guardian reads it the same way.
+pub(super) async fn send_batch(
+    rpc: &dyn NodeRpcClient,
+    proven: &miden_protocol::batch::ProvenBatch,
+    proposed: &miden_protocol::batch::ProposedBatch,
+    sealed: Vec<SealedTransactionInputs>,
+    deadline: Duration,
+) -> BatchAnswer {
+    match tokio::time::timeout(deadline, rpc.submit_proven_batch(proven, proposed, sealed)).await {
+        Ok(Ok(_)) => BatchAnswer::Accepted,
+        Ok(Err(error)) => BatchAnswer::of_error(classify_submission_error(&error)),
+        Err(_) => BatchAnswer::Unknown {
+            reason: format!("the node did not answer within {}s", deadline.as_secs()),
+        },
     }
 }
 
@@ -1184,5 +1282,54 @@ mod submission_classification_tests {
                 "{label}"
             );
         }
+    }
+
+    /// Every definite refusal of a batch, a stale encryption key included, sends its members again
+    /// one at a time; an error is never read as an admitted batch.
+    #[test]
+    fn a_batch_error_is_a_refusal_or_unknown_never_an_acceptance() {
+        use super::BatchAnswer;
+
+        let batch_error = |kind: GrpcError| {
+            BatchAnswer::of_error(super::classify_submission_error(&RpcError::RequestError {
+                endpoint: RpcEndpoint::SubmitProvenBatch,
+                error_kind: kind,
+                endpoint_error: None,
+                source: None,
+            }))
+        };
+        for kind in [
+            GrpcError::InvalidArgument,
+            GrpcError::FailedPrecondition,
+            GrpcError::NotFound,
+            GrpcError::OutOfRange,
+            GrpcError::ResourceExhausted,
+            GrpcError::Unauthenticated,
+            GrpcError::PermissionDenied,
+            GrpcError::Unimplemented,
+        ] {
+            let label = format!("{kind:?}");
+            assert!(
+                matches!(batch_error(kind), BatchAnswer::Refused { .. }),
+                "{label}"
+            );
+        }
+        for kind in [
+            GrpcError::AlreadyExists,
+            GrpcError::Unavailable,
+            GrpcError::Internal,
+            GrpcError::Cancelled,
+            GrpcError::DeadlineExceeded,
+        ] {
+            let label = format!("{kind:?}");
+            assert!(
+                matches!(batch_error(kind), BatchAnswer::Unknown { .. }),
+                "{label}"
+            );
+        }
+        assert!(matches!(
+            BatchAnswer::of_error(SubmissionOutcome::Accepted),
+            BatchAnswer::Unknown { .. }
+        ));
     }
 }
