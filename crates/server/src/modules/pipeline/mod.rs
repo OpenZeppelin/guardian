@@ -414,8 +414,10 @@ impl ModulePipeline {
     }
 
     pub(super) fn enabled_in(rows: &Rows, instance: &Instance) -> bool {
-        rows.get(&instance.config.id)
-            .map_or(instance.config.enabled, |(_, enabled)| *enabled)
+        instance.config.catalog_requires_enabled()
+            || rows
+                .get(&instance.config.id)
+                .map_or(instance.config.enabled, |(_, enabled)| *enabled)
     }
 
     /// The instance's global params: the stored ones, or the catalog's when they are
@@ -427,8 +429,8 @@ impl ModulePipeline {
         Ok(Self::global_params_in(&self.rows().await?, instance))
     }
 
-    /// Whether the instance is switched on: the stored runtime flag, or the startup flag for an
-    /// instance without a row yet.
+    /// Whether the instance is switched on: always when the catalog requires it, otherwise the
+    /// stored runtime flag, or the startup flag for an instance without a row yet.
     pub async fn enabled(&self, instance: &Instance) -> Result<bool, GuardianError> {
         Ok(Self::enabled_in(&self.rows().await?, instance))
     }
@@ -875,6 +877,28 @@ mod tests {
     use guardian_module_sdk::Decision;
 
     const HOOK: HookName = HookName::BeforeTransactionApproved;
+
+    #[test]
+    fn a_stored_disable_never_switches_off_an_instance_the_catalog_requires() {
+        let mut required = instance(
+            "m",
+            &[HOOK],
+            OnError::Deny,
+            StubModule::new(Behaviour::Hang),
+        );
+        required.config.operator_can_disable = false;
+        let rows: Rows = Arc::new(HashMap::from([(
+            "m".to_string(),
+            (serde_json::json!({}), false),
+        )]));
+        assert!(ModulePipeline::enabled_in(&rows, &required));
+        let mut disableable = required.clone();
+        disableable.config.operator_can_disable = true;
+        assert!(!ModulePipeline::enabled_in(&rows, &disableable));
+        let mut catalog_off = required;
+        catalog_off.config.catalog_enabled = false;
+        assert!(!ModulePipeline::enabled_in(&rows, &catalog_off));
+    }
 
     async fn run(pipeline: &ModulePipeline) -> Result<(), GuardianError> {
         pipeline
