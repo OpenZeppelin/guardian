@@ -995,7 +995,7 @@
           {
             "name": "x-auth-format",
             "in": "header",
-            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "description": "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key); omitted for raw wallet signatures",
             "required": false,
             "schema": {
               "type": [
@@ -1532,7 +1532,7 @@
           {
             "name": "x-auth-format",
             "in": "header",
-            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "description": "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key); omitted for raw wallet signatures",
             "required": false,
             "schema": {
               "type": [

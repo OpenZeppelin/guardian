@@ -274,6 +274,16 @@ impl ModulePipeline {
         &self.breakers
     }
 
+    /// The instance passed its startup checks on this replica, as an operator's enable runs
+    /// them: it is no longer unchecked, and an open breaker lets the next real call through as a
+    /// passing probe would, instead of waiting for the next probe.
+    pub fn checks_passed(&self, module_id: &str) {
+        if let Ok(mut unchecked) = self.unchecked.lock() {
+            unchecked.remove(module_id);
+        }
+        self.breakers.probe_succeeded(module_id);
+    }
+
     pub fn instances(&self) -> &[Instance] {
         &self.instances
     }

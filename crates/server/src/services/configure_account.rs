@@ -3,7 +3,7 @@ use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials};
 use crate::metadata::{AccountMetadata, ClearTransition};
 use crate::modules::HookName;
-use crate::modules::request::{self, RegistrationInput};
+use crate::modules::request::{self, RegistrationInput, StoredRegistration};
 use crate::network::{RpcReadMode, StateVerification};
 use crate::services::{consume_auth_timestamp, validate_request_timestamp};
 use crate::state::AppState;
@@ -286,7 +286,10 @@ pub async fn configure_account(
         state,
         &params,
         &signer_commitment,
-        existing.is_some() && !unfinished_claim,
+        stored_base
+            .as_ref()
+            .and(existing.as_ref())
+            .map(|existing| &existing.auth),
         first_registration,
     )
     .await?;
@@ -364,7 +367,7 @@ pub async fn configure_account(
             state,
             &params,
             &signer_commitment,
-            stored_base.is_some(),
+            stored_base.as_ref().map(|_| &claimed.auth),
             false,
         )
         .await?
@@ -687,13 +690,14 @@ impl JudgedBase {
 }
 
 /// Runs `before_account_registered` for this request: with the stored state as `before` when
-/// `stored`, without one for a first configuration or a claim whose state was never stored.
+/// there is one, `stored_auth` being the auth configuration stored with it, and without one for
+/// a first configuration or a claim whose state was never stored.
 /// Returns the default copies to write and the stored state the modules judged against.
 async fn approve_registration(
     state: &AppState,
     params: &ConfigureAccountParams,
     signer_commitment: &str,
-    stored: bool,
+    stored_auth: Option<&Auth>,
     first_registration: bool,
 ) -> Result<(Vec<crate::modules::store::Assigned>, JudgedBase)> {
     let (plan, default_copies) = match state.modules.as_deref() {
@@ -709,7 +713,7 @@ async fn approve_registration(
         None => (None, Vec::new()),
     };
     if let Some(plan) = plan {
-        let stored_state = if stored {
+        let stored_state = if stored_auth.is_some() {
             Some(
                 state
                     .storage
@@ -748,7 +752,9 @@ async fn approve_registration(
                     submitter_session: false,
                     auth: &params.auth,
                     network_config: &params.network_config,
-                    stored,
+                    stored: stored
+                        .zip(stored_auth)
+                        .map(|(view, auth)| StoredRegistration { view, auth }),
                     initial,
                     accounting_time: state.clock.now(),
                 })
@@ -3929,6 +3935,33 @@ mod tests {
         let request = run.module.last_request().expect("module was called");
         assert!(request.before.is_none());
         assert!(request.after.is_some());
+    }
+
+    /// A single-key account's view takes its signer from the auth configuration: `before` from
+    /// the one stored with the account, `after` from the one the request registers.
+    #[tokio::test]
+    async fn a_single_key_reconfiguration_shows_the_stored_signer_before_and_the_new_one_after() {
+        let run = configure_with_module(
+            |commitment| {
+                existing_account(false, false)(commitment).map(|stored| AccountMetadata {
+                    auth: Auth::MidenFalconRpo {
+                        cosigner_commitments: vec!["0xold".into()],
+                    },
+                    ..stored
+                })
+            },
+            StubModule::allowing(),
+        )
+        .await;
+        run.result.expect("reconfiguration succeeds");
+        let request = run.module.last_request().expect("module was called");
+        assert_eq!(
+            request.before.expect("stored state").signer_commitments,
+            vec!["0xold".to_string()]
+        );
+        let after = request.after.expect("new state").signer_commitments;
+        assert_eq!(after.len(), 1);
+        assert_ne!(after, vec!["0xold".to_string()]);
     }
 
     #[tokio::test]

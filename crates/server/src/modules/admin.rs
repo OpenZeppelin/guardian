@@ -528,6 +528,7 @@ pub async fn enable(
                 .await
                 .map_err(GuardianError::StorageError)?,
         );
+        pipeline.checks_passed(module_id);
         super::metrics::enabled(module_id, true);
     }
     let payload = serde_json::json!({ "module_id": module_id, "reason": reason, "params_version": committed });
@@ -1906,10 +1907,16 @@ mod tests {
             .unwrap();
         assert!(!view.enabled);
         assert!(view.enabled_drift);
+        pipeline.breakers().hold_open("blocklist");
         let view = enable(&state, &operator, "blocklist", "vendor fixed", None)
             .await
             .unwrap();
         assert!(view.enabled);
+        assert_eq!(
+            pipeline.breakers().state("blocklist"),
+            crate::modules::breaker::CircuitState::HalfOpen,
+            "the checks enable ran let the next call through without waiting for a probe"
+        );
         let history = history(&state, "blocklist", None, None)
             .await
             .unwrap()
