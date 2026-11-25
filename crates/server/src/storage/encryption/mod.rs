@@ -11,6 +11,11 @@ pub(crate) mod envelope;
 pub(crate) mod key_provider;
 pub(crate) mod marker;
 
+/// Whether a stored JSON value has the shape of an encryption envelope.
+pub fn is_envelope(value: &serde_json::Value) -> bool {
+    <envelope::Envelope as serde::Deserialize>::deserialize(value).is_ok()
+}
+
 /// Whether a storage read error describes a single record that cannot be
 /// read on its own — a payload that is not an envelope, an unsupported
 /// envelope, a bad nonce, a failed AEAD check, or a row sealed under a

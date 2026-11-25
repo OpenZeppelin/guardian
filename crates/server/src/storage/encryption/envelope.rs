@@ -25,6 +25,10 @@ pub(crate) enum RecordAad<'a> {
         account_id: &'a str,
         nonce: u64,
     },
+    DeltaMetadata {
+        account_id: &'a str,
+        nonce: u64,
+    },
     Proposal {
         account_id: &'a str,
         commitment: &'a str,
@@ -44,6 +48,9 @@ impl RecordAad<'_> {
         match self {
             RecordAad::State { account_id } => format!("state:{account_id}"),
             RecordAad::Delta { account_id, nonce } => format!("delta:{account_id}:{nonce}"),
+            RecordAad::DeltaMetadata { account_id, nonce } => {
+                format!("delta_metadata:{account_id}:{nonce}")
+            }
             RecordAad::Proposal {
                 account_id,
                 commitment,
