@@ -21,14 +21,17 @@
 - All other authentication failures (invalid or unauthorized signature, malformed credentials) share the terminal code `authentication_failed` (`meta.retryable: false`). Clients MUST branch on the stable code, never on message text.
 - `last_auth_timestamp` is updated atomically (compare-and-swap) when authentication succeeds; a session read's record is inserted atomically the same way.
 - `POST /configure` enforces the same timestamp skew and replay CAS, and every
-  configuration consumes its timestamp before it writes any state. A first-time
+  configuration consumes its timestamp before it writes any state. A registered
+  account consumes it first, before any chain read or policy module call, so a
+  reconfiguration that a module refuses, or that fails on a chain read, uses its
+  signed request up and is retried with a fresh signature. A first-time
   configuration first claims the account: it creates the metadata row only if
   none exists, atomically, and only the request that created it proceeds as a
   first configuration. Replay state has a foreign key to account metadata, so the
   claim is what lets the timestamp be consumed before the state write. A request
   that loses the claim (a concurrent duplicate or a replay of the signed request)
   re-reads the account and is judged as a reconfiguration, so a replay from the
-  same signer is refused with `authentication_replay` before it writes anything.
+  same signer is refused with `authentication_replay` before it writes any state.
   A configuration from a different signer that loses the claim passes its own
   replay check and reconfigures the account it lost to, under the rule below;
   callers must not use `/configure` as a general concurrent state-update
