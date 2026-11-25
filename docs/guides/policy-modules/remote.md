@@ -118,6 +118,9 @@ It cannot sign, change its hooks, or see secrets: catalog params with secret
 references are refused for remote kinds. It can rewrite the params it is given
 into its own normalized form when they are validated (at startup, on enable
 and on every operator write), within the params size cap; the Guardian stores
-that form, and with `disclosure = "params"` cosigners see it. The worst a compromised
-or failing remote module can do is refuse (or, with `on_error = "allow"`, be
-skipped), and the operator can switch it off if the catalog allows it.
+that form, and with `disclosure = "params"` cosigners see it. A compromised
+remote module decides its own rule: it can allow what its policy should refuse,
+refuse, or, failing with `on_error = "allow"`, be skipped. It cannot override
+another module's denial or the Guardian's own checks, and the operator can
+switch it off if the catalog allows it. Trust a remote module as much as the
+rule it enforces.

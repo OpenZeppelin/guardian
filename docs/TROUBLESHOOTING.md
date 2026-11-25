@@ -880,7 +880,11 @@ Guardian execution ends `failed` with `GUARDIAN_EXECUTION_MODULE_DENIED` or
    `meta.reason_code = "policy_denied"` and no `module` comes from an instance
    with `client_reason = "generic"`; only this log line names it. The
    `request_id` is also in the module's request, so the module's own logs can
-   be joined on it.
+   be joined on it. A request over `GUARDIAN_MODULE_REQUEST_MAX_BYTES` never
+   reaches the module and has no such line: it is refused as
+   `request_too_large` (or `policy_denied` with no `module` for a generic
+   instance) and logged at `warn` as `Policy module request could not be
+   judged; refusing whatever on_error says`, with `module` and `account_id`.
 2. **A failure, not a decision.** `Policy module failed; refusing` (or
    `continuing (fail-open)` for `on_error = "allow"`) is logged at `warn` with
    `module`, `account_id` and the failure: the module's error, `timed out`,

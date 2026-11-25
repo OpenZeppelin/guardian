@@ -10,7 +10,8 @@ use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 
 const USAGE: &str =
     "usage: policy-module --kind KIND [--listen ADDR] --instance ID TOKEN_FILE [--instance ...]
-                     [--tls-cert PEM --tls-key PEM [--client-ca PEM]] [--insecure]";
+                     [--tls-cert PEM --tls-key PEM [--client-ca PEM]] [--insecure]
+                     [--request-max-bytes BYTES]";
 
 /// The built-in policy this process serves, as the Guardian's catalog names it.
 fn policy(kind: &str) -> Result<Arc<dyn Module>, String> {
@@ -33,6 +34,7 @@ struct Args {
     tls_key: Option<PathBuf>,
     client_ca: Option<PathBuf>,
     insecure: bool,
+    request_max_bytes: Option<usize>,
 }
 
 impl Args {
@@ -45,6 +47,7 @@ impl Args {
             tls_key: None,
             client_ca: None,
             insecure: false,
+            request_max_bytes: None,
         };
         let mut args = std::env::args().skip(1);
         let value = |args: &mut dyn Iterator<Item = String>, flag: &str| {
@@ -67,6 +70,18 @@ impl Args {
                 "--tls-key" => parsed.tls_key = Some(value(&mut args, "--tls-key")?.into()),
                 "--client-ca" => parsed.client_ca = Some(value(&mut args, "--client-ca")?.into()),
                 "--insecure" => parsed.insecure = true,
+                "--request-max-bytes" => {
+                    parsed.request_max_bytes = Some(
+                        value(&mut args, "--request-max-bytes")?
+                            .parse()
+                            .map_err(|e| format!("--request-max-bytes: {e}"))
+                            .and_then(|bytes: usize| {
+                                (bytes > 0)
+                                    .then_some(bytes)
+                                    .ok_or("--request-max-bytes must be above 0".to_string())
+                            })?,
+                    );
+                }
                 "--help" | "-h" => return Err(USAGE.into()),
                 other => return Err(format!("unknown argument {other}\n{USAGE}")),
             }
@@ -142,7 +157,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     for (id, token_file) in &args.instances {
         let token = std::fs::read_to_string(token_file)
             .map_err(|e| format!("cannot read token file {}: {e}", token_file.display()))?;
+        if token.trim().is_empty() {
+            return Err(format!("token file {} is empty", token_file.display()).into());
+        }
         module = module.instance(id.clone(), token.trim());
+    }
+    if let Some(bytes) = args.request_max_bytes {
+        module = module.request_max_bytes(bytes);
     }
     let mut server = Server::builder();
     let transport = match args.tls()? {
@@ -156,7 +177,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => "plain text",
     };
-    let ids: Vec<&str> = args.instances.iter().map(|(id, _)| id.as_str()).collect();
+    let mut ids: Vec<&str> = args.instances.iter().map(|(id, _)| id.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
     println!(
         "{} listening on {} ({transport}), instances: {}",
         args.kind,

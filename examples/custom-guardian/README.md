@@ -36,6 +36,14 @@ cargo build --release --locked --features postgres
 docker build -t my-guardian .
 ```
 
+The Docker build copies the whole directory into its builder stage, so keep
+secrets out of it: `.dockerignore` leaves out `.env` files, `.guardian/`, a
+`keystore/` at the top, key, certificate and token files, operator and
+encryption key files, local databases and module state, and Terraform and cloud
+credentials, at any depth. Add any other local file that must not reach an
+image or a build cache to it, and a `!path` exception for a certificate the
+image must carry.
+
 Adding a crate makes `--locked` refuse the build until the lockfile has it.
 Run `cargo update --workspace`, which adds the new crates and keeps every
 pinned version, then build with `--locked` again; `git diff Cargo.lock` (or a
