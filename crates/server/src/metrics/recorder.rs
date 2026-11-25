@@ -127,6 +127,12 @@ pub fn build_recorder() -> PrometheusRecorder {
             EXECUTION_PHASE_BUCKETS,
         )
         .expect("static execution phase buckets are non-empty")
+        // The skeleton batch kernel proves in milliseconds; the real one will take seconds.
+        .set_buckets_for_metric(
+            Matcher::Full(names::EXECUTION_BATCH_PROVING_DURATION_SECONDS.to_string()),
+            EXECUTION_PHASE_BUCKETS,
+        )
+        .expect("static batch proving buckets are non-empty")
         .build_recorder()
 }
 

@@ -2801,6 +2801,165 @@
       ]
     },
     {
+      "type": "timeseries",
+      "title": "Batches by outcome",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "guardian-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 186
+      },
+      "id": 69,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "sum by (outcome) (rate(guardian_execution_batches_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Batched transactions by outcome",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "guardian-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 186
+      },
+      "id": 70,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "sum by (outcome) (rate(guardian_execution_batched_transactions_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Batch proving duration (p50 / p95)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "guardian-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 186
+      },
+      "id": 71,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(guardian_execution_batch_proving_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "p50"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(guardian_execution_batch_proving_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "refId": "B",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
       "type": "row",
       "title": "Read path & request authentication",
       "collapsed": false,
@@ -2808,7 +2967,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 186
+        "y": 194
       },
       "panels": [],
       "id": 61
@@ -2824,7 +2983,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 187
+        "y": 195
       },
       "id": 62,
       "fieldConfig": {
@@ -2892,7 +3051,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 187
+        "y": 195
       },
       "id": 63,
       "fieldConfig": {
@@ -2942,7 +3101,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 195
+        "y": 203
       },
       "id": 64,
       "fieldConfig": {
@@ -2992,7 +3151,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 195
+        "y": 203
       },
       "id": 65,
       "fieldConfig": {
@@ -3042,7 +3201,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 203
+        "y": 211
       },
       "id": 66,
       "fieldConfig": {
@@ -3101,7 +3260,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 203
+        "y": 211
       },
       "id": 67,
       "fieldConfig": {
@@ -3151,7 +3310,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 211
+        "y": 219
       },
       "id": 68,
       "fieldConfig": {

@@ -748,6 +748,28 @@ only; wallet-signed requests, session grants and logout are unchanged.
 - **Stored single-key accounts can no longer re-register.** An account stored
   before `/configure` required a multisig keeps being served, but any
   `/configure` for it is refused with `invalid_input`.
+- **Canonical Miden account IDs (after 0.19.1).** `/configure` accepts a
+  Miden account ID only in its canonical form, the lowercase hex of
+  `AccountId::to_hex`, and refuses any other form, a malformed ID included,
+  with `invalid_account_id`. The SDKs always send the canonical form.
+
+### Storage encryption covers delta metadata (after 0.19.1)
+
+With a storage encryption key source set, each delta's `metadata` column holds
+an encryption envelope, like its payload. Nothing changes without a key source,
+and there is no schema change.
+
+- **Upgrade.** No operator step. It applies to the deltas this release
+  writes; deltas already stored, or written by an earlier release that is
+  still running, are read as before.
+- **Mixed versions and rollback (Postgres).** A server from an earlier release
+  reads a sealed value as absent: its dashboard shows those deltas without a
+  summary (category, assets, counterparty, proposal). Pushes, proposals,
+  execution and every client read are unaffected. A delta that such a server
+  restores from the superseded archive is stored without its summary.
+- **Rollback on the filesystem backend (development only).** Not supported
+  with a key source set: an earlier release cannot read a delta file whose
+  metadata is sealed. Start from an empty store instead.
 
 ### Delta and proposal nonces are the account's (0.19.0)
 

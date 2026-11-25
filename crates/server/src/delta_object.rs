@@ -408,7 +408,8 @@ pub struct DeltaObject {
     /// in the `deltas.metadata` column. `None` for EVM deltas and any
     /// historical row never reprocessed by the push-time pipeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<crate::delta_summary::DeltaMetadata>,
+    #[schema(value_type = Option<crate::delta_summary::DeltaMetadata>)]
+    pub metadata: Option<crate::delta_summary::StoredDeltaMetadata>,
 }
 
 impl DeltaObject {
@@ -416,10 +417,17 @@ impl DeltaObject {
     /// (`metadata.modules`) is for operators only, since it names instances an
     /// account's cosigners may not be told about.
     pub fn without_module_trace(mut self) -> Self {
-        if let Some(metadata) = self.metadata.as_mut() {
+        if let Some(crate::delta_summary::StoredDeltaMetadata::Plain(metadata)) =
+            self.metadata.as_mut()
+        {
             metadata.modules = None;
         }
         self
+    }
+
+    /// The typed metadata, when this delta carries it readable.
+    pub fn plain_metadata(&self) -> Option<&crate::delta_summary::DeltaMetadata> {
+        self.metadata.as_ref()?.plain()
     }
 
     /// Return the multisig proposal type tag carried by this delta.
@@ -431,7 +439,7 @@ impl DeltaObject {
     /// whose source proposal was already deleted when the push-time
     /// pipeline was introduced.
     pub fn proposal_type(&self) -> Option<&str> {
-        if let Some(meta) = &self.metadata
+        if let Some(meta) = self.plain_metadata()
             && let Some(p) = &meta.proposal
         {
             return Some(p.proposal_type.as_str());
@@ -487,10 +495,13 @@ impl<'de> Deserialize<'de> for DeltaObject {
             #[serde(default)]
             discarded_at: Option<String>,
             #[serde(default)]
-            metadata: Option<crate::delta_summary::DeltaMetadata>,
+            metadata: Option<serde_json::Value>,
         }
 
         let helper = DeltaObjectHelper::deserialize(deserializer)?;
+        let metadata = helper
+            .metadata
+            .and_then(crate::delta_summary::metadata_from_value);
 
         let status = if let Some(status) = helper.status {
             status
@@ -514,7 +525,7 @@ impl<'de> Deserialize<'de> for DeltaObject {
             ack_pubkey: helper.ack_pubkey,
             ack_scheme: helper.ack_scheme,
             status,
-            metadata: helper.metadata,
+            metadata,
         })
     }
 }
@@ -667,17 +678,20 @@ mod tests {
             DashboardDeltaCategory, DeltaMetadata, NoteCounts, ProposalMetadata,
         };
         let delta = DeltaObject {
-            metadata: Some(DeltaMetadata {
-                category: DashboardDeltaCategory::AssetTransfer,
-                assets: Vec::new(),
-                counterparty: None,
-                note_counts: NoteCounts::default(),
-                proposal: Some(ProposalMetadata {
-                    proposal_type: "p2id".to_string(),
-                    ..ProposalMetadata::default()
-                }),
-                modules: None,
-            }),
+            metadata: Some(
+                DeltaMetadata {
+                    category: DashboardDeltaCategory::AssetTransfer,
+                    assets: Vec::new(),
+                    counterparty: None,
+                    note_counts: NoteCounts::default(),
+                    proposal: Some(ProposalMetadata {
+                        proposal_type: "p2id".to_string(),
+                        ..ProposalMetadata::default()
+                    }),
+                    modules: None,
+                }
+                .into(),
+            ),
             ..Default::default()
         };
         assert_eq!(delta.proposal_type(), Some("p2id"));
@@ -712,17 +726,20 @@ mod tests {
             DashboardDeltaCategory, DeltaMetadata, NoteCounts, ProposalMetadata,
         };
         let delta = DeltaObject {
-            metadata: Some(DeltaMetadata {
-                category: DashboardDeltaCategory::AssetTransfer,
-                assets: Vec::new(),
-                counterparty: None,
-                note_counts: NoteCounts::default(),
-                proposal: Some(ProposalMetadata {
-                    proposal_type: "p2id".to_string(),
-                    ..ProposalMetadata::default()
-                }),
-                modules: None,
-            }),
+            metadata: Some(
+                DeltaMetadata {
+                    category: DashboardDeltaCategory::AssetTransfer,
+                    assets: Vec::new(),
+                    counterparty: None,
+                    note_counts: NoteCounts::default(),
+                    proposal: Some(ProposalMetadata {
+                        proposal_type: "p2id".to_string(),
+                        ..ProposalMetadata::default()
+                    }),
+                    modules: None,
+                }
+                .into(),
+            ),
             delta_payload: serde_json::json!({
                 "metadata": { "proposal_type": "add_signer" }
             }),
@@ -910,7 +927,7 @@ mod tests {
             }
         }))
         .unwrap();
-        assert!(delta.metadata.as_ref().unwrap().modules.is_some());
+        assert!(delta.plain_metadata().unwrap().modules.is_some());
         let shown = serde_json::to_value(delta.without_module_trace()).unwrap();
         assert!(shown["metadata"].get("modules").is_none(), "{shown}");
         assert_eq!(shown["metadata"]["proposal"]["proposal_type"], "p2id");
