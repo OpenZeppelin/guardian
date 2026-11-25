@@ -259,14 +259,22 @@ fn tx_fee_notes(summary: &TransactionSummary) -> impl Iterator<Item = &Note> {
 /// The transaction's fee note: a note with the TX_FEE script is a payment like any other, since
 /// any transaction script can create one, with any assets, that anyone can consume. Only the note
 /// `pay_fee` creates is the fee, and it is recognised by everything `pay_fee` fixes: it is the
-/// only TX_FEE note, its serial number is derived from the account, the nonce the transaction
-/// starts from and the block its summary binds, and it carries one fungible asset of the chain's
-/// fee faucet, no more of it than a transaction can owe. On a chain that charges nothing `pay_fee`
+/// only TX_FEE note, it is public with the TX_FEE tag and no storage or attachments, its serial
+/// number is derived from the account, the nonce the transaction starts from and the block its
+/// summary binds, and it carries one fungible asset of the chain's fee faucet, no more of it than
+/// a transaction can owe. On a chain that charges nothing `pay_fee`
 /// creates no note, so no note qualifies there.
 fn fee_note(summary: &TransactionSummary, initial_nonce: u64, fee: ChainFee) -> Option<NoteId> {
     let mut tx_fee_notes = tx_fee_notes(summary);
     let note = tx_fee_notes.next()?;
     if tx_fee_notes.next().is_some() {
+        return None;
+    }
+    let shaped_like_pay_fee = note.metadata().note_type() == MidenNoteType::Public
+        && note.metadata().tag() == TxFeeNote::TAG
+        && usize::from(note.storage().num_items()) == TxFeeNote::NUM_STORAGE_ITEMS
+        && note.attachments().is_empty();
+    if !shaped_like_pay_fee {
         return None;
     }
     let serial_number = TxFeeNote::derive_serial_number(
@@ -806,6 +814,92 @@ mod tests {
         assert!(error.contains("fee asset is unknown"), "{error}");
         let without = summary_with(vec![]).to_json();
         assert!(module_transaction(&without, NONCE, None).is_ok());
+    }
+
+    #[test]
+    fn a_tx_fee_note_not_shaped_like_the_one_pay_fee_creates_is_a_payment() {
+        use miden_protocol::note::{
+            NoteAssets, NoteRecipient, NoteStorage, NoteTag, PartialNoteMetadata,
+        };
+        let fee_faucet = Some(ChainFee::new(dummy_id(9), 1));
+        let shaped = |note_type: MidenNoteType, tag: NoteTag, storage: NoteStorage| {
+            RawOutputNote::Full(Note::new(
+                NoteAssets::new(vec![fungible(9, 5)]).unwrap(),
+                PartialNoteMetadata::new(dummy_id(3), note_type).with_tag(tag),
+                NoteRecipient::new(canonical_serial(), TxFeeNote::script(), storage),
+            ))
+        };
+        assert_eq!(
+            fee_flags(
+                vec![shaped(
+                    MidenNoteType::Public,
+                    TxFeeNote::TAG,
+                    NoteStorage::default()
+                )],
+                fee_faucet
+            ),
+            [true],
+            "the shape pay_fee creates"
+        );
+        assert_eq!(
+            fee_flags(
+                vec![shaped(
+                    MidenNoteType::Private,
+                    TxFeeNote::TAG,
+                    NoteStorage::default()
+                )],
+                fee_faucet
+            ),
+            [false],
+            "a private note"
+        );
+        assert_eq!(
+            fee_flags(
+                vec![shaped(
+                    MidenNoteType::Public,
+                    NoteTag::new(7),
+                    NoteStorage::default()
+                )],
+                fee_faucet
+            ),
+            [false],
+            "another tag"
+        );
+        assert_eq!(
+            fee_flags(
+                vec![shaped(
+                    MidenNoteType::Public,
+                    TxFeeNote::TAG,
+                    NoteStorage::new(vec![Felt::new_unchecked(1)]).unwrap()
+                )],
+                fee_faucet
+            ),
+            [false],
+            "a note with storage"
+        );
+        let with_attachment = {
+            use miden_protocol::note::{NoteAttachment, NoteAttachmentScheme, NoteAttachments};
+            let attachment = NoteAttachment::with_word(
+                NoteAttachmentScheme::new(1).unwrap(),
+                Word::from([1u32, 2, 3, 4]),
+            );
+            RawOutputNote::Full(Note::with_attachments(
+                NoteAssets::new(vec![fungible(9, 5)]).unwrap(),
+                PartialNoteMetadata::new(dummy_id(3), MidenNoteType::Public)
+                    .with_tag(TxFeeNote::TAG),
+                NoteRecipient::new(
+                    canonical_serial(),
+                    TxFeeNote::script(),
+                    NoteStorage::default(),
+                ),
+                NoteAttachments::new(vec![attachment]).unwrap(),
+            ))
+        };
+        assert_eq!(
+            fee_flags(vec![with_attachment], fee_faucet),
+            [false],
+            "a note with an attachment"
+        );
     }
 
     #[test]
