@@ -104,7 +104,10 @@ warning is logged, and from then on operators change them through the API like
 any other instance's. The other way round, adding secret references to an
 instance operators managed, makes the catalog params apply and replaces the
 stored operator params with the empty placeholder, so removing the references
-again later applies the catalog params, not the old operator value.
+again later applies the catalog params, not the old operator value. Roll that
+change out by replacing every replica at once, or stop the replicas on the old
+catalog first: a replica still on the old catalog reads the stored params, and
+after the first new replica starts those are the empty placeholder.
 
 In
 [`built-in.toml`](./built-in.toml), `caps` discloses its params and

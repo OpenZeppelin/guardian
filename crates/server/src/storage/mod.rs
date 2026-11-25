@@ -1178,7 +1178,8 @@ pub trait StorageBackend: Send + Sync {
     /// The stored transaction request bytes of the account's viable proposals, as
     /// [`Self::admit_delta_proposal`] counts them toward `max_account_request_bytes`: pending,
     /// on `prev_commitment` and, when `viable_nonce` is known, at that nonce. Read without the
-    /// account lock, for a dry-run check; admission checks again when it inserts.
+    /// account lock, by a dry-run check and by a creation before its modules run; admission
+    /// checks again when it inserts.
     async fn viable_request_bytes(
         &self,
         account_id: &str,

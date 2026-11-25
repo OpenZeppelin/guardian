@@ -242,8 +242,7 @@ fn project_delta_to_detail(
 /// location holds a string. Callers must not assume the bytes decode
 /// to a Miden `TransactionSummary`.
 fn extract_raw_tx_summary_base64(payload: &serde_json::Value) -> Option<String> {
-    let candidate = payload.get("tx_summary").unwrap_or(payload);
-    candidate
+    crate::delta_summary::decode::summary_object(payload)
         .get("data")
         .and_then(|v| v.as_str())
         .map(str::to_string)
@@ -265,6 +264,17 @@ mod tests {
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use axum::http::StatusCode;
     use std::sync::Arc;
+
+    #[test]
+    fn the_raw_summary_is_the_one_the_decoder_reads() {
+        let both = serde_json::json!({ "data": "top", "tx_summary": { "data": "wrapped" } });
+        assert_eq!(extract_raw_tx_summary_base64(&both).as_deref(), Some("top"));
+        let wrapped = serde_json::json!({ "tx_summary": { "data": "wrapped" } });
+        assert_eq!(
+            extract_raw_tx_summary_base64(&wrapped).as_deref(),
+            Some("wrapped")
+        );
+    }
 
     const TEST_ACCOUNT_ID: &str = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
 

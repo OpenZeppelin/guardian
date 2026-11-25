@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use guardian_module_sdk::proto::guardian_module_client::GuardianModuleClient;
-use guardian_module_sdk::secrecy::{ExposeSecret, SecretString};
+use guardian_module_sdk::secrecy::ExposeSecret;
 use guardian_module_sdk::{
     Decision, DescribeRequest, HookRequest, Module, ModuleError, ModuleFactory, ModuleInfo,
     ModuleInstanceConfig, ParamsVerdict, ValidateParamsRequest,
@@ -13,6 +13,7 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 
 use super::catalog::Transport;
+use crate::secret::SecretString;
 
 /// Server authentication against the instance's CA, or the system roots without one; the
 /// client identity, when set, adds mutual TLS.
@@ -73,7 +74,11 @@ impl ModuleFactory for GrpcFactory {
             .keep_alive_while_idle(true)
             .tcp_keepalive(Some(KEEP_ALIVE_INTERVAL))
             .connect_lazy();
-        if let Some(token) = &instance.auth_token {
+        let token = instance
+            .auth_token
+            .as_ref()
+            .map(|token| SecretString::new(token.expose_secret().to_string()));
+        if let Some(token) = &token {
             bearer(token).map_err(|_| {
                 ModuleError::InvalidRequest("token is not a valid header value".into())
             })?;
@@ -81,7 +86,7 @@ impl ModuleFactory for GrpcFactory {
         Ok(Arc::new(GrpcModule {
             client: GuardianModuleClient::new(channel),
             instance_id: instance.id.clone(),
-            token: instance.auth_token.clone(),
+            token,
         }))
     }
 }

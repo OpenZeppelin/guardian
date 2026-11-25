@@ -15,11 +15,17 @@ use super::ProposalMetadata;
 /// extra `tx_summary` key cannot change what is shown. Returns a short
 /// stable token string on failure.
 pub fn decode_transaction_summary(payload: &Value) -> Result<TransactionSummary, &'static str> {
-    let candidate = match payload.get("data") {
+    TransactionSummary::from_json(summary_object(payload)).map_err(classify_decode_error)
+}
+
+/// The object of `payload` that holds the transaction summary's `data`: the payload itself when
+/// it has a top-level `data`, else its `tx_summary`. Every reader of a stored summary selects it
+/// this way, so the decoded and the raw summary are the same transaction.
+pub fn summary_object(payload: &Value) -> &Value {
+    match payload.get("data") {
         Some(_) => payload,
         None => payload.get("tx_summary").unwrap_or(payload),
-    };
-    TransactionSummary::from_json(candidate).map_err(classify_decode_error)
+    }
 }
 
 /// Extract the [`ProposalMetadata`] block from a proposal's persisted
