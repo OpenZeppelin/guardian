@@ -16,6 +16,8 @@ pub const ENV_EXECUTION_EXPIRATION_HORIZON_BLOCKS: &str =
     "GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS";
 pub const ENV_EXECUTION_MAX_CONCURRENT: &str = "GUARDIAN_EXECUTION_MAX_CONCURRENT";
 pub const ENV_EXECUTION_RECORD_RETENTION_DAYS: &str = "GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS";
+pub const ENV_EXECUTION_MAX_TXS_PER_BATCH: &str = "GUARDIAN_EXECUTION_MAX_TXS_PER_BATCH";
+pub const ENV_EXECUTION_BATCH_WINDOW_MS: &str = "GUARDIAN_EXECUTION_BATCH_WINDOW_MS";
 
 /// The upstream remote-prover client defaults to 10 s, below observed proving
 /// times, so Guardian always sets its own.
@@ -30,6 +32,22 @@ pub const DEFAULT_EXECUTION_EXPIRATION_HORIZON_BLOCKS: u32 = 512;
 /// memory for a proof permit rather than reaching the prover.
 pub const DEFAULT_EXECUTION_MAX_CONCURRENT: u32 = 64;
 pub const DEFAULT_EXECUTION_RECORD_RETENTION_DAYS: u32 = 30;
+/// One transaction per send: batching is off unless an operator turns it on.
+pub const DEFAULT_EXECUTION_MAX_TXS_PER_BATCH: u32 = 1;
+/// The node's own batch builder collects transactions for one second, so a batch Guardian builds
+/// waits no longer than the node would have.
+pub const DEFAULT_EXECUTION_BATCH_WINDOW_MS: u32 = 1_000;
+
+/// The node's own limit on a submitted batch by default (`DEFAULT_MAX_TXS_PER_BATCH` in the node's
+/// block producer, 4 on node 0.18): the node refuses a larger batch, and every one of its
+/// transactions is then sent alone after a wasted batch send.
+pub const MAX_EXECUTION_TXS_PER_BATCH: u32 = 4;
+
+/// The longest a transaction past the no-retry boundary may wait for others to share its batch.
+/// A transaction joins a batch only with this window plus the build, the batch send and its own
+/// send after a refusal left (`batch::AFTER_WINDOW`, 35 s), all inside the longest a send is given
+/// (`SendWindow::MAX_SEND`, 60 s).
+pub const MAX_EXECUTION_BATCH_WINDOW_MS: u32 = 5_000;
 
 /// Every built-in Guardian-executable proposal signs this relative
 /// transaction expiration, so a horizon below it would refuse all of them.
@@ -73,6 +91,32 @@ impl ProverConfig {
             .iter()
             .find(|(public_host, _)| host == *public_host)
             .map(|(_, network)| *network)
+    }
+}
+
+/// How Guardian delivers the transactions it proves: one at a time, or transactions of different
+/// accounts together as one proven batch (#239).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BatchConfig {
+    /// The most transactions one batch holds; `1` sends every transaction alone. At most the
+    /// node's default `max_txs_per_batch` ([`MAX_EXECUTION_TXS_PER_BATCH`]).
+    pub max_transactions: u32,
+    /// How long the first transaction of a batch waits for others before the batch is sent.
+    pub window: Duration,
+}
+
+impl BatchConfig {
+    pub fn batches(&self) -> bool {
+        self.max_transactions > 1
+    }
+}
+
+impl Default for BatchConfig {
+    fn default() -> Self {
+        Self {
+            max_transactions: DEFAULT_EXECUTION_MAX_TXS_PER_BATCH,
+            window: Duration::from_millis(u64::from(DEFAULT_EXECUTION_BATCH_WINDOW_MS)),
+        }
     }
 }
 
@@ -159,6 +203,7 @@ pub struct ExecutionConfig {
     pub expiration_horizon_blocks: u32,
     pub max_concurrent_executions: u32,
     pub record_retention: RecordRetention,
+    pub batch: BatchConfig,
 }
 
 impl Default for ExecutionConfig {
@@ -175,6 +220,7 @@ impl Default for ExecutionConfig {
             expiration_horizon_blocks: DEFAULT_EXECUTION_EXPIRATION_HORIZON_BLOCKS,
             max_concurrent_executions: DEFAULT_EXECUTION_MAX_CONCURRENT,
             record_retention: RecordRetention::Days(DEFAULT_EXECUTION_RECORD_RETENTION_DAYS),
+            batch: BatchConfig::default(),
         }
     }
 }
@@ -280,6 +326,7 @@ impl ExecutionConfig {
                 Some(raw) => RecordRetention::parse(&raw)?,
                 None => RecordRetention::Days(DEFAULT_EXECUTION_RECORD_RETENTION_DAYS),
             },
+            batch: BatchConfig::from_lookup(&lookup)?,
         })
     }
 
@@ -291,6 +338,40 @@ impl ExecutionConfig {
         self.prover
             .as_ref()
             .ok_or(ExecutionUnavailable::ProverNotConfigured)
+    }
+}
+
+impl BatchConfig {
+    fn from_lookup(
+        lookup: &impl Fn(&str) -> Result<Option<String>, String>,
+    ) -> Result<Self, String> {
+        let max_transactions = positive_u32(
+            lookup,
+            ENV_EXECUTION_MAX_TXS_PER_BATCH,
+            DEFAULT_EXECUTION_MAX_TXS_PER_BATCH,
+        )?;
+        if max_transactions > MAX_EXECUTION_TXS_PER_BATCH {
+            return Err(format!(
+                "{ENV_EXECUTION_MAX_TXS_PER_BATCH} must be at most {MAX_EXECUTION_TXS_PER_BATCH}, \
+                 the node's own limit on a submitted batch by default, got {max_transactions}"
+            ));
+        }
+        let window_ms = positive_u32(
+            lookup,
+            ENV_EXECUTION_BATCH_WINDOW_MS,
+            DEFAULT_EXECUTION_BATCH_WINDOW_MS,
+        )?;
+        if window_ms > MAX_EXECUTION_BATCH_WINDOW_MS {
+            return Err(format!(
+                "{ENV_EXECUTION_BATCH_WINDOW_MS} must be at most {MAX_EXECUTION_BATCH_WINDOW_MS}, \
+                 so a transaction past the no-retry boundary is not held back from its send, got \
+                 {window_ms}"
+            ));
+        }
+        Ok(Self {
+            max_transactions,
+            window: Duration::from_millis(u64::from(window_ms)),
+        })
     }
 }
 
@@ -447,6 +528,46 @@ mod tests {
         assert_eq!(config.reconcile_interval, Duration::from_secs(30));
         assert_eq!(config.max_concurrent_executions, 64);
         assert_eq!(config.record_retention, RecordRetention::Days(30));
+        assert_eq!(config.batch.max_transactions, 1);
+        assert!(!config.batch.batches(), "batching is off unless asked for");
+        assert_eq!(config.batch.window, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn batching_turns_on_above_one_transaction_and_is_bounded() {
+        let batch = |vars: &[(&str, &str)]| config_from(vars).map(|config| config.batch);
+        let on = batch(&[
+            (ENV_EXECUTION_MAX_TXS_PER_BATCH, "4"),
+            (ENV_EXECUTION_BATCH_WINDOW_MS, "250"),
+        ])
+        .unwrap();
+        assert!(on.batches());
+        assert_eq!(on.max_transactions, 4);
+        assert_eq!(on.window, Duration::from_millis(250));
+        assert!(
+            !batch(&[(ENV_EXECUTION_MAX_TXS_PER_BATCH, "1")])
+                .unwrap()
+                .batches()
+        );
+
+        assert!(batch(&[(ENV_EXECUTION_MAX_TXS_PER_BATCH, "4")]).is_ok());
+        let error = batch(&[(ENV_EXECUTION_MAX_TXS_PER_BATCH, "5")]).unwrap_err();
+        assert!(error.contains(ENV_EXECUTION_MAX_TXS_PER_BATCH), "{error}");
+        assert!(batch(&[(ENV_EXECUTION_BATCH_WINDOW_MS, "5000")]).is_ok());
+        let error = batch(&[(ENV_EXECUTION_BATCH_WINDOW_MS, "5001")]).unwrap_err();
+        assert!(error.contains(ENV_EXECUTION_BATCH_WINDOW_MS), "{error}");
+        for key in [
+            ENV_EXECUTION_MAX_TXS_PER_BATCH,
+            ENV_EXECUTION_BATCH_WINDOW_MS,
+        ] {
+            assert!(config_from(&[(key, "0")]).unwrap_err().contains(key));
+            assert!(config_from(&[(key, "four")]).unwrap_err().contains(key));
+        }
+    }
+
+    #[test]
+    fn the_batch_cap_is_within_the_protocol_account_cap() {
+        assert!(MAX_EXECUTION_TXS_PER_BATCH as usize <= miden_protocol::MAX_ACCOUNTS_PER_BATCH);
     }
 
     #[test]

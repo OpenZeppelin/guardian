@@ -4,6 +4,7 @@
 
 mod aborts;
 mod attempt;
+mod batch;
 mod chain;
 mod foreign;
 mod request;
@@ -17,16 +18,22 @@ pub use request::{StoredRequest, approval_expiration_block};
 pub use store::ExecutionDataStore;
 
 #[cfg(all(test, feature = "e2e"))]
+mod test_node;
+#[cfg(all(test, feature = "e2e"))]
 mod tests;
 
 #[cfg(test)]
 mod live_tests;
 
-/// Builds the executor for a Miden node endpoint and the configured remote prover.
+/// Builds the executor for a Miden node endpoint and the configured remote prover. With batching
+/// configured, transactions past the no-retry boundary are submitted through one batcher, which
+/// sends a batch still collecting at once when `shutdown` fires.
 pub fn executor_for(
     node_endpoint: &str,
     node_timeout: std::time::Duration,
     prover: &crate::config::execution::ProverConfig,
+    batch: &crate::config::execution::BatchConfig,
+    shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<std::sync::Arc<dyn crate::services::execute_proposal::ProposalExecutor>, String> {
     use miden_client::remote_prover::RemoteTransactionProver;
     use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
@@ -52,10 +59,13 @@ pub fn executor_for(
             }),
             None => std::sync::Arc::new(remote),
         };
-    Ok(std::sync::Arc::new(
-        MidenExecutor::new(std::sync::Arc::new(rpc), prover)
-            .with_submission_rpc(std::sync::Arc::new(submission_rpc)),
-    ))
+    let executor = MidenExecutor::new(std::sync::Arc::new(rpc), prover)
+        .with_submission_rpc(std::sync::Arc::new(submission_rpc));
+    Ok(std::sync::Arc::new(if batch.batches() {
+        executor.with_batching(batch::BatchSettings::from(batch), shutdown)
+    } else {
+        executor
+    }))
 }
 
 /// Bounds the proofs this process has at the prover at once. The permit covers the prover call

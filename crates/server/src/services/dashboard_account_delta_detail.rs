@@ -189,8 +189,7 @@ fn project_delta_to_detail(
         };
 
     let (category, proposal) = delta
-        .metadata
-        .as_ref()
+        .plain_metadata()
         .map(|m| (Some(m.category), m.proposal.clone()))
         .unwrap_or((None, None));
 
@@ -494,13 +493,16 @@ mod tests {
     async fn canonical_delta_projects_with_metadata_header_and_decoded_sections() {
         let payload = create_test_delta_payload(TEST_ACCOUNT_ID);
         let mut delta = canonical_delta_with_payload(7, payload);
-        delta.metadata = Some(crate::delta_summary::DeltaMetadata {
-            category: crate::delta_summary::DashboardDeltaCategory::AccountStorageChange,
-            assets: Vec::new(),
-            counterparty: None,
-            note_counts: crate::delta_summary::NoteCounts::default(),
-            proposal: None,
-        });
+        delta.metadata = Some(
+            crate::delta_summary::DeltaMetadata {
+                category: crate::delta_summary::DashboardDeltaCategory::AccountStorageChange,
+                assets: Vec::new(),
+                counterparty: None,
+                note_counts: crate::delta_summary::NoteCounts::default(),
+                proposal: None,
+            }
+            .into(),
+        );
         let state = build_state(Ok(Some(falcon_metadata())), Ok(delta.clone())).await;
         let detail =
             get_account_delta_detail(&state, TEST_ACCOUNT_ID, 7, DetailIncludeFlags::default())

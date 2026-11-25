@@ -1125,3 +1125,31 @@ variable "guardian_tx_prover_max_concurrent" {
     error_message = "guardian_tx_prover_max_concurrent must be a whole number of at least 1."
   }
 }
+
+variable "guardian_execution_max_txs_per_batch" {
+  description = "Optional override for GUARDIAN_EXECUTION_MAX_TXS_PER_BATCH, the most Guardian-proved transactions of different accounts one submission carries as a proven batch (server default 1, which sends each alone; at most 4, the node's own max_txs_per_batch by default on node 0.18). Experimental: batching buys no fee or latency on the pinned protocol."
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_execution_max_txs_per_batch == null ? true : (
+      var.guardian_execution_max_txs_per_batch >= 1 &&
+      var.guardian_execution_max_txs_per_batch <= 4 &&
+      floor(var.guardian_execution_max_txs_per_batch) == var.guardian_execution_max_txs_per_batch
+    )
+    error_message = "guardian_execution_max_txs_per_batch must be a whole number from 1 to 4."
+  }
+}
+
+variable "guardian_execution_batch_window_ms" {
+  description = "Optional override for GUARDIAN_EXECUTION_BATCH_WINDOW_MS, how long the first transaction of a batch waits for others before the batch is sent (server default 1000, at most 5000). Used only when guardian_execution_max_txs_per_batch is above 1."
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_execution_batch_window_ms == null ? true : (
+      var.guardian_execution_batch_window_ms >= 1 &&
+      var.guardian_execution_batch_window_ms <= 5000 &&
+      floor(var.guardian_execution_batch_window_ms) == var.guardian_execution_batch_window_ms
+    )
+    error_message = "guardian_execution_batch_window_ms must be a whole number from 1 to 5000."
+  }
+}
