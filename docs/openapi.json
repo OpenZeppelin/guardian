@@ -8898,6 +8898,63 @@
           }
         }
       },
+      "ModuleParamsHistoryEntry": {
+        "type": "object",
+        "required": [
+          "id",
+          "version",
+          "module_id",
+          "previous",
+          "new",
+          "operator",
+          "reason",
+          "at"
+        ],
+        "properties": {
+          "account_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The entry's place in the history, increasing in write order: the cursor a page of\nhistory is read below.",
+            "minimum": 0
+          },
+          "module_id": {
+            "type": "string"
+          },
+          "new": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "operator": {
+            "type": "string"
+          },
+          "previous": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The params version the write committed as: the instance params version for an entry\nwithout `account_id`, that account's params version for one with it.",
+            "minimum": 0
+          }
+        }
+      },
       "NetworkConfig": {
         "oneOf": [
           {
@@ -9588,7 +9645,7 @@
           "entries": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/HistoryEntry"
+              "$ref": "#/components/schemas/ModuleParamsHistoryEntry"
             }
           },
           "module_id": {

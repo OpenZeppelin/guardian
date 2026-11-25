@@ -61,6 +61,7 @@ pub struct AccountModule {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[schema(as = ModuleParamsHistoryEntry)]
 pub struct HistoryEntry {
     /// The entry's place in the history, increasing in write order: the cursor a page of
     /// history is read below.

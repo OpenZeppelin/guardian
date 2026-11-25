@@ -273,9 +273,11 @@ impl ServerHandle {
             }
         }
 
-        if let Some(modules) = self.app_state.modules.clone() {
-            tasks.push(modules.spawn_probe());
-        }
+        let _probe = self
+            .app_state
+            .modules
+            .clone()
+            .map(|modules| tokio_util::task::AbortOnDropHandle::new(modules.spawn_probe()));
 
         // Start background jobs based on canonicalization config
         if let Some(config) = &self.app_state.canonicalization {
