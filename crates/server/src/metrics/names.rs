@@ -83,6 +83,11 @@ pub const EXECUTION_OLDEST_RESERVATION_AGE_SECONDS: &str =
 pub const EXECUTION_OBSERVATION_OUTAGE_SECONDS: &str =
     "guardian_execution_observation_outage_seconds";
 pub const EXECUTION_RECORDS_PRUNED_TOTAL: &str = "guardian_execution_records_pruned_total";
+pub const EXECUTION_BATCHES_TOTAL: &str = "guardian_execution_batches_total";
+pub const EXECUTION_BATCHED_TRANSACTIONS_TOTAL: &str =
+    "guardian_execution_batched_transactions_total";
+pub const EXECUTION_BATCH_PROVING_DURATION_SECONDS: &str =
+    "guardian_execution_batch_proving_duration_seconds";
 pub const CANONICALIZATION_RECONCILE_RUNS_TOTAL: &str =
     "guardian_canonicalization_reconcile_runs_total";
 pub const CANONICALIZATION_RECONCILE_RUN_DURATION_SECONDS: &str =
@@ -494,6 +499,24 @@ pub const REGISTRY: &[MetricDef] = &[
         kind: MetricKind::Counter,
         labels: &[],
         help: "Finished execution attempts the retention sweep deleted, with their evidence and outcome.",
+    },
+    MetricDef {
+        name: EXECUTION_BATCHES_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OUTCOME],
+        help: "Groups of two or more Guardian transactions handed to the batcher, by outcome: accepted or unknown (the node's answer for the batch), refused (the node refused it and each transaction was sent alone), not_built or prover_busy (not sent as a batch; each transaction was sent alone).",
+    },
+    MetricDef {
+        name: EXECUTION_BATCHED_TRANSACTIONS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OUTCOME],
+        help: "Transactions the groups counted by guardian_execution_batches_total held for their batch, by the same outcome; a transaction kept out for its expiration is sent alone and not counted.",
+    },
+    MetricDef {
+        name: EXECUTION_BATCH_PROVING_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[],
+        help: "Time to assemble, execute and prove one batch of Guardian transactions, in seconds.",
     },
     MetricDef {
         name: CANONICALIZATION_RECONCILE_RUNS_TOTAL,

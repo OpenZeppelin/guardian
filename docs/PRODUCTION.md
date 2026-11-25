@@ -538,12 +538,14 @@ WHERE network_config->>'network_type' = '<configured network>';
 ## Storage encryption
 
 Guardian can encrypt the sensitive stored payloads (account state, delta and
-proposal payloads) at rest, above whatever disk-level encryption the database
-already provides. It is opt-in: set a key source and the server encrypts; set
+proposal payloads, and each delta's dashboard metadata) at rest, above whatever
+disk-level encryption the database already provides. It is opt-in: set a key
+source and the server encrypts; set
 none and behavior is unchanged.
 
 - Confidentiality boundary: only the payload JSON is encrypted — the account
-  `state_json`, delta `delta_payload`, and proposal `delta_payload`. Routing and
+  `state_json`, delta `delta_payload` and `metadata`, and proposal
+  `delta_payload`. Routing and
   index columns (`account_id`, `nonce`, `status`, state and proposal
   `commitment`) stay **plaintext** by design: they are needed for lookups and
   some are bound as AEAD additional authenticated data (authenticated, not

@@ -80,6 +80,8 @@ diesel_migrations = { version = "2.2", optional = true }
 # off at run time until a prover is configured.
 miden-client = { workspace = true, features = ["tonic"] }
 miden-tx = { workspace = true }
+# Batched submission (#239): the batch kernel executor and prover.
+miden-tx-batch = { workspace = true }
 miden-processor = { workspace = true }
 
 # Optional dependencies for e2e tests
