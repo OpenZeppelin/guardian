@@ -28,7 +28,9 @@ cargo run -p guardian-compliance-module -- \
 ```
 
 Flags: `--data FILE` (required), `--listen ADDR` (default `127.0.0.1:7445`),
-`--instance ID TOKEN_FILE` (repeatable, at least one), `--tls-cert PEM
+`--instance ID TOKEN_FILE` (repeatable, at least one; the same `ID` with a
+second token file accepts both tokens, which a token rotation needs, see the
+[secrets runbook](../../docs/runbooks/secrets.md#policy-module-secrets)), `--tls-cert PEM
 --tls-key PEM [--client-ca PEM]`, and `--insecure` to allow plain text on a
 non-loopback address.
 

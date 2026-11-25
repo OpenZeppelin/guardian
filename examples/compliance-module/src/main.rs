@@ -45,10 +45,18 @@ impl Args {
                 "--instance" => {
                     let id = value(&mut args, "--instance")?;
                     let token_file = value(&mut args, "--instance")?;
-                    if parsed.instances.iter().any(|(known, _)| *known == id) {
-                        return Err(format!("--instance {id} is given twice"));
+                    let token_file = std::path::PathBuf::from(token_file);
+                    if parsed
+                        .instances
+                        .iter()
+                        .any(|(known, file)| *known == id && *file == token_file)
+                    {
+                        return Err(format!(
+                            "--instance {id} {} is given twice",
+                            token_file.display()
+                        ));
                     }
-                    parsed.instances.push((id, token_file.into()));
+                    parsed.instances.push((id, token_file));
                 }
                 "--tls-cert" => parsed.tls_cert = Some(value(&mut args, "--tls-cert")?.into()),
                 "--tls-key" => parsed.tls_key = Some(value(&mut args, "--tls-key")?.into()),
@@ -128,7 +136,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => "plain text",
     };
-    let ids: Vec<&str> = args.instances.iter().map(|(id, _)| id.as_str()).collect();
+    let mut ids: Vec<&str> = args.instances.iter().map(|(id, _)| id.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
     println!(
         "compliance listening on {} ({transport}), instances: {}; {} KYC signers, {} sanctioned and {} verified accounts from {}",
         args.listen,

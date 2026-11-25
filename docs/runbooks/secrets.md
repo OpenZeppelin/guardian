@@ -565,8 +565,8 @@ Guardian whose token the module refuses treats the instance as failed, so
 `on_error` decides its requests, and `on_error = "allow"` lets them through
 without the module's decision. A module served by the SDK harness accepts every
 token registered for an instance: register the instance once with each token
-(`.instance(id, old).instance(id, new)`, or `--instance ID FILE` twice for the
-`policy-module` example), restart it, roll the Guardians, then restart it with
+(`.instance(id, old).instance(id, new)`, or `--instance ID FILE` twice, with
+the two token files, for the `policy-module` and `compliance-module` examples), restart it, roll the Guardians, then restart it with
 the new token only. The harness reads its tokens at start, so each restart
 drops the calls in flight: run at least two module replicas behind the address
 and restart them one at a time, or calls fail during the restart and `on_error`
