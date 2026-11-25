@@ -14,6 +14,8 @@ use crate::{
 
 /// Serves `module`. Register every instance the Guardian calls with [`Serve::instance`]: a
 /// harness with none refuses every call, unless [`Serve::allow_unauthenticated`] says otherwise.
+/// Register an instance once per token it accepts: during a token rotation, register the old and
+/// the new token until every Guardian sends the new one.
 pub fn serve<M: Module + 'static>(module: M) -> Serve<M> {
     Serve {
         module: Arc::new(module),
@@ -34,15 +36,19 @@ enum Access {
 
 pub struct Serve<M> {
     module: Arc<M>,
-    tokens: HashMap<String, String>,
+    tokens: HashMap<String, Vec<String>>,
     access: Access,
     request_max_bytes: Option<usize>,
 }
 
 impl<M: Module + 'static> Serve<M> {
-    /// Accept requests for `instance_id` only when they carry `token` as a bearer credential.
+    /// Accept requests for `instance_id` when they carry `token` as a bearer credential.
+    /// Registering the same instance again adds a token it also accepts.
     pub fn instance(mut self, instance_id: impl Into<String>, token: impl Into<String>) -> Self {
-        self.tokens.insert(instance_id.into(), token.into());
+        self.tokens
+            .entry(instance_id.into())
+            .or_default()
+            .push(token.into());
         self
     }
 
@@ -89,7 +95,7 @@ impl<M: Module + 'static> Serve<M> {
 
 pub struct Harness<M> {
     module: Arc<M>,
-    tokens: Arc<HashMap<String, String>>,
+    tokens: Arc<HashMap<String, Vec<String>>>,
     access: Access,
 }
 
@@ -110,15 +116,17 @@ impl<M> Harness<M> {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "))
             .ok_or_else(|| Status::unauthenticated("missing bearer token"))?;
+        let any_matches = |tokens: &mut dyn Iterator<Item = &String>| {
+            tokens.fold(false, |matched, token| {
+                same_token(token, presented) | matched
+            })
+        };
         let accepted = match instance_id {
             Some(id) => self
                 .tokens
                 .get(id)
-                .is_some_and(|token| same_token(token, presented)),
-            None => self
-                .tokens
-                .values()
-                .any(|token| same_token(token, presented)),
+                .is_some_and(|tokens| any_matches(&mut tokens.iter())),
+            None => any_matches(&mut self.tokens.values().flatten()),
         };
         if accepted {
             Ok(())
@@ -214,6 +222,38 @@ mod tests {
         );
         let open = harness(serve(crate::policies::SpendingLimit).allow_unauthenticated());
         assert!(open.authorize(&Request::new(()), Some("caps")).is_ok());
+    }
+
+    fn bearer(token: &str) -> Request<()> {
+        let mut request = Request::new(());
+        request.metadata_mut().insert(
+            "authorization",
+            format!("Bearer {token}").parse().expect("ascii token"),
+        );
+        request
+    }
+
+    #[test]
+    fn an_instance_registered_twice_accepts_both_tokens_during_a_rotation() {
+        let rotating = harness(
+            serve(crate::policies::SpendingLimit)
+                .instance("caps", "old-token")
+                .instance("caps", "new-token")
+                .instance("other", "other-token"),
+        );
+        for token in ["old-token", "new-token"] {
+            assert!(rotating.authorize(&bearer(token), Some("caps")).is_ok());
+            assert!(rotating.authorize(&bearer(token), None).is_ok());
+        }
+        for (token, instance) in [("other-token", "caps"), ("old-token", "other")] {
+            assert_eq!(
+                rotating
+                    .authorize(&bearer(token), Some(instance))
+                    .unwrap_err()
+                    .code(),
+                tonic::Code::PermissionDenied
+            );
+        }
     }
 
     #[test]

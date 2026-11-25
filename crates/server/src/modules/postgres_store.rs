@@ -747,7 +747,7 @@ impl ModuleStore for PgModuleStore {
              AND ($2::BIGINT IS NULL OR id < $2) ORDER BY id DESC LIMIT $3",
         )
         .bind::<Text, _>(module_id)
-        .bind::<Nullable<BigInt>, _>(before.map(|before| before as i64))
+        .bind::<Nullable<BigInt>, _>(before.and_then(|before| i64::try_from(before).ok()))
         .bind::<BigInt, _>(limit as i64)
         .load(&mut conn)
         .await
@@ -1007,22 +1007,24 @@ mod tests {
         let account = format!("0xacc{}", rand::random::<u32>());
         let t0 = "2026-10-15T00:00:00Z";
         let before = store.instance_version().await.unwrap();
-        let writes = (0..8).map(|n| {
-            let store = store.clone();
-            let account = account.clone();
-            tokio::spawn(async move {
-                store
-                    .set_assignment(
-                        &account,
-                        vec![Assigned {
-                            module_id: format!("opt-{n}"),
-                            params: json!({}),
-                        }],
-                        &change(t0),
-                    )
-                    .await
+        let writes = (0..8)
+            .map(|n| {
+                let store = store.clone();
+                let account = account.clone();
+                tokio::spawn(async move {
+                    store
+                        .set_assignment(
+                            &account,
+                            vec![Assigned {
+                                module_id: format!("opt-{n}"),
+                                params: json!({}),
+                            }],
+                            &change(t0),
+                        )
+                        .await
+                })
             })
-        });
+            .collect::<Vec<_>>();
         for write in writes {
             write.await.unwrap().unwrap();
         }
@@ -1112,23 +1114,25 @@ mod tests {
             build_postgres_pool_lazy(&url, 8).expect("pool"),
         ));
         let account = format!("0xrace{}", rand::random::<u32>());
-        let copies = (0..8).map(|n| {
-            let store = store.clone();
-            let account = account.clone();
-            tokio::spawn(async move {
-                store
-                    .seed_assignment(
-                        &account,
-                        vec![Assigned {
-                            module_id: "screening".into(),
-                            params: json!({ "copy": n }),
-                        }],
-                        &change("2026-11-10T00:00:00Z"),
-                    )
-                    .await
-                    .unwrap()
+        let copies = (0..8)
+            .map(|n| {
+                let store = store.clone();
+                let account = account.clone();
+                tokio::spawn(async move {
+                    store
+                        .seed_assignment(
+                            &account,
+                            vec![Assigned {
+                                module_id: "screening".into(),
+                                params: json!({ "copy": n }),
+                            }],
+                            &change("2026-11-10T00:00:00Z"),
+                        )
+                        .await
+                        .unwrap()
+                })
             })
-        });
+            .collect::<Vec<_>>();
         let mut written = 0;
         for copy in copies {
             written += usize::from(copy.await.unwrap());
