@@ -645,7 +645,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The account's effective module set, in evaluation order",
+            "description": "The account's effective module set, in evaluation order, followed by retained rows marked `orphaned` that evaluation skips and that do not count as effective modules",
             "content": {
               "application/json": {
                 "schema": {
@@ -827,6 +827,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The module did not answer the params validation; nothing changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -945,6 +955,16 @@
           },
           "429": {
             "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The module did not answer the params validation; nothing changed",
             "content": {
               "application/json": {
                 "schema": {
@@ -2101,6 +2121,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The module did not answer the params validation; nothing changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2144,7 +2174,9 @@
             "required": false,
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "default": 100,
+              "maximum": 1000,
+              "minimum": 1
             }
           }
         ],
@@ -2574,7 +2606,7 @@
           },
           "orphaned": {
             "type": "boolean",
-            "description": "A stored entry naming an instance the catalog no longer declares; skipped at evaluation."
+            "description": "A stored row evaluation skips: its instance is no longer declared, or no longer applies\nrows of this kind (a layer left after the instance's scope changed from `all` to\n`assigned`, or an assignment left after the reverse). Not an effective module."
           },
           "params": {
             "type": [
@@ -4315,60 +4347,6 @@
           }
         }
       },
-      "HistoryEntry": {
-        "type": "object",
-        "required": [
-          "version",
-          "module_id",
-          "operator",
-          "reason",
-          "at"
-        ],
-        "properties": {
-          "account_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "at": {
-            "type": "string"
-          },
-          "id": {
-            "type": "integer",
-            "format": "int64",
-            "description": "The entry's place in the history, increasing in write order: the cursor a page of\nhistory is read below.",
-            "minimum": 0
-          },
-          "module_id": {
-            "type": "string"
-          },
-          "new": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "operator": {
-            "type": "string"
-          },
-          "previous": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "reason": {
-            "type": "string"
-          },
-          "version": {
-            "type": "integer",
-            "format": "int64",
-            "description": "The params version the write committed as: the instance params version for an entry\nwithout `account_id`, that account's params version for one with it.",
-            "minimum": 0
-          }
-        }
-      },
       "LayerRemovalBody": {
         "type": "object",
         "required": [
@@ -4565,6 +4543,63 @@
           },
           "scope": {
             "type": "string"
+          }
+        }
+      },
+      "ModuleParamsHistoryEntry": {
+        "type": "object",
+        "required": [
+          "id",
+          "version",
+          "module_id",
+          "previous",
+          "new",
+          "operator",
+          "reason",
+          "at"
+        ],
+        "properties": {
+          "account_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The entry's place in the history, increasing in write order: the cursor a page of\nhistory is read below.",
+            "minimum": 0
+          },
+          "module_id": {
+            "type": "string"
+          },
+          "new": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "operator": {
+            "type": "string"
+          },
+          "previous": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The params version the write committed as: the instance params version for an entry\nwithout `account_id`, that account's params version for one with it.",
+            "minimum": 0
           }
         }
       },
@@ -5138,7 +5173,7 @@
           "entries": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/HistoryEntry"
+              "$ref": "#/components/schemas/ModuleParamsHistoryEntry"
             }
           },
           "module_id": {

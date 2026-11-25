@@ -65,7 +65,9 @@ pub struct AccountModuleEntry {
     #[schema(value_type = String)]
     pub scope: &'static str,
     pub enabled: bool,
-    /// A stored entry naming an instance the catalog no longer declares; skipped at evaluation.
+    /// A stored row evaluation skips: its instance is no longer declared, or no longer applies
+    /// rows of this kind (a layer left after the instance's scope changed from `all` to
+    /// `assigned`, or an assignment left after the reverse). Not an effective module.
     pub orphaned: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Object>)]
@@ -645,6 +647,7 @@ pub async fn set_layer<'a>(
         None => None,
     };
     let (current, read_version) = account_rows(pipeline, &account_id).await?;
+    let change = account_change(state, operator, write, read_version)?;
     if params.is_some()
         && current
             .iter()
@@ -667,12 +670,7 @@ pub async fn set_layer<'a>(
     pipeline.check_budget(&current, &rows)?;
     let committed = pipeline
         .store()
-        .set_layer(
-            &account_id,
-            module_id,
-            params,
-            &account_change(state, operator, write, read_version)?,
-        )
+        .set_layer(&account_id, module_id, params, &change)
         .await
         .map_err(write_error)?;
     let payload = serde_json::json!({ "module_id": module_id, "reason": reason, "account_params_version": committed });
@@ -802,6 +800,7 @@ pub async fn set_assignment<'a>(
     // does not make this one stale; params kept unchecked because they were stored are checked
     // now if that write replaced them.
     let (current, read_version) = account_rows(pipeline, &account_id).await?;
+    let change = account_change(state, operator, write, read_version)?;
     for (assigned, checked) in to_store.iter_mut().zip(checked) {
         if !checked && !is_assigned(&current, &assigned.module_id, &assigned.params) {
             let instance = instance(pipeline, &assigned.module_id)?;
@@ -849,11 +848,7 @@ pub async fn set_assignment<'a>(
         .collect();
     let committed = pipeline
         .store()
-        .set_assignment(
-            &account_id,
-            to_store,
-            &account_change(state, operator, write, read_version)?,
-        )
+        .set_assignment(&account_id, to_store, &change)
         .await
         .map_err(write_error)?;
     let payload = serde_json::json!({ "reason": reason, "modules": assigned, "account_params_version": committed });
@@ -1236,6 +1231,46 @@ mod tests {
         };
         assert_eq!(circuit("blocklist"), "open");
         assert_eq!(circuit("optional"), "closed");
+    }
+
+    #[tokio::test]
+    async fn a_stale_write_is_reported_stale_before_the_budget_refuses_it() {
+        let mut state = state();
+        tight_budget(&mut state);
+        let stale = Write {
+            reason: "from an older read",
+            expected_version: Some(7),
+        };
+        let layer = set_layer(
+            &state,
+            &operator(),
+            ACCOUNT,
+            "blocklist",
+            Some(json!({ "denylist": ["0x000000000000000000000000000bbb"] })),
+            stale,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(layer, Err(GuardianError::ModuleParamsStale)),
+            "{layer:?}"
+        );
+        let assignment = set_assignment(
+            &state,
+            &operator(),
+            ACCOUNT,
+            vec![Assigned {
+                module_id: "optional".into(),
+                params: json!({}),
+            }],
+            stale,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(assignment, Err(GuardianError::ModuleParamsStale)),
+            "{assignment:?}"
+        );
     }
 
     #[tokio::test]
@@ -1713,8 +1748,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn history_pages_newest_first_by_version() {
+    async fn history_pages_newest_first_by_id() {
         let state = state();
+        set_layer(
+            &state,
+            &operator(),
+            ACCOUNT,
+            "blocklist",
+            Some(json!({})),
+            "OP-account",
+            None,
+        )
+        .await
+        .unwrap();
         for n in 0..3 {
             set_global(
                 &state,
@@ -1738,7 +1784,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["OP-2", "OP-1"]
         );
-        let next = history(&state, "blocklist", Some(first[1].version), Some(2))
+        let next = history(&state, "blocklist", Some(first[1].id), Some(2))
             .await
             .unwrap()
             .entries;
@@ -1746,7 +1792,7 @@ mod tests {
             next.iter()
                 .map(|entry| entry.reason.as_str())
                 .collect::<Vec<_>>(),
-            ["OP-0"]
+            ["OP-0", "OP-account"]
         );
         assert!(history(&state, "blocklist", None, Some(0)).await.is_err());
     }
