@@ -317,7 +317,11 @@ The two 401 codes mean different things (issue #367 split them):
   the condition persisted through the retry budget; look for a second
   process (background poller, second tab, another host) signing with
   the same key. Replay state is scoped per `(account, signer)`, so
-  other cosigners of a multisig never cause this for you.
+  other cosigners of a multisig never cause this for you. A
+  `/configure` of a registered account uses its signed request up before
+  the chain check and the policy modules run, so after a module refusal
+  or `rpc_unavailable` resending the same signed request gets
+  `authentication_replay`: sign it again.
   Session reads are not ordered: a session read gets
   `authentication_replay` only when the exact same signed request is sent
   twice, or a copy arrives after the read records covering its timestamp

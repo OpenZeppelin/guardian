@@ -4,8 +4,10 @@ crates/server/src/services/account_status.rs ensure_account_active_metadata b730
 crates/server/src/services/push_delta.rs push_delta 2235a925f1f0ec48
 crates/server/src/services/push_delta.rs run 2e2b1383e17e1567
 crates/server/src/services/push_delta_proposal.rs push_delta_proposal f3273779e9d7758f
-crates/server/src/services/push_delta_proposal.rs propose e926290c3c7b646d
-crates/server/src/services/configure_account.rs configure_account 4d487827c5bb9322
+crates/server/src/services/push_delta_proposal.rs propose 55c1f31b48fd6bf1
+crates/server/src/services/configure_account.rs configure_account d12818d332f3e682
+crates/server/src/services/configure_account.rs vouch_for 7cd388a4572131f7
+crates/server/src/services/configure_account.rs recheck_chain_after_modules aec4c792307a8f56
 crates/server/src/services/configure_account.rs stored_state_landed f1082399d583be3f
 crates/server/src/services/configure_account.rs stored_head 641128d1cfa79677
 crates/server/src/services/pause_account.rs pause 7a8b3686c25b35b2
