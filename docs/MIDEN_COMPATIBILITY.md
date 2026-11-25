@@ -748,6 +748,10 @@ only; wallet-signed requests, session grants and logout are unchanged.
 - **Stored single-key accounts can no longer re-register.** An account stored
   before `/configure` required a multisig keeps being served, but any
   `/configure` for it is refused with `invalid_input`.
+- **Canonical Miden account IDs (after 0.19.1).** `/configure` accepts a
+  Miden account ID only in its canonical form, the lowercase hex of
+  `AccountId::to_hex`, and refuses any other form, a malformed ID included,
+  with `invalid_account_id`. The SDKs always send the canonical form.
 
 ### Storage encryption covers delta metadata (after 0.19.1)
 

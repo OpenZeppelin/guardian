@@ -1,6 +1,7 @@
 // Integration tests (enabled with `--features integration`)
 #![cfg(feature = "integration")]
 
+mod account_id_canonical;
 mod auth_grpc;
 mod auth_http;
 mod body_limit_http;
