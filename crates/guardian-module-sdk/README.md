@@ -104,8 +104,11 @@ serve(NoPrivateNotes)
 ```
 
 Each instance the Guardian calls (its catalog `id`) has its own token; a call
-for an unknown instance, or with another instance's token, is refused. A server
-with no instance registered refuses every call. For a test or a local experiment
+for an unknown instance, or with another instance's token, is refused. To rotate
+a token, register the instance once with each token
+(`.instance(id, old).instance(id, new)`) until every Guardian sends the new one
+([secrets runbook](../../docs/runbooks/secrets.md#policy-module-secrets)). A
+server with no instance registered refuses every call. For a test or a local experiment
 on a loopback address, `serve(module).allow_unauthenticated()` answers without
 credentials; never expose such a server, since anyone who reaches it can query
 the module. For TLS
