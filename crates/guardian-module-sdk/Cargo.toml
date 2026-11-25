@@ -25,6 +25,8 @@ prost-types = "0.14"
 secrecy = "0.10"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+sha2 = "0.10"
+subtle = "2.5"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "fs"] }
 tonic = { workspace = true }
