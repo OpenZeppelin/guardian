@@ -127,7 +127,7 @@ pub struct Credentials {
 }
 
 /// Describes a catalog that does not parse by position and the parser's message, leaving out
-/// the source excerpt the parser's own `Display` quotes and every value the message quotes
+/// the source excerpt the parser's own `Display` quotes and everything the message quotes
 /// (`invalid type: string "..."`, ``unknown variant `...` ``), since a line can hold a value an
 /// operator pasted by mistake.
 fn parse_error(text: &str, error: &toml::de::Error) -> String {
@@ -143,27 +143,17 @@ fn parse_error(text: &str, error: &toml::de::Error) -> String {
     }
 }
 
-/// `message` with the text between each pair of `"` or `` ` `` replaced by `...`.
+/// `message` with everything from its first `"` or `` ` `` to its last replaced by `...`. A
+/// quoted value can itself hold a quote character, so pairing the delimiters could end a value
+/// early and keep the rest of it; only the parser's own text outside every quote is kept.
 fn without_quoted(message: &str) -> String {
-    let mut out = String::with_capacity(message.len());
-    let mut open: Option<char> = None;
-    for c in message.chars() {
-        match open {
-            Some(quote) if c == quote => {
-                out.push_str("...");
-                out.push(c);
-                open = None;
-            }
-            Some(_) => {}
-            None => {
-                out.push(c);
-                if c == '"' || c == '`' {
-                    open = Some(c);
-                }
-            }
+    let is_quote = |c: char| c == '"' || c == '`';
+    match (message.find(is_quote), message.rfind(is_quote)) {
+        (Some(first), Some(last)) => {
+            format!("{}...{}", &message[..first], &message[last + 1..])
         }
+        _ => message.to_string(),
     }
-    out
 }
 
 #[derive(Debug, Deserialize)]
@@ -644,6 +634,14 @@ on_error = "allow"
             ("timeout_ms = \"very-secret-token\"", "line 6"),
             (
                 "timeout_ms = 20\non_error = \"very-secret-token\"",
+                "line 7",
+            ),
+            (
+                "timeout_ms = 20\non_error = \"prefix`very-secret-token\"",
+                "line 7",
+            ),
+            (
+                "timeout_ms = 20\non_error = 'prefix\"very-secret-token'",
                 "line 7",
             ),
         ] {
