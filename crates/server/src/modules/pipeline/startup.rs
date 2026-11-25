@@ -116,8 +116,7 @@ impl Stored {
             if !config.file_managed_params && row.seeded_params != config.params {
                 applied.seed_drift.insert(config.id.clone());
             }
-            let catalog_requires_it =
-                !row.enabled && config.catalog_enabled && !config.operator_can_disable;
+            let catalog_requires_it = !row.enabled && config.catalog_requires_enabled();
             if catalog_requires_it {
                 tracing::warn!(module = %config.id, "Stored flag disables an instance the catalog declares enabled and not operator-disableable; enabling it");
                 applied.enabled_by_catalog.push(config.id.clone());

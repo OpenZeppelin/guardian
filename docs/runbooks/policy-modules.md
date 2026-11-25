@@ -114,7 +114,8 @@ clears after the break-glass step and can fire for another instance.
    applies and `guardian_module_config_drift` reports the difference. The one
    exception tightens policy: an instance the catalog declares enabled and
    not `operator_can_disable` is switched on at startup even when it is
-   stored as disabled, with a params history entry by `catalog`, so making an
+   stored as disabled, with a params history entry by `catalog`, and every
+   replica on that catalog treats it as enabled before then, so making an
    instance non-disableable in the catalog also ends an earlier disable.
    Removing the catalog's last instance leaves a catalog that declares no
    module, which stops startup: unset `GUARDIAN_MODULES_CONFIG` instead, and
