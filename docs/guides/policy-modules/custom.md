@@ -244,8 +244,9 @@ What the Guardian expects on the wire:
   are not part of this protocol version yet; they arrive as a named
   capability, so a module written now keeps working.
 
-The Rust conformance suite runs in process only, so port its cases (listed in
-[Test it](#test-it)) to your language's test framework.
+The conformance suite is Rust: it runs a module in process and over loopback
+gRPC (see [Test it](#test-it)), so for a module in another language, port its
+cases to your language's test framework.
 
 ## Run it in process
 

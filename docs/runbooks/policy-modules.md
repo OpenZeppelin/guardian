@@ -116,6 +116,12 @@ clears after the break-glass step and can fire for another instance.
    not `operator_can_disable` is switched on at startup even when it is
    stored as disabled, with a params history entry by `catalog`, so making an
    instance non-disableable in the catalog also ends an earlier disable.
+   Removing the catalog's last instance leaves a catalog that declares no
+   module, which stops startup: unset `GUARDIAN_MODULES_CONFIG` instead, and
+   in production set `GUARDIAN_MODULES_DISABLED=true` (on AWS, clear
+   `guardian_modules_config` and `guardian_module_secret_names` and set
+   `guardian_modules_disabled = true`; see the
+   [deploy guide](../SERVER_AWS_DEPLOY.md#policy-modules)).
    Removing an instance leaves its account assignments in place, marked
    `orphaned` and skipped, so adding it back restores them. Changing an
    instance's `scope` does the same to the rows the new scope does not read

@@ -178,7 +178,7 @@ flowchart LR
 | Guardian → Client | The ACK signature on every accepted delta. Clients verify the ACK and the commitment chain before trusting returned state. |
 | Client → Miden | Miden's own ZK proof verification; Guardian is not in this path. |
 | Guardian → Miden | Read-only RPC; Miden does not trust Guardian for anything. |
-| Guardian → policy modules (optional) | Modules can only refuse: the Guardian signs only when every applicable module allows, and a module never holds a key. Remote modules are reached over TLS with a bearer token per instance. What they receive is a disclosure; see [Policy modules](#policy-modules) below. |
+| Guardian → policy modules (optional) | Modules can only refuse: the Guardian signs only when every applicable module allows, or, for an instance set to `on_error = "allow"`, failed and was skipped; a module never holds a key. Remote modules are reached over TLS with a bearer token per instance. What they receive is a disclosure; see [Policy modules](#policy-modules) below. |
 | Inside Guardian | Backend access control, IAM scoping, infrastructure hardening — see [`docs/runbooks/secrets.md`](./runbooks/secrets.md) and [`docs/architecture/infra.md`](./architecture/infra.md). |
 
 What this means in practice:

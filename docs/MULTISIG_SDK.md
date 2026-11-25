@@ -812,7 +812,9 @@ description, and its params only where the catalog allows it.
 **A check before proposing.** `check_transaction(transaction_type)` in Rust and
 `checkTransaction({ type, ... })` in TypeScript build the transaction as the
 matching create call would and ask the Guardian whether it would be accepted.
-Nothing is stored, no proposal slot is taken and no signature is sent. The
+Nothing is stored and no proposal slot is taken. The request is signed like
+any other, but it carries no proposal signature, so a check never approves
+anything. The
 result's `complete` is false when a module that opts out of checks was
 skipped. The answer is advisory, since approval still decides, and checks are
 rate limited per account and signer. Both SDKs check every typed creator and
