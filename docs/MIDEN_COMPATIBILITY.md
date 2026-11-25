@@ -992,9 +992,10 @@ deployment without one behaves as before. With one:
   and `guardian.module.v1` is frozen with it: later releases change it only
   additively ([RFC 0002](./rfcs/0002-guardian-modules.md), section 3.5).
 - **Custom server builds.** `ServerBuilder::from_env()` configures the server
-  from the environment as the `server` binary does, and a release attaches a
-  `custom-guardian-<tag>.tar.gz` template that registers extra module kinds
-  with `with_module_kind`. Custom builds call `ServerHandle::start()` instead
+  from the environment as the `server` binary does, and
+  `scripts/custom-guardian-template.sh`, run from a checkout of the release
+  tag, generates a template that registers extra module kinds with
+  `with_module_kind`. Custom builds call `ServerHandle::start()` instead
   of `run()`: `start` runs the startup account recovery
   `GUARDIAN_STARTUP_ACCOUNT_RECOVERY` asks for, as the `server` binary does,
   while `run` skips it. For crates embedding `guardian-server`,

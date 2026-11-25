@@ -307,10 +307,12 @@ the Guardian has answered the request.
 
 ### Your own build
 
-Start from the `custom-guardian-<tag>.tar.gz` attached to each Guardian
-release, not from this repository: it is the example as a standalone project
-that depends on `guardian-server` and `guardian-module-sdk` at the release tag
-and carries the release's `Cargo.lock`. The Guardian needs the exact Miden and
+Start from the template of your Guardian release, not from this repository's
+working tree: check out the release tag and run
+`scripts/custom-guardian-template.sh --tag <tag> --out <dir>`. The template is
+the example as a standalone project that depends on `guardian-server` and
+`guardian-module-sdk` at the release tag and carries the release's
+`Cargo.lock`. The Guardian needs the exact Miden and
 Plonky3 versions it was released with, and a freshly resolved lockfile can
 pick versions that build but break transaction execution, so always build with
 `--locked`. Add your crate, register its kind, and build the image with the
@@ -321,7 +323,7 @@ and your module must share the release's: the template's `[patch.crates-io]`
 points a crate that depends on the crates.io SDK at the release tag, and that
 crate must accept the release's SDK version.
 
-On every Guardian release, start again from that release's template and
+On every Guardian release, generate that release's template again and
 rebuild, sign and redeploy your image; the official image's provenance
 attestation does not cover your build.
 
