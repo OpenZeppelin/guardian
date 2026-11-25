@@ -493,6 +493,48 @@ mod tests {
         assert!(matches!(&result, Err(message) if message.contains("unavailable")));
     }
 
+    #[tokio::test]
+    async fn storage_wrapped_without_a_key_source_stores_a_delta_as_given() {
+        use crate::delta_object::{DeltaObject, DeltaStatus};
+        use crate::delta_summary::{DashboardDeltaCategory, DeltaMetadata, NoteCounts};
+        use crate::storage::filesystem::FilesystemService;
+
+        let _lock = ENCRYPTION_ENV_LOCK.lock().await;
+        let _env = EncEnvGuard::clear();
+        let dir = tempfile::tempdir().unwrap();
+        let open = || FilesystemService::new(dir.path().to_path_buf());
+        let delta = DeltaObject {
+            account_id: "acct1".to_string(),
+            nonce: 1,
+            delta_payload: serde_json::json!({ "move": 1 }),
+            status: DeltaStatus::canonical("2026-11-19T10:00:00Z".to_string()),
+            metadata: Some(
+                DeltaMetadata {
+                    category: DashboardDeltaCategory::AssetTransfer,
+                    assets: Vec::new(),
+                    counterparty: None,
+                    note_counts: NoteCounts::default(),
+                    proposal: None,
+                }
+                .into(),
+            ),
+            ..Default::default()
+        };
+        let stored = serde_json::to_value(&delta).unwrap();
+
+        let (storage, cipher) = wrap_with_encryption(open().await.unwrap()).await.unwrap();
+        storage.submit_delta(&delta).await.unwrap();
+
+        assert!(cipher.is_none());
+        let raw = open().await.unwrap();
+        for read in [
+            raw.pull_delta("acct1", 1).await.unwrap(),
+            storage.pull_delta("acct1", 1).await.unwrap(),
+        ] {
+            assert_eq!(serde_json::to_value(&read).unwrap(), stored);
+        }
+    }
+
     #[test]
     fn test_new_creates_empty_builder() {
         let builder = StorageMetadataBuilder::new();
