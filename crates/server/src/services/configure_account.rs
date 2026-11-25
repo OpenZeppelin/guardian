@@ -236,26 +236,40 @@ pub async fn configure_account(
         (head, signer_commitment)
     };
 
-    // A key the registered account does not list is checked before any module judges its
-    // state (see `vouch_outsider`); its timestamp is consumed first, so a replay is still refused
-    // before any chain read.
-    let outsider = existing
-        .as_ref()
-        .filter(|existing| is_outsider(existing, &signer_commitment));
-    let mut early_vouch = match outsider {
-        Some(_) => {
-            consume_auth_timestamp(
-                state,
-                &params.account_id,
-                &signer_commitment,
-                request_timestamp,
-                crate::metadata::auth::MAX_TIMESTAMP_SKEW_MS,
-            )
-            .await?;
-            Some(vouch_outsider(state, &params, &head).await?)
-        }
+    // The replay check and the vouch run before the registration modules, so they judge only a
+    // fresh request and a state something vouches for, and no state is written until they allow
+    // it; what a concurrent write can change meanwhile (the chain head, the stored state) is
+    // checked again after them. A registered account consumes the replay timestamp first: a replay is
+    // refused before any chain read or module call. A first configuration has no metadata row
+    // for the replay row to reference yet; it consumes right after its claim below, and a
+    // replay of it finds the row and takes this path.
+    if existing.is_some() {
+        consume_auth_timestamp(
+            state,
+            &params.account_id,
+            &signer_commitment,
+            request_timestamp,
+            crate::metadata::auth::MAX_TIMESTAMP_SKEW_MS,
+        )
+        .await?;
+    }
+
+    // The stored state this re-onboarding replaces, read only once the request is
+    // authenticated and fresh. The write below refuses to overwrite a state promoted after this
+    // read.
+    let mut stored_base = match &existing {
+        Some(_) => stored_head(state, &params.account_id).await?,
         None => None,
     };
+    let mut vouch = vouch_for(
+        state,
+        &params,
+        &head,
+        existing.as_ref(),
+        stored_base.as_ref(),
+        &signer_commitment,
+    )
+    .await?;
 
     // A new account, or a claim whose account has no module history yet, is evaluated with the
     // default modules and receives copies of them below. One an operator already configured
@@ -273,16 +287,16 @@ pub async fn configure_account(
         first_registration,
     )
     .await?;
+    recheck_chain_after_modules(state, &params.account_id, &head, vouch, &judged_base).await?;
 
     let now = state.clock.now_rfc3339();
 
-    // A first configuration claims the account before anything else: of two
-    // concurrent first configurations (a client retry, or a replay of the
-    // signed request) exactly one creates the metadata row, and the other
-    // is judged below as a reconfiguration of the account it lost to. Its
-    // replay timestamp is then consumed before it writes anything, so a
-    // duplicate is refused instead of storing the initial state over
-    // whatever the account has moved to since.
+    // A first configuration claims the account only once the modules allowed it, so a refused
+    // one writes nothing: of two concurrent first configurations (a client retry, or a replay of
+    // the signed request) exactly one creates the metadata row. The winner consumes its replay
+    // timestamp before it writes anything else; the other is a reconfiguration of the account it
+    // lost to, so it consumes against that account first, then is vouched for and judged again
+    // as one.
     let created = existing.is_none()
         && state
             .metadata
@@ -306,78 +320,7 @@ pub async fn configure_account(
                 );
                 GuardianError::StorageError(format!("Failed to create account metadata: {e}"))
             })?;
-    let existing = if existing.is_none() && !created {
-        let claimed = state.metadata.get(&params.account_id).await.map_err(|e| {
-            GuardianError::StorageError(format!("Failed to re-read account metadata: {e}"))
-        })?;
-        let claimed = claimed.ok_or_else(|| {
-            GuardianError::StorageError(
-                "Account metadata vanished after a concurrent first configuration".to_string(),
-            )
-        })?;
-        // The modules judged this request as a new account; it is now a reconfiguration of the
-        // account it lost to, whose modules and stored state differ, so they judge it again
-        // before it consumes anything. A key that account does not list is an outsider to it,
-        // vouched for first like any other.
-        if is_outsider(&claimed, &signer_commitment) {
-            consume_auth_timestamp(
-                state,
-                &params.account_id,
-                &signer_commitment,
-                request_timestamp,
-                crate::metadata::auth::MAX_TIMESTAMP_SKEW_MS,
-            )
-            .await?;
-            early_vouch = Some(vouch_outsider(state, &params, &head).await?);
-        }
-        judged_base = approve_registration(
-            state,
-            &params,
-            &signer_commitment,
-            has_stored_state(state, &params.account_id).await,
-            false,
-        )
-        .await?
-        .1;
-        Some(claimed)
-    } else {
-        existing
-    };
-
-    // The account is now claimed by this request: copy the default modules it was evaluated
-    // with. Only an account without any assignment history receives them, so an operator's
-    // earlier write wins, and a crash before this point is repaired by the retry, which finds
-    // an unfinished claim with no history and copies again.
-    if (created || first_registration && existing.is_some())
-        && !default_copies.is_empty()
-        && let Some(modules) = state.modules.as_deref()
-    {
-        let copied = modules
-            .store()
-            .seed_assignment(
-                &params.account_id.to_ascii_lowercase(),
-                default_copies,
-                &crate::modules::store::Change {
-                    operator: "catalog",
-                    reason: "default modules copied at registration",
-                    at: now.clone(),
-                    expected_version: None,
-                },
-            )
-            .await
-            .map_err(GuardianError::StorageError)?;
-        if !copied {
-            tracing::warn!(
-                account_id = %params.account_id,
-                "Default modules not copied: an operator configured the account's modules while it registered; the account keeps that configuration"
-            );
-        }
-    }
-
-    // The replay-state row has an FK to account metadata, which the claim
-    // above guarantees, so every configuration consumes its timestamp
-    // before it writes any state (an outsider's was consumed above).
-    if early_vouch.is_none() {
+    if created {
         consume_auth_timestamp(
             state,
             &params.account_id,
@@ -387,14 +330,67 @@ pub async fn configure_account(
         )
         .await?;
     }
-
-    // The stored state this re-onboarding replaces, read only once the
-    // request is authenticated and fresh. The write below refuses to
-    // overwrite a state promoted after this read.
-    let stored_base = match &existing {
-        Some(_) => stored_head(state, &params.account_id).await?,
-        None => None,
+    let existing = if existing.is_none() && !created {
+        let claimed = state.metadata.get(&params.account_id).await.map_err(|e| {
+            GuardianError::StorageError(format!("Failed to re-read account metadata: {e}"))
+        })?;
+        let claimed = claimed.ok_or_else(|| {
+            GuardianError::StorageError(
+                "Account metadata vanished after a concurrent first configuration".to_string(),
+            )
+        })?;
+        consume_auth_timestamp(
+            state,
+            &params.account_id,
+            &signer_commitment,
+            request_timestamp,
+            crate::metadata::auth::MAX_TIMESTAMP_SKEW_MS,
+        )
+        .await?;
+        stored_base = stored_head(state, &params.account_id).await?;
+        vouch = vouch_for(
+            state,
+            &params,
+            &head,
+            Some(&claimed),
+            stored_base.as_ref(),
+            &signer_commitment,
+        )
+        .await?;
+        judged_base = approve_registration(
+            state,
+            &params,
+            &signer_commitment,
+            stored_base.is_some(),
+            false,
+        )
+        .await?
+        .1;
+        recheck_chain_after_modules(state, &params.account_id, &head, vouch, &judged_base).await?;
+        Some(claimed)
+    } else {
+        existing
     };
+
+    // An account that had no stored state when it was read is read again now that the modules
+    // ran: the write for such an account replaces whatever is there, so a state another request
+    // stored meanwhile (one that finished a claim, or won the one this request lost), which was
+    // neither vouched against nor judged, refuses the request instead. A stored state that moved
+    // is refused by the write itself, which replaces only the state it read.
+    if existing.is_some()
+        && stored_base.is_none()
+        && let Some(current) = stored_commitment(state, &params.account_id).await?
+    {
+        tracing::warn!(
+            account_id = %params.account_id,
+            current = %current,
+            "A state was stored while the request was checked and judged; refusing to replace a state it did not see"
+        );
+        return Err(GuardianError::CommitmentMismatch {
+            expected: current,
+            actual: head.commitment.clone(),
+        });
+    }
     if !judged_base.is(stored_base.as_ref()) {
         let current = stored_base
             .as_ref()
@@ -410,51 +406,6 @@ pub async fn configure_account(
             expected: current,
             actual: head.commitment.clone(),
         });
-    }
-
-    // Guardian stores a state only once something vouches for it. A first
-    // state at nonce 0 vouches for itself: its seed binds its code and
-    // storage, signers and thresholds included, to its account id, and its
-    // vault is empty. Its own signers register it whoever claimed the
-    // account id first. Any other state needs the chain whenever the stored
-    // account cannot vouch for it: it was released, and its stored signers
-    // may have changed since; the requesting key is not one of its stored
-    // signers; or the submitted state is not the stored one.
-    let vouch = match (&existing, &stored_base) {
-        _ if early_vouch == Some(Vouch::Chain) => Vouch::ChainBeforeModules,
-        (_, None) if head.nonce == Some(0) => Vouch::FirstState,
-        (Some(existing), _)
-            if existing.released_at.is_some()
-                || existing.auth.signer_scheme(&signer_commitment).is_none() =>
-        {
-            Vouch::Chain
-        }
-        (Some(_), Some(stored)) if stored.commitment == head.commitment => Vouch::StoredState,
-        _ => Vouch::Chain,
-    };
-    match vouch {
-        Vouch::Chain => {
-            let stored_cosigner = existing
-                .as_ref()
-                .is_some_and(|existing| existing.auth.signer_scheme(&signer_commitment).is_some());
-            let newer_stored = stored_base.as_ref().filter(|stored| {
-                stored_cosigner
-                    && matches!((stored.nonce, head.nonce), (Some(stored_nonce), Some(submitted_nonce)) if submitted_nonce < stored_nonce)
-            });
-            ensure_on_chain_state(state, &params.account_id, &head.commitment, newer_stored).await?
-        }
-        Vouch::FirstState => state
-            .network_client
-            .validate_first_state(&params.initial_state)
-            .map_err(|e| {
-                tracing::warn!(
-                    account_id = %params.account_id,
-                    error = %e,
-                    "initial_state is not a valid first account state in configure_account"
-                );
-                GuardianError::InvalidInput(format!("Invalid first state in initial_state: {e}"))
-            })?,
-        Vouch::StoredState | Vouch::ChainBeforeModules => {}
     }
 
     // A state older than the stored one may replace it only while the stored
@@ -480,6 +431,39 @@ pub async fn configure_account(
             expected: stored.commitment.clone(),
             actual: head.commitment.clone(),
         });
+    }
+
+    // Every check has passed and the timestamp is consumed: copy the default modules the request
+    // was evaluated with, into the account it claimed, the claim it finishes or the claim it lost.
+    // The loser copies too, since the winner may stop between its claim and its copy while the
+    // loser stores the state, and nothing would then repair the account. Only an account without
+    // any assignment history receives them, so the first copy wins and an operator's earlier
+    // write is never overridden; a crash before this point is repaired by the retry, which finds
+    // an unfinished claim with no history and copies again.
+    if (created || first_registration && existing.is_some())
+        && !default_copies.is_empty()
+        && let Some(modules) = state.modules.as_deref()
+    {
+        let copied = modules
+            .store()
+            .seed_assignment(
+                &params.account_id.to_ascii_lowercase(),
+                default_copies,
+                &crate::modules::store::Change {
+                    operator: "catalog",
+                    reason: "default modules copied at registration",
+                    at: now.clone(),
+                    expected_version: None,
+                },
+            )
+            .await
+            .map_err(GuardianError::StorageError)?;
+        if !copied {
+            tracing::warn!(
+                account_id = %params.account_id,
+                "Default modules not copied: an operator configured the account's modules while it registered; the account keeps that configuration"
+            );
+        }
     }
 
     let created_at = existing
@@ -578,7 +562,7 @@ pub async fn configure_account(
     // previous state) is undone only once the submitted state proves to be
     // the account's on-chain state, and stands otherwise.
     let chain_vouched = match vouch {
-        Vouch::Chain | Vouch::ChainBeforeModules => true,
+        Vouch::Chain => true,
         Vouch::StoredState | Vouch::FirstState if created => false,
         Vouch::StoredState | Vouch::FirstState => {
             let current = state.metadata.get(&params.account_id).await.map_err(|e| {
@@ -804,6 +788,24 @@ async fn has_stored_state(state: &AppState, account_id: &str) -> bool {
     }
 }
 
+/// The stored state's commitment, or `None` when the account has no stored state.
+async fn stored_commitment(state: &AppState, account_id: &str) -> Result<Option<String>> {
+    match state.storage.pull_state_head(account_id).await {
+        Ok(stored) => Ok(Some(stored.commitment)),
+        Err(e) if crate::storage::is_storage_not_found(&e) => Ok(None),
+        Err(e) => {
+            tracing::error!(
+                account_id = %account_id,
+                error = %e,
+                "Failed to read the stored state in configure_account"
+            );
+            Err(GuardianError::StorageError(format!(
+                "Failed to read the stored state: {e}"
+            )))
+        }
+    }
+}
+
 /// The stored state's commitment and nonce, or `None` when the account has
 /// no stored state. A row written before the server stored nonces carries
 /// none: it is decoded from the stored state, and the commitment is taken
@@ -855,8 +857,6 @@ async fn stored_head(state: &AppState, account_id: &str) -> Result<Option<StateH
 /// What vouches for the state a configuration stores.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Vouch {
-    /// The chain, already asked before the modules ran (an outsider's request).
-    ChainBeforeModules,
     /// The chain: the submitted state must be the account's on-chain state.
     Chain,
     /// The stored state: the submitted state is the one already stored.
@@ -864,6 +864,73 @@ enum Vouch {
     /// Itself: a first state at nonce 0, whose seed binds its code and
     /// storage to its account id and whose vault is empty.
     FirstState,
+}
+
+/// Vouches for the submitted state before any module judges it, and returns what vouched.
+/// Guardian stores a state only once something vouches for it. A first state at nonce 0 vouches
+/// for itself while nothing is stored: its seed binds its code and storage, signers and
+/// thresholds included, to its account id, and its vault is empty, so its own signers register
+/// it whoever claimed the account id first. Any other state needs the chain whenever the stored
+/// account cannot vouch for it: it was released, and its stored signers may have changed since;
+/// the requesting key is not one of its stored signers; or the submitted state is not the stored
+/// one. Without this before the modules, anyone could submit a made-up state for someone else's
+/// account and read that account's module verdicts, or hand remote modules forged states under
+/// its id.
+async fn vouch_for(
+    state: &AppState,
+    params: &ConfigureAccountParams,
+    head: &StateHead,
+    existing: Option<&AccountMetadata>,
+    stored_base: Option<&StateHead>,
+    signer_commitment: &str,
+) -> Result<Vouch> {
+    let stored_cosigner =
+        existing.is_some_and(|existing| existing.auth.signer_scheme(signer_commitment).is_some());
+    let vouch = match (existing, stored_base) {
+        (_, None) if head.nonce == Some(0) => Vouch::FirstState,
+        (Some(existing), _) if existing.released_at.is_some() || !stored_cosigner => Vouch::Chain,
+        (Some(_), Some(stored)) if stored.commitment == head.commitment => Vouch::StoredState,
+        _ => Vouch::Chain,
+    };
+    match vouch {
+        Vouch::Chain => {
+            let newer_stored = stored_base.filter(|stored| {
+                stored_cosigner
+                    && matches!((stored.nonce, head.nonce), (Some(stored_nonce), Some(submitted_nonce)) if submitted_nonce < stored_nonce)
+            });
+            ensure_on_chain_state(state, &params.account_id, &head.commitment, newer_stored)
+                .await?;
+        }
+        Vouch::FirstState => state
+            .network_client
+            .validate_first_state(&params.initial_state)
+            .map_err(|e| {
+                tracing::warn!(
+                    account_id = %params.account_id,
+                    error = %e,
+                    "initial_state is not a valid first account state in configure_account"
+                );
+                GuardianError::InvalidInput(format!("Invalid first state in initial_state: {e}"))
+            })?,
+        Vouch::StoredState => {}
+    }
+    Ok(vouch)
+}
+
+/// The chain can move while a module judges the request (a Guardian switch, for one), so a state
+/// the chain vouched for before the modules ran is read again once they did. Without modules the
+/// first read is already next to the write.
+async fn recheck_chain_after_modules(
+    state: &AppState,
+    account_id: &str,
+    head: &StateHead,
+    vouch: Vouch,
+    judged_base: &JudgedBase,
+) -> Result<()> {
+    if vouch == Vouch::Chain && *judged_base != JudgedBase::Unjudged {
+        ensure_on_chain_state(state, account_id, &head.commitment, None).await?;
+    }
+    Ok(())
 }
 
 /// Requires `commitment` to be the account's current on-chain state. An
@@ -880,38 +947,6 @@ enum Vouch {
 /// submitted state may still land. The refusal names the stored commitment
 /// and tells the stored nonce is above the submitted one, so no other key
 /// gets it.
-/// Whether a request on a registered account comes from a key that is not one of its stored
-/// signers. A stored signer of a released account is not one: the vouch after the claim checks
-/// its state against the chain and can name the stored state it is older than.
-fn is_outsider(existing: &AccountMetadata, signer_commitment: &str) -> bool {
-    existing.auth.signer_scheme(signer_commitment).is_none()
-}
-
-/// Vouches for an outsider's state before any module judges it. Without this, anyone could
-/// submit a made-up state for someone else's account and read that account's module verdicts,
-/// or hand remote modules forged states under its id. A first state is checked on its own, as
-/// the vouch after the claim does; any other state against the chain, which the vouch after the
-/// claim then does not repeat.
-async fn vouch_outsider(
-    state: &AppState,
-    params: &ConfigureAccountParams,
-    head: &StateHead,
-) -> Result<Vouch> {
-    let first_state =
-        head.nonce == Some(0) && stored_head(state, &params.account_id).await?.is_none();
-    if first_state {
-        state
-            .network_client
-            .validate_first_state(&params.initial_state)
-            .map_err(|e| {
-                GuardianError::InvalidInput(format!("Invalid first state in initial_state: {e}"))
-            })?;
-        return Ok(Vouch::FirstState);
-    }
-    ensure_on_chain_state(state, &params.account_id, &head.commitment, None).await?;
-    Ok(Vouch::Chain)
-}
-
 async fn ensure_on_chain_state(
     state: &AppState,
     account_id: &str,
@@ -3670,6 +3705,7 @@ mod tests {
         result: Result<ConfigureAccountResult>,
         storage: MockStorageBackend,
         metadata: MockMetadataStore,
+        network: MockNetworkClient,
         module: Arc<crate::modules::testing::StubModule>,
         modules: Arc<crate::modules::ModulePipeline>,
         audited: Vec<crate::audit::AuditEvent>,
@@ -3715,6 +3751,27 @@ mod tests {
         chain: StateVerification,
         adjust: impl FnOnce(MockStorageBackend) -> MockStorageBackend,
     ) -> ModuleRun {
+        configure_run(
+            existing,
+            instances,
+            module,
+            vec![chain.clone(), chain],
+            adjust,
+            |metadata| metadata,
+        )
+        .await
+    }
+
+    /// The general form: the chain answers the state checks with `chain`, in order, and `Match`
+    /// once they run out; `adjust_storage` and `adjust_metadata` change what the request meets.
+    async fn configure_run(
+        existing: impl FnOnce(String) -> Option<AccountMetadata>,
+        instances: Vec<crate::modules::registry::Instance>,
+        module: Arc<crate::modules::testing::StubModule>,
+        chain: Vec<StateVerification>,
+        adjust_storage: impl FnOnce(MockStorageBackend) -> MockStorageBackend,
+        adjust_metadata: impl FnOnce(MockMetadataStore) -> MockMetadataStore,
+    ) -> ModuleRun {
         use crate::modules::testing::pipeline;
         use crate::testing::helpers::generate_falcon_signature;
 
@@ -3725,18 +3782,19 @@ mod tests {
         let account_json = include_str!("../testing/fixtures/account.json");
         let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
 
-        let network_client = MockNetworkClient::new()
-            .with_validate_credential(Ok(()))
-            .with_get_state_head(Ok(head("0x5678", 3)))
-            .with_verify_commitment(Ok(chain.clone()))
-            .with_verify_commitment(Ok(chain))
-            .with_module_views(
-                guardian_module_sdk::AccountView {
-                    signer_commitments: vec![commitment_hex.clone()],
-                    ..Default::default()
-                },
-                guardian_module_sdk::MidenTransaction::default(),
-            );
+        let network_client = chain.into_iter().rev().fold(
+            MockNetworkClient::new()
+                .with_validate_credential(Ok(()))
+                .with_get_state_head(Ok(head("0x5678", 3))),
+            |client, answer| client.with_verify_commitment(Ok(answer)),
+        );
+        let network_client = network_client.with_module_views(
+            guardian_module_sdk::AccountView {
+                signer_commitments: vec![commitment_hex.clone()],
+                ..Default::default()
+            },
+            guardian_module_sdk::MidenTransaction::default(),
+        );
         let storage = MockStorageBackend::new()
             .with_submit_state(Ok(()))
             .with_pull_state(Ok(crate::state_object::StateObject {
@@ -3748,10 +3806,13 @@ mod tests {
                 updated_at: "2024-01-01T00:00:00Z".into(),
                 auth_scheme: "falcon".into(),
             }));
-        let storage = adjust(storage);
-        let metadata = MockMetadataStore::new()
-            .with_get(Ok(existing))
-            .with_set(Ok(()));
+        let storage = adjust_storage(storage);
+        let metadata = adjust_metadata(
+            MockMetadataStore::new()
+                .with_get(Ok(existing))
+                .with_set(Ok(())),
+        );
+        let network = network_client.clone();
         let mut state =
             create_test_app_state(network_client, storage.clone(), metadata.clone()).await;
         let modules = pipeline(instances);
@@ -3776,6 +3837,7 @@ mod tests {
             result,
             storage,
             metadata,
+            network,
             module,
             modules,
             audited: auditor.snapshot(),
@@ -3845,7 +3907,14 @@ mod tests {
             run.result,
             Err(GuardianError::ModuleDenied { .. })
         ));
+        assert_no_writes(run);
+    }
+
+    /// No state, metadata or release write: the stored signers and state are as they were.
+    fn assert_no_writes(run: &ModuleRun) {
         assert!(run.storage.get_submit_state_calls().is_empty());
+        assert!(run.storage.get_replace_state_calls().is_empty());
+        assert!(run.metadata.get_create_calls().is_empty());
         assert!(run.metadata.get_set_calls().is_empty());
         assert!(run.metadata.clear_released_calls.lock().unwrap().is_empty());
     }
@@ -4007,7 +4076,8 @@ mod tests {
     }
 
     /// As [`lose_the_claim_under`]; with `winner_signer`, the account it loses to lists that
-    /// signer instead of the requester's key, and the chain does not hold the submitted state.
+    /// signer instead of the requester's key, and the chain holds the submitted state for the
+    /// vouch and the check after the modules, then no longer when the claim is lost.
     async fn lose_the_claim_to(
         module: Arc<dyn guardian_module_sdk::Module>,
         winner_signer: Option<&str>,
@@ -4015,6 +4085,29 @@ mod tests {
         Result<ConfigureAccountResult>,
         MockMetadataStore,
         MockStorageBackend,
+    ) {
+        let (result, metadata, storage, _) = lose_the_claim_with(
+            module,
+            winner_signer,
+            crate::modules::catalog::Scope::All,
+            |_| {},
+        )
+        .await;
+        (result, metadata, storage)
+    }
+
+    /// As [`lose_the_claim_to`], with the instance in `scope` and `share` handed the storage
+    /// mock before the request runs; also returns the pipeline.
+    async fn lose_the_claim_with(
+        module: Arc<dyn guardian_module_sdk::Module>,
+        winner_signer: Option<&str>,
+        scope: crate::modules::catalog::Scope,
+        share: impl FnOnce(&MockStorageBackend),
+    ) -> (
+        Result<ConfigureAccountResult>,
+        MockMetadataStore,
+        MockStorageBackend,
+        Arc<crate::modules::ModulePipeline>,
     ) {
         use crate::modules::catalog::OnError;
         use crate::modules::testing::{instance, pipeline};
@@ -4032,6 +4125,7 @@ mod tests {
             .with_create(Ok(false))
             .with_update_timestamp_cas(Ok(true));
         let storage = MockStorageBackend::new();
+        share(&storage);
         let mut state = create_test_app_state(
             MockNetworkClient::new()
                 .with_validate_credential(Ok(()))
@@ -4040,6 +4134,8 @@ mod tests {
                     Some(_) => StateVerification::Absent,
                     None => StateVerification::Match,
                 }))
+                .with_verify_commitment(Ok(StateVerification::Match))
+                .with_verify_commitment(Ok(StateVerification::Match))
                 .with_module_views(
                     guardian_module_sdk::AccountView {
                         signer_commitments: vec![commitment.clone()],
@@ -4051,12 +4147,15 @@ mod tests {
             metadata.clone(),
         )
         .await;
-        state.modules = Some(pipeline(vec![instance(
+        let mut judging = instance(
             "signers",
             &[HookName::BeforeAccountRegistered],
             OnError::Deny,
             module,
-        )]));
+        );
+        judging.config.scope = scope;
+        let modules = pipeline(vec![judging]);
+        state.modules = Some(modules.clone());
         let initial_state =
             serde_json::from_str(include_str!("../testing/fixtures/account.json")).unwrap();
         let result = configure_account(
@@ -4072,7 +4171,47 @@ mod tests {
             },
         )
         .await;
-        (result, metadata, storage)
+        (result, metadata, storage, modules)
+    }
+
+    /// The winner of a claim may stop between its claim and its copy (a replay ordering, a
+    /// dropped connection, a storage error) while the loser stores the state, so the loser copies
+    /// the defaults too; the copy happens once, since it needs an account with no history.
+    #[tokio::test]
+    async fn a_lost_claim_copies_the_default_modules_when_the_account_has_none() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let (result, _, _, modules) = lose_the_claim_with(
+            module,
+            None,
+            crate::modules::catalog::Scope::Default,
+            |_| {},
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(assignment_of(&modules).await.len(), 1);
+    }
+
+    /// A lost claim is read again after its second judgement too: a state the winner stored
+    /// meanwhile is never replaced.
+    #[tokio::test]
+    async fn a_state_stored_on_a_lost_claim_while_it_is_judged_again_is_not_replaced() {
+        let storing = StoresStateWhileJudging::on_call(1);
+        let (result, metadata, storage, _) = lose_the_claim_with(
+            storing.clone(),
+            None,
+            crate::modules::catalog::Scope::All,
+            |storage| *storing.storage.lock().unwrap() = Some(storage.clone()),
+        )
+        .await;
+        assert!(
+            matches!(
+                &result,
+                Err(GuardianError::CommitmentMismatch { expected, .. }) if expected == "0xfinished"
+            ),
+            "{result:?}"
+        );
+        assert!(storage.get_submit_state_calls().is_empty());
+        assert!(metadata.get_set_calls().is_empty());
     }
 
     #[tokio::test]
@@ -4088,17 +4227,21 @@ mod tests {
         assert_eq!(storage.get_submit_state_calls().len(), 1);
     }
 
+    /// A lost claim is a reconfiguration of the account it lost to, so it consumes its replay
+    /// timestamp against that account before it is judged again, and a refusal there stores
+    /// nothing.
     #[tokio::test]
-    async fn a_lost_claim_refused_on_the_second_judgement_consumes_and_stores_nothing() {
+    async fn a_lost_claim_consumes_before_its_second_judgement_and_a_refusal_stores_nothing() {
         let (result, metadata, storage) =
             lose_the_claim_under(Arc::new(AllowsOnce::default())).await;
         assert!(
             matches!(&result, Err(GuardianError::ModuleDenied { reason_code, .. }) if reason_code == "signer_not_allowed"),
             "{result:?}"
         );
-        assert!(
-            metadata.get_update_timestamp_cas_calls().is_empty(),
-            "the replay timestamp is not consumed, so the request can be sent again"
+        assert_eq!(
+            metadata.get_update_timestamp_cas_calls().len(),
+            1,
+            "consumed against the winner's account before the second judgement"
         );
         assert!(storage.get_submit_state_calls().is_empty());
         assert!(metadata.get_set_calls().is_empty());
@@ -4228,6 +4371,263 @@ mod tests {
         );
     }
 
+    /// A replay of a registered account's configuration is refused before any chain read or
+    /// module call, whoever signed it.
+    #[tokio::test]
+    async fn a_replay_from_a_stored_signer_is_refused_before_any_chain_read_or_module() {
+        let module = StubModule::allowing();
+        let run = configure_run(
+            existing_account(false, true),
+            vec![crate::modules::testing::instance(
+                "signers",
+                &[HookName::BeforeAccountRegistered],
+                crate::modules::catalog::OnError::Deny,
+                module.clone(),
+            )],
+            module.clone(),
+            Vec::new(),
+            |storage| storage,
+            |metadata| metadata.with_update_timestamp_cas(Ok(false)),
+        )
+        .await;
+        assert!(
+            matches!(run.result, Err(GuardianError::AuthenticationReplay)),
+            "{:?}",
+            run.result
+        );
+        assert_eq!(module.calls(), 0);
+        assert!(run.network.get_verify_commitment_calls().is_empty());
+        assert_no_writes(&run);
+    }
+
+    /// A new account's state is vouched for before any module judges it, so a state the chain
+    /// does not hold is refused without a module call, a claim or a default copy.
+    #[tokio::test]
+    async fn a_new_accounts_unvouched_state_is_refused_before_any_module_judges_it() {
+        let module = StubModule::allowing();
+        let run = configure_on_chain(
+            |_| None,
+            vec![default_instance(
+                "screening",
+                &[HookName::BeforeAccountRegistered],
+                module.clone(),
+            )],
+            module.clone(),
+            StateVerification::Absent,
+        )
+        .await;
+        assert!(
+            matches!(run.result, Err(GuardianError::StateNotOnChain { .. })),
+            "{:?}",
+            run.result
+        );
+        assert_eq!(module.calls(), 0);
+        assert_no_writes(&run);
+        assert!(assignment_of(&run.modules).await.is_empty());
+    }
+
+    /// Finishing a claim is held to the same rule: its state is vouched for before the default
+    /// modules judge it, and a refusal copies no defaults.
+    #[tokio::test]
+    async fn an_unfinished_claims_unvouched_state_is_refused_before_any_module_judges_it() {
+        let (result, modules, module) =
+            finish_claim_on(Prior::Nothing, StateVerification::Absent, true).await;
+        assert!(
+            matches!(result, Err(GuardianError::StateNotOnChain { .. })),
+            "{result:?}"
+        );
+        assert_eq!(module.calls(), 0);
+        assert!(assignment_of(&modules).await.is_empty());
+    }
+
+    /// A replay of the request that claimed an account is refused before the defaults are
+    /// copied, so a refused request leaves no assignment behind.
+    #[tokio::test]
+    async fn a_replay_finishing_a_claim_copies_no_defaults() {
+        let (result, modules, module) =
+            finish_claim_on(Prior::Nothing, StateVerification::Match, false).await;
+        assert!(
+            matches!(result, Err(GuardianError::AuthenticationReplay)),
+            "{result:?}"
+        );
+        assert_eq!(module.calls(), 0);
+        assert!(assignment_of(&modules).await.is_empty());
+    }
+
+    /// A state the chain vouched for before the modules ran is read again after them: if the
+    /// chain moved meanwhile (a Guardian switch), nothing is written and the release stands.
+    #[tokio::test]
+    async fn a_chain_that_moves_while_the_modules_judge_refuses_the_write() {
+        let module = StubModule::allowing();
+        let run = configure_run(
+            existing_account(false, true),
+            vec![crate::modules::testing::instance(
+                "signers",
+                &[HookName::BeforeAccountRegistered],
+                crate::modules::catalog::OnError::Deny,
+                module.clone(),
+            )],
+            module.clone(),
+            vec![
+                StateVerification::Match,
+                StateVerification::Mismatch {
+                    on_chain: "0xswitched".into(),
+                },
+            ],
+            |storage| storage,
+            |metadata| metadata,
+        )
+        .await;
+        assert!(
+            matches!(run.result, Err(GuardianError::StateNotOnChain { .. })),
+            "{:?}",
+            run.result
+        );
+        assert_eq!(module.calls(), 1);
+        assert_eq!(run.network.get_verify_commitment_calls().len(), 2);
+        assert_no_writes(&run);
+    }
+
+    /// The rule that keeps an account's signers safe holds with modules in the path, even when
+    /// every module allows: a key the account does not list, or a listed key submitting a state
+    /// that is neither the stored one nor on chain, replaces nothing.
+    #[tokio::test]
+    async fn a_forged_state_never_replaces_the_stored_signers_even_when_modules_allow() {
+        for (label, existing) in [
+            ("outsider", existing_account_listing("0xother")),
+            ("stored signer", existing_account_listing_requester()),
+        ] {
+            let module = StubModule::allowing();
+            let run = configure_run(
+                existing,
+                vec![crate::modules::testing::instance(
+                    "signers",
+                    &[HookName::BeforeAccountRegistered],
+                    crate::modules::catalog::OnError::Deny,
+                    module.clone(),
+                )],
+                module.clone(),
+                vec![StateVerification::Absent],
+                |storage| {
+                    storage.with_pull_state_head(crate::state_object::StateHead {
+                        commitment: "0xstored".into(),
+                        nonce: Some(2),
+                    })
+                },
+                |metadata| metadata,
+            )
+            .await;
+            assert!(
+                matches!(run.result, Err(GuardianError::StateNotOnChain { .. })),
+                "{label}: {:?}",
+                run.result
+            );
+            assert_eq!(module.calls(), 0, "{label}: no module saw the forged state");
+            assert_no_writes(&run);
+        }
+    }
+
+    /// Allows, and on its `on_call`-th evaluation (from 0) stores a state on the account through
+    /// the shared mock, as a concurrent request that finishes the claim would.
+    struct StoresStateWhileJudging {
+        storage: std::sync::Mutex<Option<MockStorageBackend>>,
+        on_call: usize,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl StoresStateWhileJudging {
+        fn on_call(on_call: usize) -> Arc<Self> {
+            Arc::new(Self {
+                storage: std::sync::Mutex::new(None),
+                on_call,
+                calls: Default::default(),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl guardian_module_sdk::Module for StoresStateWhileJudging {
+        async fn describe(
+            &self,
+            _guardian: &guardian_module_sdk::DescribeRequest,
+        ) -> std::result::Result<guardian_module_sdk::ModuleInfo, guardian_module_sdk::ModuleError>
+        {
+            Ok(Default::default())
+        }
+
+        async fn validate_params(
+            &self,
+            _params: &[u8],
+        ) -> std::result::Result<guardian_module_sdk::ParamsVerdict, guardian_module_sdk::ModuleError>
+        {
+            Ok(guardian_module_sdk::ParamsVerdict::ok())
+        }
+
+        async fn evaluate(
+            &self,
+            _request: &guardian_module_sdk::HookRequest,
+        ) -> std::result::Result<guardian_module_sdk::Decision, guardian_module_sdk::ModuleError>
+        {
+            let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if call == self.on_call
+                && let Some(storage) = self.storage.lock().unwrap().clone()
+            {
+                let _ = storage.with_pull_state_head(crate::state_object::StateHead {
+                    commitment: "0xfinished".into(),
+                    nonce: Some(5),
+                });
+            }
+            Ok(guardian_module_sdk::Decision::allow())
+        }
+    }
+
+    /// An account with no stored state is read again after the modules: a state another
+    /// request stored while they judged is never replaced by this one's write.
+    #[tokio::test]
+    async fn a_state_stored_on_an_unfinished_claim_while_the_modules_judge_is_not_replaced() {
+        let storing = StoresStateWhileJudging::on_call(0);
+        let run = configure_run(
+            existing_account(false, false),
+            vec![crate::modules::testing::instance(
+                "signers",
+                &[HookName::BeforeAccountRegistered],
+                crate::modules::catalog::OnError::Deny,
+                storing.clone(),
+            )],
+            StubModule::allowing(),
+            Vec::new(),
+            |storage| {
+                let storage = storage
+                    .with_pull_state(Err("Failed to pull state: Record not found".to_string()));
+                *storing.storage.lock().unwrap() = Some(storage.clone());
+                storage
+            },
+            |metadata| metadata,
+        )
+        .await;
+        assert!(
+            matches!(
+                &run.result,
+                Err(GuardianError::CommitmentMismatch { expected, .. }) if expected == "0xfinished"
+            ),
+            "{:?}",
+            run.result
+        );
+        assert!(run.storage.get_submit_state_calls().is_empty());
+        assert!(run.storage.get_replace_state_calls().is_empty());
+        assert!(run.metadata.get_set_calls().is_empty());
+    }
+
+    fn existing_account_listing(
+        signer: &'static str,
+    ) -> Box<dyn FnOnce(String) -> Option<AccountMetadata>> {
+        Box::new(move |_| existing_account(false, false)(signer.to_string()))
+    }
+
+    fn existing_account_listing_requester() -> Box<dyn FnOnce(String) -> Option<AccountMetadata>> {
+        Box::new(existing_account(false, false))
+    }
+
     /// What an operator wrote to an account's modules between its claim and the retry that
     /// finishes its registration.
     enum Prior {
@@ -4241,6 +4641,20 @@ mod tests {
     /// `all` instance an operator can layer.
     async fn finish_claim_after(
         prior: Prior,
+    ) -> (
+        Result<ConfigureAccountResult>,
+        Arc<crate::modules::ModulePipeline>,
+        Arc<crate::modules::testing::StubModule>,
+    ) {
+        finish_claim_on(prior, StateVerification::Match, true).await
+    }
+
+    /// As [`finish_claim_after`], with the chain answering `chain` and, unless `fresh`, the
+    /// request's timestamp already used (a replay).
+    async fn finish_claim_on(
+        prior: Prior,
+        chain: StateVerification,
+        fresh: bool,
     ) -> (
         Result<ConfigureAccountResult>,
         Arc<crate::modules::ModulePipeline>,
@@ -4298,6 +4712,7 @@ mod tests {
             MockNetworkClient::new()
                 .with_validate_credential(Ok(()))
                 .with_get_state_head(Ok(head("0x1234", 3)))
+                .with_verify_commitment(Ok(chain))
                 .with_module_views(
                     guardian_module_sdk::AccountView {
                         signer_commitments: vec![commitment.clone()],
@@ -4310,7 +4725,8 @@ mod tests {
                 .with_submit_state(Ok(())),
             MockMetadataStore::new()
                 .with_get(Ok(Some(claimed_metadata(account_id, &commitment))))
-                .with_set(Ok(())),
+                .with_set(Ok(()))
+                .with_update_timestamp_cas(Ok(fresh)),
         )
         .await;
         state.modules = Some(modules.clone());
