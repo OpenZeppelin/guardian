@@ -212,7 +212,7 @@ pub(crate) async fn acknowledge_applied(
 
     let mut acknowledged = delta.clone();
     acknowledged.new_commitment = Some(applied.commitment.clone());
-    acknowledged.metadata = derived_metadata;
+    acknowledged.metadata = derived_metadata.map(Into::into);
     acknowledged = state.ack.ack_delta(acknowledged, scheme).await?;
     acknowledged.ack_pubkey = state.ack.pubkey(scheme);
     acknowledged.ack_scheme = scheme.as_str().to_string();

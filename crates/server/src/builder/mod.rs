@@ -690,6 +690,16 @@ impl ServerBuilder {
         let rpc_settings = crate::network::RpcSettings::resolve_for(self.rpc, network_type)?;
         let network_client = rpc_settings.connect().await?;
         match self.execution.startup_notice() {
+            crate::config::execution::ExecutionNotice::Enabled
+                if self.execution.batch.batches() =>
+            {
+                tracing::info!(
+                    max_txs_per_batch = self.execution.batch.max_transactions,
+                    batch_window_ms = self.execution.batch.window.as_millis(),
+                    "Guardian execution is offered; transactions of different accounts proved \
+                     within the batch window are submitted together as one batch"
+                )
+            }
             crate::config::execution::ExecutionNotice::Enabled => {
                 tracing::info!("Guardian execution is offered")
             }
@@ -717,8 +727,10 @@ impl ServerBuilder {
                  whenever that network's protocol version differs from this one's"
             );
         }
+        let execution_shutdown = tokio_util::sync::CancellationToken::new();
         let execution = crate::services::execute_proposal::ExecutionState {
-            executor: rpc_settings.proposal_executor(&self.execution)?,
+            executor: rpc_settings
+                .proposal_executor(&self.execution, execution_shutdown.clone())?,
             leases: coordination
                 .as_ref()
                 .map(|handles| handles.execution_leases.clone())
@@ -734,7 +746,7 @@ impl ServerBuilder {
                 &self.execution,
             ),
             config: self.execution.clone(),
-            shutdown: tokio_util::sync::CancellationToken::new(),
+            shutdown: execution_shutdown,
         };
 
         // Block watch reads the same node over sources of its own (a

@@ -195,6 +195,16 @@ jobs:
           --features integration,e2e
           testing::e2e::
 
+      # Guardian execution's e2e-gated modules (the attempt, batched submission, the executor's
+      # own end-to-end tests) live outside testing::, so the filters above skip them.
+      - name: Run server Miden execution E2E tests
+        run: >-
+          cargo test
+          -p guardian-server
+          --lib
+          --features integration,e2e
+          network::miden::execution::
+
   postgres-test:
     name: Postgres Test Suite
     runs-on: ubuntu-latest

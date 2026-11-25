@@ -52,6 +52,7 @@ locals {
     "guardian_execution_chain_view_duration_seconds",
     "guardian_execution_proving_duration_seconds",
     "guardian_execution_phase_duration_seconds",
+    "guardian_execution_batch_proving_duration_seconds",
     "guardian_db_pool_acquire_duration_seconds",
     "guardian_rate_limit_lock_wait_duration_seconds",
     "guardian_state_reconstruction_duration_seconds",
@@ -301,6 +302,14 @@ locals {
             dimensions            = [["phase"]]
           },
           {
+            # Batched submission (#239), off unless GUARDIAN_EXECUTION_MAX_TXS_PER_BATCH > 1.
+            metric_name_selectors = [
+              "^guardian_execution_batches_total$",
+              "^guardian_execution_batched_transactions_total$",
+            ]
+            dimensions = [["outcome"]]
+          },
+          {
             metric_name_selectors = [
               "^guardian_execution_chain_view_duration_seconds$",
               "^guardian_execution_proving_duration_seconds$",
@@ -309,6 +318,7 @@ locals {
               "^guardian_execution_oldest_reservation_age_seconds$",
               "^guardian_execution_observation_outage_seconds$",
               "^guardian_execution_records_pruned_total$",
+              "^guardian_execution_batch_proving_duration_seconds$",
             ]
             dimensions = [[]]
           },

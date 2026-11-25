@@ -75,6 +75,24 @@ impl NetworkConfig {
         matches!(self, Self::Miden { .. })
     }
 
+    /// A Miden account id is accepted only in its canonical form, the
+    /// lowercase hex of `AccountId::to_hex`. An EVM account id is held to its
+    /// canonical form by [`Self::validate_for_account`].
+    pub fn ensure_canonical_account_id(&self, account_id: &str) -> Result<(), String> {
+        match self {
+            Self::Miden { .. } => {
+                let expected = miden_protocol::account::AccountId::from_hex(account_id)
+                    .map_err(|e| format!("'{account_id}' is not a Miden account id: {e}"))?
+                    .to_hex();
+                if account_id != expected {
+                    return Err(format!("must be '{expected}', got '{account_id}'"));
+                }
+                Ok(())
+            }
+            Self::Evm { .. } => Ok(()),
+        }
+    }
+
     pub fn validate_for_account(&self, account_id: &str) -> Result<Self, String> {
         match self {
             Self::Miden { network_type } => Ok(Self::Miden {
@@ -226,6 +244,35 @@ mod tests {
                 "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
             ),
             NetworkConfig::Miden { .. } => panic!("expected evm config"),
+        }
+    }
+
+    #[test]
+    fn refuses_a_non_canonical_miden_account_id() {
+        let canonical = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let other = "0x7B7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let config = NetworkConfig::miden_default();
+
+        config
+            .ensure_canonical_account_id(canonical)
+            .expect("the canonical form is accepted");
+        let refusal = config
+            .ensure_canonical_account_id(other)
+            .expect_err("a non-canonical form is refused");
+
+        assert!(refusal.contains(canonical), "{refusal}");
+    }
+
+    #[test]
+    fn refuses_a_malformed_miden_account_id() {
+        let config = NetworkConfig::miden_default();
+
+        for malformed in ["0x", "not-an-account-id"] {
+            let refusal = config
+                .ensure_canonical_account_id(malformed)
+                .expect_err("a malformed id is refused");
+
+            assert!(refusal.contains(malformed), "{refusal}");
         }
     }
 }
