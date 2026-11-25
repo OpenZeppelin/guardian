@@ -78,7 +78,7 @@ async fn http_configure(
         } },
         "initial_state": account.to_json(),
     });
-    let (signature, timestamp) = signer.sign_json_payload(account_id_hex, &body);
+    let (signature, timestamp) = signer.sign_json_payload(&account.id().to_hex(), &body);
     let request = Request::builder()
         .uri("/configure")
         .method("POST")
@@ -128,6 +128,21 @@ async fn http_configure_accepts_only_the_canonical_account_id() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "non-canonical: {body}");
     assert_eq!(body["code"], "invalid_account_id", "non-canonical: {body}");
     assert!(!has_record(&state, &other).await);
+}
+
+#[tokio::test]
+async fn http_configure_refuses_a_malformed_account_id() {
+    let state = test_state().await;
+    let app = create_router(state.clone());
+    let signer = TestSigner::new();
+    let account = fixture_account(&state, &signer, [31u8; 32]);
+
+    for malformed in ["0x", "not-an-account-id"] {
+        let (status, body) = http_configure(&app, &signer, malformed, &account).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{malformed}: {body}");
+        assert_eq!(body["code"], "invalid_account_id", "{malformed}: {body}");
+        assert!(!has_record(&state, malformed).await);
+    }
 }
 
 #[tokio::test]
