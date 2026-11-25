@@ -272,6 +272,12 @@ impl InstanceConfig {
     pub fn catalog_managed_params(&self) -> bool {
         self.file_managed_params || !self.operator_can_set_params
     }
+
+    /// Whether the catalog keeps the instance on whatever is stored: declared enabled and not
+    /// operator-disableable. A disable written by a replica on an older catalog never applies.
+    pub fn catalog_requires_enabled(&self) -> bool {
+        self.catalog_enabled && !self.operator_can_disable
+    }
 }
 
 #[derive(Debug, Clone)]
