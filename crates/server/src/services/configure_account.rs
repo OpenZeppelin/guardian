@@ -3,7 +3,7 @@ use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials};
 use crate::metadata::{AccountMetadata, ClearTransition};
 use crate::modules::HookName;
-use crate::modules::request::{self, RegistrationInput};
+use crate::modules::request::{self, RegistrationInput, StoredRegistration};
 use crate::network::{RpcReadMode, StateVerification};
 use crate::services::{consume_auth_timestamp, validate_request_timestamp};
 use crate::state::AppState;
@@ -98,9 +98,13 @@ pub async fn configure_account(
     // the account below and then failed before writing its state (a storage
     // error after the claim). Its retry finishes that first configuration:
     // it is held to the scheme policy for new accounts and counted as a
-    // creation. A failed state read keeps the reconfiguration treatment, so
-    // it can never block an account that does have state.
-    let unfinished_claim = existing.is_some() && !has_stored_state(state, &params.account_id).await;
+    // creation. A failed state read refuses the request as retryable rather
+    // than guessing: guessing "stored" would skip the default copy for good,
+    // guessing "absent" would apply the new-account rules to a configured one.
+    let unfinished_claim = match &existing {
+        Some(_) => !has_stored_state(state, &params.account_id).await?,
+        None => false,
+    };
     // The GUARDIAN's scheme selects this server's ACK identity for the
     // account; every scheme the account uses, its cosigners' included, is
     // held to the policy for new accounts. A reconfiguration is held to it
@@ -286,7 +290,10 @@ pub async fn configure_account(
         state,
         &params,
         &signer_commitment,
-        existing.is_some() && !unfinished_claim,
+        stored_base
+            .as_ref()
+            .and(existing.as_ref())
+            .map(|existing| &existing.auth),
         first_registration,
     )
     .await?;
@@ -364,7 +371,7 @@ pub async fn configure_account(
             state,
             &params,
             &signer_commitment,
-            stored_base.is_some(),
+            stored_base.as_ref().map(|_| &claimed.auth),
             false,
         )
         .await?
@@ -687,13 +694,14 @@ impl JudgedBase {
 }
 
 /// Runs `before_account_registered` for this request: with the stored state as `before` when
-/// `stored`, without one for a first configuration or a claim whose state was never stored.
+/// there is one, `stored_auth` being the auth configuration stored with it, and without one for
+/// a first configuration or a claim whose state was never stored.
 /// Returns the default copies to write and the stored state the modules judged against.
 async fn approve_registration(
     state: &AppState,
     params: &ConfigureAccountParams,
     signer_commitment: &str,
-    stored: bool,
+    stored_auth: Option<&Auth>,
     first_registration: bool,
 ) -> Result<(Vec<crate::modules::store::Assigned>, JudgedBase)> {
     let (plan, default_copies) = match state.modules.as_deref() {
@@ -709,7 +717,7 @@ async fn approve_registration(
         None => (None, Vec::new()),
     };
     if let Some(plan) = plan {
-        let stored_state = if stored {
+        let stored_state = if stored_auth.is_some() {
             Some(
                 state
                     .storage
@@ -748,7 +756,9 @@ async fn approve_registration(
                     submitter_session: false,
                     auth: &params.auth,
                     network_config: &params.network_config,
-                    stored,
+                    stored: stored
+                        .zip(stored_auth)
+                        .map(|(view, auth)| StoredRegistration { view, auth }),
                     initial,
                     accounting_time: state.clock.now(),
                 })
@@ -774,19 +784,21 @@ async fn has_module_history(state: &AppState, account_id: &str) -> Result<bool> 
     }
 }
 
-/// Whether the account has a stored state. A failed read counts as stored, so it can never make
-/// an account with state look unconfigured.
-async fn has_stored_state(state: &AppState, account_id: &str) -> bool {
+/// Whether the account has a stored state. A failed read is a storage error, which the client
+/// retries, never a guess either way.
+async fn has_stored_state(state: &AppState, account_id: &str) -> Result<bool> {
     match state.storage.pull_state_commitment(account_id).await {
-        Ok(_) => true,
-        Err(e) if crate::storage::is_storage_not_found(&e) => false,
+        Ok(_) => Ok(true),
+        Err(e) if crate::storage::is_storage_not_found(&e) => Ok(false),
         Err(e) => {
-            tracing::warn!(
+            tracing::error!(
                 account_id = %account_id,
                 error = %e,
-                "Could not check for a stored state; treating the account as configured"
+                "Could not check for a stored state in configure_account"
             );
-            true
+            Err(GuardianError::StorageError(format!(
+                "Failed to check for a stored state: {e}"
+            )))
         }
     }
 }
@@ -3931,6 +3943,33 @@ mod tests {
         assert!(request.after.is_some());
     }
 
+    /// A single-key account's view takes its signer from the auth configuration: `before` from
+    /// the one stored with the account, `after` from the one the request registers.
+    #[tokio::test]
+    async fn a_single_key_reconfiguration_shows_the_stored_signer_before_and_the_new_one_after() {
+        let run = configure_with_module(
+            |commitment| {
+                existing_account(false, false)(commitment).map(|stored| AccountMetadata {
+                    auth: Auth::MidenFalconRpo {
+                        cosigner_commitments: vec!["0xold".into()],
+                    },
+                    ..stored
+                })
+            },
+            StubModule::allowing(),
+        )
+        .await;
+        run.result.expect("reconfiguration succeeds");
+        let request = run.module.last_request().expect("module was called");
+        assert_eq!(
+            request.before.expect("stored state").signer_commitments,
+            vec!["0xold".to_string()]
+        );
+        let after = request.after.expect("new state").signer_commitments;
+        assert_eq!(after.len(), 1);
+        assert_ne!(after, vec!["0xold".to_string()]);
+    }
+
     #[tokio::test]
     async fn allowed_reconfiguration_keeps_the_pause_and_sees_the_stored_state() {
         let run =
@@ -4443,6 +4482,25 @@ mod tests {
         assert!(assignment_of(&modules).await.is_empty());
     }
 
+    /// A failed read of whether a claim stored its state refuses the retry as a storage error:
+    /// treating it as stored would run it as a reconfiguration and store the state without the
+    /// default modules for good.
+    #[tokio::test]
+    async fn a_failed_state_check_on_an_unfinished_claim_refuses_instead_of_skipping_the_defaults()
+    {
+        let (result, modules, module) =
+            finish_claim_with(Prior::Nothing, StateVerification::Match, true, |storage| {
+                storage.with_pull_state_commitment_error("connection reset")
+            })
+            .await;
+        assert!(
+            matches!(result, Err(GuardianError::StorageError(_))),
+            "{result:?}"
+        );
+        assert_eq!(module.calls(), 0);
+        assert!(assignment_of(&modules).await.is_empty());
+    }
+
     /// A replay of the request that claimed an account is refused before the defaults are
     /// copied, so a refused request leaves no assignment behind.
     #[tokio::test]
@@ -4663,6 +4721,20 @@ mod tests {
         Arc<crate::modules::ModulePipeline>,
         Arc<crate::modules::testing::StubModule>,
     ) {
+        finish_claim_with(prior, chain, fresh, |storage| storage).await
+    }
+
+    /// As [`finish_claim_on`], with `adjust` changing the storage the request meets.
+    async fn finish_claim_with(
+        prior: Prior,
+        chain: StateVerification,
+        fresh: bool,
+        adjust: impl FnOnce(MockStorageBackend) -> MockStorageBackend,
+    ) -> (
+        Result<ConfigureAccountResult>,
+        Arc<crate::modules::ModulePipeline>,
+        Arc<crate::modules::testing::StubModule>,
+    ) {
         use crate::testing::helpers::generate_falcon_signature;
 
         let account_id = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
@@ -4723,9 +4795,11 @@ mod tests {
                     },
                     guardian_module_sdk::MidenTransaction::default(),
                 ),
-            MockStorageBackend::new()
-                .with_pull_state(Err("Failed to pull state: Record not found".to_string()))
-                .with_submit_state(Ok(())),
+            adjust(
+                MockStorageBackend::new()
+                    .with_pull_state(Err("Failed to pull state: Record not found".to_string()))
+                    .with_submit_state(Ok(())),
+            ),
             MockMetadataStore::new()
                 .with_get(Ok(Some(claimed_metadata(account_id, &commitment))))
                 .with_set(Ok(()))

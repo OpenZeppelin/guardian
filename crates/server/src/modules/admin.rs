@@ -528,7 +528,9 @@ pub async fn enable(
                 .await
                 .map_err(GuardianError::StorageError)?,
         );
-        super::metrics::enabled(module_id, true);
+        pipeline.checks_passed(module_id);
+        super::metrics::up(module_id, true);
+        pipeline.publish_instance(instance, true);
     }
     let payload = serde_json::json!({ "module_id": module_id, "reason": reason, "params_version": committed });
     audit(
@@ -567,7 +569,7 @@ pub async fn disable(
                 .await
                 .map_err(GuardianError::StorageError)?,
         );
-        super::metrics::enabled(module_id, false);
+        pipeline.publish_instance(instance, false);
     }
     let payload = serde_json::json!({ "module_id": module_id, "reason": reason, "params_version": committed });
     audit(
@@ -1906,15 +1908,71 @@ mod tests {
             .unwrap();
         assert!(!view.enabled);
         assert!(view.enabled_drift);
+        pipeline.breakers().hold_open("blocklist");
         let view = enable(&state, &operator, "blocklist", "vendor fixed", None)
             .await
             .unwrap();
         assert!(view.enabled);
+        assert_eq!(
+            pipeline.breakers().state("blocklist"),
+            crate::modules::breaker::CircuitState::HalfOpen,
+            "the checks enable ran let the next call through without waiting for a probe"
+        );
         let history = history(&state, "blocklist", None, None)
             .await
             .unwrap()
             .entries;
         assert_eq!(history[0].new, json!({ "enabled": true }), "newest first");
+    }
+
+    /// An operator's enable or disable publishes the instance's gauges at once: a disabled
+    /// instance stops reporting an open circuit, and an enabled one that passed its checks
+    /// reports up, without waiting for the next probe.
+    #[tokio::test]
+    async fn enable_and_disable_publish_the_instance_gauges_at_once() {
+        let state = state();
+        let operator = operator();
+        let pipeline = state.modules.as_deref().unwrap();
+        pipeline
+            .store()
+            .seed_instance(
+                "blocklist",
+                true,
+                &json!({ "denylist": ["0x000000000000000000000000000aaa"] }),
+                &json!({ "denylist": ["0x000000000000000000000000000aaa"] }),
+                "t0",
+            )
+            .await
+            .unwrap();
+        let recorder = crate::metrics::build_recorder();
+        let handle = recorder.handle();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+        crate::modules::metrics::circuit_open("blocklist", true);
+        crate::modules::metrics::up("blocklist", false);
+
+        disable(&state, &operator, "blocklist", "faulty vendor", None)
+            .await
+            .unwrap();
+        let text = handle.render();
+        for line in [
+            "guardian_module_enabled{module=\"blocklist\"} 0",
+            "guardian_module_circuit_open{module=\"blocklist\"} 0",
+        ] {
+            assert!(text.contains(line), "{line} missing from:\n{text}");
+        }
+
+        pipeline.breakers().hold_open("blocklist");
+        enable(&state, &operator, "blocklist", "vendor fixed", None)
+            .await
+            .unwrap();
+        let text = handle.render();
+        for line in [
+            "guardian_module_enabled{module=\"blocklist\"} 1",
+            "guardian_module_up{module=\"blocklist\"} 1",
+            "guardian_module_circuit_open{module=\"blocklist\"} 0",
+        ] {
+            assert!(text.contains(line), "{line} missing from:\n{text}");
+        }
     }
 
     #[tokio::test]
