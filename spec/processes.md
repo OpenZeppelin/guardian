@@ -63,7 +63,7 @@ sequenceDiagram
     S->>N: verify_commitment / find_transaction_ending_at(stored commitment)
     Note over S,N: the chain reached the stored state: 400 commitment_mismatch (a stale state); the chain cannot be read: rpc_unavailable (fail closed)
   end
-  opt the request claimed the account (or finishes an unfinished claim; a lost claim copies nothing) and default-scope modules apply
+  opt the request claimed the account (or finishes an unfinished claim, or lost the claim to one that copied nothing) and default-scope modules apply
     S->>S: copy them into the account's assignment\n(only with no assignment and no assignment history)
   end
   alt existing account
