@@ -73,6 +73,14 @@ disclosure = "params"
 description = "Qualification recipient denylist for the accounts a scenario assigns"
 
 [[module]]
+id = "qual-register"
+kind = "signer-policy"
+scope = "assigned"
+hooks = ["before_account_registered"]
+timeout_ms = 200
+on_error = "deny"
+
+[[module]]
 id = "qual-switch"
 kind = "signer-policy"
 scope = "assigned"

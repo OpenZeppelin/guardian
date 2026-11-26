@@ -9,6 +9,7 @@ import type { ActionContext, ActionOutcome } from '../runner.js';
 export const GATE = 'qual-gate';
 export const CAP = 'qual-cap';
 export const RECIPIENT = 'qual-recipient';
+export const REGISTER = 'qual-register';
 
 /**
  * A signer commitment nobody holds. Checked against every signer, an allowlist
@@ -43,6 +44,72 @@ export async function expectDenied(
       reason: refusal
         ? `${what} was refused as ${JSON.stringify(refusal)}, not by ${module} for ${reasonCode}`
         : `${what} failed without a module refusal: ${String(error)}`,
+    };
+  }
+}
+
+/**
+ * The registration hook over HTTP: `qual-register`, a signer policy on
+ * `before_account_registered` only, assigned to the fixture account. Checking
+ * every signer against an allowlist naming none of them, it refuses a
+ * re-registration of the account with its own signers. Checking only added
+ * signers, it allows the same re-registration, since every signer is already in
+ * the stored state the hook receives as `before`. The assignment is cleared on
+ * every path. Mirrors `assert_registration_refusal` in the Rust driver.
+ */
+export async function assertRegistrationRefusal(context: ActionContext): Promise<ActionOutcome> {
+  let configure: () => Promise<unknown>;
+  let accountId: string;
+  try {
+    const fixtures = loadServerFixtures();
+    const guardian = new GuardianHttpClient(context.httpEndpoint);
+    guardian.setSigner(new FalconSigner(fixtures.signerKey));
+    accountId = fixtures.accountId;
+    configure = () =>
+      guardian.configure({
+        accountId: fixtures.accountId,
+        auth: { MidenFalconRpo: { cosigner_commitments: [...fixtures.cosignerCommitments] } },
+        initialState: { data: fixtures.account.data, accountId: fixtures.account.account_id },
+      });
+  } catch (error) {
+    return { kind: 'failed', classification: 'setup', reason: `cannot load the server fixtures: ${String(error)}` };
+  }
+
+  const outcome = await registrationDecisions(context, accountId, configure);
+  const cleared = await setAccountModules(context, accountId, []);
+  if (outcome.kind !== 'passed') return outcome;
+  return cleared ?? outcome;
+}
+
+async function registrationDecisions(
+  context: ActionContext,
+  accountId: string,
+  configure: () => Promise<unknown>,
+): Promise<ActionOutcome> {
+  const everySigner = await setAccountModules(context, accountId, [
+    { moduleId: REGISTER, params: { check: 'all', allowlist: [UNLISTED_SIGNER] } },
+  ]);
+  if (everySigner) return everySigner;
+  const refused = await expectDenied(
+    'a re-registration checked for every signer',
+    configure,
+    REGISTER,
+    'signer_not_allowed',
+  );
+  if (refused.kind !== 'passed') return refused;
+
+  const addedOnly = await setAccountModules(context, accountId, [
+    { moduleId: REGISTER, params: { check: 'added', allowlist: [UNLISTED_SIGNER] } },
+  ]);
+  if (addedOnly) return addedOnly;
+  try {
+    await configure();
+    return { kind: 'passed' };
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `a re-registration that adds no signer, checked for added signers only, was refused: ${String(error)}`,
     };
   }
 }

@@ -202,6 +202,23 @@
     {
       "actions": [
         "account-register",
+        "module-registration-refusal"
+      ],
+      "core": false,
+      "id": "det-module-registration",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "n/a",
+      "sdk": "both",
+      "shape": "n/a",
+      "step_budget": "PT1M30S",
+      "title": "An assigned policy module judges a re-registration against the stored state, refusing it or letting it through"
+    },
+    {
+      "actions": [
+        "account-register",
         "proposal-create",
         "guardian-execution-unavailable"
       ],
@@ -958,6 +975,30 @@
       "shape": "1-of-1",
       "step_budget": "PT8M",
       "title": "A recipient denylist refuses a payment to a blocked account, and a payment elsewhere lands with its fee"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "module-cap-assign",
+        "asset-send",
+        "proposal-sign",
+        "module-cap-lower",
+        "module-ack-refused"
+      ],
+      "core": false,
+      "id": "live-module-ack-refusal-1of1-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "both",
+      "shape": "1-of-1",
+      "step_budget": "PT8M",
+      "title": "A proposal created under a cap is refused at signing once the cap is lowered, and nothing lands"
     },
     {
       "actions": [

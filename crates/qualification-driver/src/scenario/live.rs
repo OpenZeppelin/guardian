@@ -2982,7 +2982,7 @@ pub(super) const P2ID_AMOUNT: u64 = 1_000;
 const OVERRIDE_PROCEDURE: miden_multisig_client::ProcedureName =
     miden_multisig_client::ProcedureName::SendAsset;
 
-fn held_balance(client: &MultisigClient, faucet: AccountId) -> Option<u64> {
+pub(super) fn held_balance(client: &MultisigClient, faucet: AccountId) -> Option<u64> {
     client
         .account()
         .map(|account| vault_amount(account.inner(), faucet))
