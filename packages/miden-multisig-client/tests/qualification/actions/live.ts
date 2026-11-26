@@ -3426,6 +3426,64 @@ export async function assignModuleCap(context: ActionContext, scenarioId: string
 }
 
 /**
+ * Lowers the scenario account's cap to one unit below what `asset-send`
+ * proposed, after the proposal was created under the old cap. Mirrors
+ * `lower_cap` in the Rust driver.
+ */
+export async function lowerModuleCap(context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
+  return assignToFundedAccount(context, scenarioId, CAP, (faucetId) => ({
+    max_per_transaction: { [faucetId]: (P2ID_AMOUNT - 1n).toString() },
+  }));
+}
+
+/**
+ * The proposal `asset-send` created at the cap is refused when GUARDIAN is
+ * asked to sign it, once `module-cap-lower` lowered the cap below it:
+ * `before_transaction_approved` decides at execution whatever creation
+ * allowed. The refusal names the module and `amount_cap_exceeded`, and the
+ * account's nonce and balance on chain do not move. Mirrors
+ * `assert_ack_refused` in the Rust driver.
+ */
+export async function assertModuleAckRefused(_context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.proposalId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no proposal has been created in this scenario' };
+  }
+  if (!session.faucetId) {
+    return { kind: 'failed', classification: 'setup', reason: 'the account was never funded, so it holds nothing to send' };
+  }
+  const multisig = session.multisig;
+  const proposalId = session.proposalId;
+  const nonceBefore = await chainNonce(session);
+  const balanceBefore = await heldBalance(session);
+  if (nonceBefore === null) {
+    return { kind: 'failed', classification: 'product', reason: 'the account could not be read before executing' };
+  }
+
+  const refused = await expectDenied(
+    'executing a proposal over the lowered cap',
+    async () => {
+      await multisig.syncProposals();
+      await multisig.executeProposal(proposalId);
+    },
+    CAP,
+    'amount_cap_exceeded',
+  );
+  if (refused.kind !== 'passed') return refused;
+
+  const nonceAfter = await chainNonce(session);
+  const balanceAfter = await heldBalance(session);
+  if (nonceAfter !== nonceBefore || balanceAfter !== balanceBefore) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `the refused execution still moved the account: nonce ${nonceBefore} -> ${nonceAfter}, balance ${balanceBefore} -> ${balanceAfter}`,
+    };
+  }
+  return { kind: 'passed' };
+}
+
+/**
  * Assigns the stack's `qual-recipient` module to the scenario's account with a
  * denylist naming the funding faucet, an account the scenario never pays, and
  * reads it back through the account's own policy listing. `deny_unknown` is
