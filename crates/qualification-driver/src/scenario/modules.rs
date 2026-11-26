@@ -27,6 +27,7 @@ const CAP: &str = "qual-cap";
 const SWITCH: &str = "qual-switch";
 const REMOTE: &str = "qual-remote";
 const RECIPIENT: &str = "qual-recipient";
+const REGISTER: &str = "qual-register";
 
 /// A signer commitment nobody holds. Checked against every signer, an allowlist of only this
 /// refuses every transaction of the fixture account.
@@ -309,6 +310,63 @@ pub async fn assert_refusal(runner: &Runner) -> ActionOutcome {
     )
 }
 
+/// The registration hook: `qual-register`, a signer policy on `before_account_registered`
+/// only, assigned to the fixture account. Checking every signer against an allowlist that names
+/// none of them, it refuses a re-registration of the account with its own signers. Checking only
+/// added signers, it allows the same re-registration, since every signer is already in the
+/// stored state the hook receives as `before`. The assignment is cleared on every path.
+pub async fn assert_registration_refusal(runner: &Runner) -> ActionOutcome {
+    let Some(fixtures) = runner.fixtures.as_ref() else {
+        return ActionOutcome::failed_setup("the server fixtures were not loaded");
+    };
+    let operator = match Operator::login(runner, fixtures).await {
+        Ok(operator) => operator,
+        Err(outcome) => return outcome,
+    };
+    let account = fixtures.account_id.clone();
+
+    let outcome = registration_decisions(runner, fixtures, &operator, &account).await;
+    then_cleanup(outcome, operator.clear(&account).await)
+}
+
+async fn registration_decisions(
+    runner: &Runner,
+    fixtures: &Fixtures,
+    operator: &Operator<'_>,
+    account: &str,
+) -> ActionOutcome {
+    if let Err(outcome) = operator
+        .assign(account, REGISTER, refuse_every_signer())
+        .await
+    {
+        return outcome;
+    }
+    let refused = match super::account::configure_fixture(runner, fixtures).await {
+        Ok(result) => expect_denied(
+            "a re-registration checked for every signer",
+            result,
+            REGISTER,
+            "signer_not_allowed",
+        ),
+        Err(outcome) => outcome,
+    };
+    if !matches!(refused, ActionOutcome::Passed) {
+        return refused;
+    }
+
+    let added_only = json!({ "check": "added", "allowlist": [UNLISTED_SIGNER] });
+    if let Err(outcome) = operator.assign(account, REGISTER, added_only).await {
+        return outcome;
+    }
+    match super::account::configure_fixture(runner, fixtures).await {
+        Ok(result) => expect_allowed(
+            "a re-registration that adds no signer, checked for added signers only,",
+            result,
+        ),
+        Err(outcome) => outcome,
+    }
+}
+
 /// The remote policy module the driver serves for the stack's `qual-remote` instance:
 /// `signer-policy` over TLS, with the bearer token the Guardian reads from its secrets backend.
 struct RemoteModule {
@@ -569,6 +627,75 @@ pub async fn assign_cap(runner: &Runner) -> ActionOutcome {
         json!({ "max_per_transaction": limit })
     })
     .await
+}
+
+/// Lowers the scenario account's cap to one unit below what `asset-send` proposed, after the
+/// proposal was created under the old cap.
+pub async fn lower_cap(runner: &Runner) -> ActionOutcome {
+    assign_to_funded_account(runner, CAP, |faucet| {
+        let mut limit = serde_json::Map::new();
+        limit.insert(
+            faucet.to_hex(),
+            json!((super::live::P2ID_AMOUNT - 1).to_string()),
+        );
+        json!({ "max_per_transaction": limit })
+    })
+    .await
+}
+
+/// The proposal `asset-send` created at the cap is refused when GUARDIAN is asked to sign it,
+/// once `module-cap-lower` lowered the cap below it: `before_transaction_approved` decides at
+/// execution whatever creation allowed. The refusal names the module and
+/// `amount_cap_exceeded`, and the account's nonce and balance on chain do not move.
+pub async fn assert_ack_refused(runner: &Runner) -> ActionOutcome {
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let Some(proposal_id) = session.proposal_id.clone() else {
+        return ActionOutcome::failed_setup("no proposal has been created in this scenario");
+    };
+    let Some(faucet) = session.faucet else {
+        return ActionOutcome::failed_setup(
+            "the account was never funded, so it holds nothing to send",
+        );
+    };
+    let client = &mut session.clients[0];
+    let Some((nonce_before, balance_before)) = settled_account(client, faucet).await else {
+        return ActionOutcome::failed_product("the account could not be read before executing");
+    };
+
+    let executed = client.execute_proposal(&proposal_id).await;
+    let refused = expect_module_denied(
+        "executing a proposal over the lowered cap",
+        executed,
+        CAP,
+        "amount_cap_exceeded",
+    );
+    if !matches!(refused, ActionOutcome::Passed) {
+        return refused;
+    }
+
+    match settled_account(client, faucet).await {
+        Some((nonce, balance)) if nonce == nonce_before && balance == balance_before => {
+            ActionOutcome::Passed
+        }
+        Some((nonce, balance)) => ActionOutcome::failed_product(format!(
+            "the refused execution still moved the account: nonce {nonce_before} -> {nonce}, \
+             balance {balance_before} -> {balance}"
+        )),
+        None => ActionOutcome::failed_product("the account could not be read after executing"),
+    }
+}
+
+/// The account's nonce and its balance of `faucet`, after a sync.
+async fn settled_account(
+    client: &mut miden_multisig_client::MultisigClient,
+    faucet: miden_protocol::account::AccountId,
+) -> Option<(u64, u64)> {
+    client.sync().await.ok()?;
+    let nonce = client.account()?.nonce();
+    Some((nonce, super::live::held_balance(client, faucet)?))
 }
 
 /// Assigns `qual-recipient` to the scenario's account with a denylist naming the funding

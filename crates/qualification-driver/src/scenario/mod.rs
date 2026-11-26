@@ -374,6 +374,8 @@ impl Runner {
                 }
                 Action::ModuleCapAssign => Some(modules::assign_cap(self).await),
                 Action::ModuleCapRefuses => Some(modules::assert_cap_refuses(self).await),
+                Action::ModuleCapLower => Some(modules::lower_cap(self).await),
+                Action::ModuleAckRefused => Some(modules::assert_ack_refused(self).await),
                 Action::ModuleRecipientAssign => {
                     Some(modules::assign_recipient_denylist(self).await)
                 }
@@ -419,6 +421,9 @@ impl Runner {
                 }
                 Action::MixedSchemeGate => Some(mixed_scheme::assert_mixed_scheme_gate(self).await),
                 Action::ModuleRefusal => Some(modules::assert_refusal(self).await),
+                Action::ModuleRegistrationRefusal => {
+                    Some(modules::assert_registration_refusal(self).await)
+                }
                 Action::ModuleUnavailable => Some(modules::assert_unavailable(self).await),
                 Action::ModuleBreakGlass => Some(modules::assert_break_glass(self).await),
                 _ => None,

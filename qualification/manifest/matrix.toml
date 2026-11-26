@@ -60,6 +60,7 @@ excluded_scenarios = [
   "live-send-override-p2id-2of3-falcon",
   "live-module-cap-1of1-ecdsa",
   "live-module-recipient-1of1-ecdsa",
+  "live-module-ack-refusal-1of1-ecdsa",
 ]
 
 [[pair]]
@@ -99,4 +100,5 @@ excluded_scenarios = [
   "live-send-override-p2id-2of3-falcon",
   "live-module-cap-1of1-ecdsa",
   "live-module-recipient-1of1-ecdsa",
+  "live-module-ack-refusal-1of1-ecdsa",
 ]
