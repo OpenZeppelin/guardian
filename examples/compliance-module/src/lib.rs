@@ -227,16 +227,17 @@ impl Compliance {
             SignerCheck::All => self.unverified_signer(&account_after(request)?.signer_commitments),
             SignerCheck::Added => {
                 let after = account_after(request)?;
-                let before: BTreeSet<&String> = request
+                let before: BTreeSet<String> = request
                     .before
                     .iter()
                     .flat_map(|view| &view.signer_commitments)
+                    .map(|signer| signer.to_ascii_lowercase())
                     .collect();
                 self.unverified_signer(
                     after
                         .signer_commitments
                         .iter()
-                        .filter(|signer| !before.contains(signer)),
+                        .filter(|signer| !before.contains(&signer.to_ascii_lowercase())),
                 )
             }
         })

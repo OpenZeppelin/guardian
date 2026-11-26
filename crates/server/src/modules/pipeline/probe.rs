@@ -23,18 +23,23 @@ impl ModulePipeline {
             .unwrap_or_default();
         crate::modules::metrics::stored_assignments(over_budget, orphaned);
         for instance in &self.instances {
-            let id = &instance.config.id;
-            let enabled = Self::enabled_in(rows, instance);
-            crate::modules::metrics::enabled(id, enabled);
-            crate::modules::metrics::config_drift(
-                id,
-                enabled != instance.config.catalog_enabled || self.seed_drift.contains(id),
-            );
-            crate::modules::metrics::circuit_open(
-                id,
-                enabled && self.breakers.state(id) == CircuitState::Open,
-            );
+            self.publish_instance(instance, Self::enabled_in(rows, instance));
         }
+    }
+
+    /// Publishes one instance's state gauges for its runtime flag `enabled`: an operator's
+    /// enable or disable calls it at once, instead of leaving them to the next probe.
+    pub fn publish_instance(&self, instance: &crate::modules::registry::Instance, enabled: bool) {
+        let id = &instance.config.id;
+        crate::modules::metrics::enabled(id, enabled);
+        crate::modules::metrics::config_drift(
+            id,
+            enabled != instance.config.catalog_enabled || self.seed_drift.contains(id),
+        );
+        crate::modules::metrics::circuit_open(
+            id,
+            enabled && self.breakers.state(id) == CircuitState::Open,
+        );
     }
 
     /// Stores the params a recovered module normalized `read` to, as a startup does for a module
