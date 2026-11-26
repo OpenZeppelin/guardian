@@ -13,7 +13,7 @@ use miden_protocol::account::{
 };
 use miden_protocol::block::BlockNumber;
 use miden_protocol::transaction::{
-    InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    InputNotes, RawOutputNotes, TransactionLogs, TransactionSummary, TransactionSummaryUserParams,
 };
 use miden_protocol::{Felt, Word};
 
@@ -63,6 +63,7 @@ fn canonical_delta(
         Word::default(),
         0,
         TransactionSummaryUserParams::new([Felt::ZERO; 6]),
+        TransactionLogs::default(),
     )
     .to_json();
     let applied = network.apply_delta(base_state, &payload).unwrap();

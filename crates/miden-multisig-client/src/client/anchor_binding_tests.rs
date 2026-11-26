@@ -18,8 +18,8 @@ use miden_protocol::transaction::RawOutputNote;
 
 use super::test_support::{
     chain_with_notes, multisig_account, offline_client_parts_with_keystore,
-    offline_client_with_node_parts, p2id_note_for, pending_proto_delta, registered_state,
-    signer_specs,
+    offline_client_parts_with_rpc, offline_client_with_node_parts, p2id_note_for,
+    pending_proto_delta, registered_state, signer_specs,
 };
 use crate::account::MultisigAccount;
 use crate::execution::build_final_transaction_request;
@@ -650,7 +650,6 @@ async fn custom_proposal_bound_to_an_older_block_lands_after_the_proposer_syncs_
         MultisigGuardianBuilder, MultisigGuardianConfig,
     };
     use miden_protocol::crypto::dsa::eddsa_25519_sha512::SigningKey;
-    use miden_protocol::utils::serde::Serializable;
 
     use crate::procedures::ProcedureName;
 
@@ -710,7 +709,7 @@ async fn custom_proposal_bound_to_an_older_block_lands_after_the_proposer_syncs_
     )
     .await
     .unwrap();
-    let request_bytes = tx_request.to_bytes();
+    let request_bytes = miden_client_proto::encode(&tx_request);
     let expected_summary =
         execute_for_summary_at_tip(&mut proposer.miden_client, account.id(), tx_request)
             .await
@@ -1017,18 +1016,11 @@ async fn proposal_verifies_at_the_tip_after_the_node_prunes_its_bound_block_stat
         None,
     )
     .unwrap();
-    let chain_anchor = client
-        .miden_client
-        .chain_anchor_for_request(&tx_request)
+    let tx_summary = execute_for_summary_at_tip(&mut client.miden_client, account.id(), tx_request)
         .await
         .unwrap();
-    let tx_summary =
-        execute_for_summary_at_tip(&mut client.miden_client, account.id(), tx_request.clone())
-            .await
-            .unwrap();
     let proposal_id = word_to_hex(&tx_summary.to_commitment());
     let bound_block = tx_summary.block_number();
-    assert_eq!(chain_anchor.block_num(), bound_block);
 
     let payload = ProposalPayload::new(&tx_summary)
         .with_add_signer_metadata(1, signers_hex, word_to_hex(&salt))
@@ -1062,21 +1054,6 @@ async fn proposal_verifies_at_the_tip_after_the_node_prunes_its_bound_block_stat
     assert_eq!(
         client.miden_client.get_sync_height().await.unwrap(),
         bound_block
-    );
-
-    // Control: re-executing at the proposal's anchor, as 0.18.0-rc.1 did, now
-    // fails loading the fee faucet at the pruned block.
-    let anchored_error = match client
-        .miden_client
-        .execute_transaction_at(account.id(), tx_request, chain_anchor)
-        .await
-    {
-        Ok(_) => panic!("anchored re-execution must fail once the bound block is pruned"),
-        Err(error) => format!("{error:?}"),
-    };
-    assert!(
-        anchored_error.contains(&format!("no mock chain snapshot at block {bound_block}")),
-        "the anchored re-execution must fail on the pruned foreign load: {anchored_error}"
     );
 
     // The strict listing re-derives the summary at the tip and verifies it.
@@ -1299,6 +1276,7 @@ struct ClientWithSummary {
     client: super::MultisigClient,
     _dir: tempfile::TempDir,
     api: Arc<miden_client::testing::mock::MockRpcApi>,
+    rpc: Arc<SyncCountingRpc>,
     guardian: guardian_client::testing::mocks::MockGuardianHandle,
     account: miden_protocol::account::Account,
     signer_commitment: Word,
@@ -1313,7 +1291,7 @@ async fn client_with_summary(seed: u8) -> ClientWithSummary {
     let signer_commitment = keystore.commitment();
     let account = multisig_account(signer_commitment, Word::from([9u32, 9, 9, 9]), seed);
     let api = chain_with_notes(Vec::new());
-    let (mut client, dir, guardian, _) =
+    let (mut client, dir, guardian, _, rpc) =
         client_on_mock_guardian(api.clone(), &account, keystore).await;
 
     let salt = Word::from([5u32, 6, 7, 8]);
@@ -1341,6 +1319,7 @@ async fn client_with_summary(seed: u8) -> ClientWithSummary {
         client,
         _dir: dir,
         api,
+        rpc,
         guardian,
         account,
         signer_commitment,
@@ -1459,6 +1438,7 @@ async fn listing_syncs_the_chain_once_however_many_proposals_bind_blocks_above_t
                 summary.block_commitment(),
                 summary.expiration_delta(),
                 summary.user_params(),
+                summary.logs().clone(),
             );
             let payload = ProposalPayload::new(&bound_ahead)
                 .with_procedure_threshold_metadata(
@@ -1484,17 +1464,15 @@ async fn listing_syncs_the_chain_once_however_many_proposals_bind_blocks_above_t
             message: String::new(),
             proposals,
         });
-    // The mock node never caches the genesis commitment, so every chain sync
-    // asks it for the genesis header again; one sync's requests are the unit.
-    let api = setup.api.clone();
-    let genesis_requests = || api.block_header_requests(BlockNumber::GENESIS).len();
-    let before = genesis_requests();
+    let rpc = setup.rpc.clone();
+    let chain_mmr_requests = || rpc.chain_mmr_requests();
+    let before = chain_mmr_requests();
     setup.client.miden_client.sync_state().await.unwrap();
-    let per_sync = genesis_requests() - before;
+    let per_sync = chain_mmr_requests() - before;
     assert!(per_sync > 0, "a chain sync must reach the mock node");
-    let syncs_since = |before: usize| (genesis_requests() - before) / per_sync;
+    let syncs_since = |before: usize| (chain_mmr_requests() - before) / per_sync;
 
-    let before = genesis_requests();
+    let before = chain_mmr_requests();
     let listed = setup
         .client
         .list_proposals()
@@ -1518,7 +1496,7 @@ async fn listing_syncs_the_chain_once_however_many_proposals_bind_blocks_above_t
         }
     }
 
-    let before = genesis_requests();
+    let before = chain_mmr_requests();
     let (verified, skipped) = setup
         .client
         .list_proposals_isolating_failures()
@@ -1544,10 +1522,18 @@ async fn client_on_mock_guardian(
     tempfile::TempDir,
     guardian_client::testing::mocks::MockGuardianHandle,
     String,
+    Arc<SyncCountingRpc>,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let (mut client, _store) =
-        offline_client_parts_with_keystore(dir.path(), api.clone(), None, keystore).await;
+    let rpc = Arc::new(SyncCountingRpc::new(api.clone()));
+    let (mut client, _store) = offline_client_parts_with_rpc(
+        dir.path(),
+        rpc.clone(),
+        api.protocol_config(),
+        None,
+        keystore,
+    )
+    .await;
     client.set_node_rpc_client(api);
     client.add_or_update_account(account, true).await.unwrap();
     client.account = Some(MultisigAccount::new(account.clone()));
@@ -1561,7 +1547,7 @@ async fn client_on_mock_guardian(
         .set_guardian_endpoint(&endpoint, false)
         .await
         .unwrap();
-    (client, dir, handle, endpoint)
+    (client, dir, handle, endpoint, rpc)
 }
 
 /// Every built-in proposal records the block its summary binds as
@@ -1592,7 +1578,7 @@ async fn built_in_proposals_write_the_bound_block_num() {
     .expect("1-of-2 multisig account builds");
     let note = p2id_note_for(&account, 31, NoteType::Private);
     let api = chain_with_notes(vec![RawOutputNote::Full(note.clone())]);
-    let (mut client, _dir, handle, endpoint) =
+    let (mut client, _dir, handle, endpoint, _) =
         client_on_mock_guardian(api, &account, keystore.clone()).await;
     let node_rpc = client.node_rpc_client();
     crate::transaction::ensure_notes_authenticated(
@@ -1633,7 +1619,7 @@ async fn built_in_proposals_write_the_bound_block_num() {
 
     let mut funded = multisig_account(keystore.commitment(), Word::from([9u32, 9, 9, 9]), 58);
     let funded_api = fee_charging_chain_holding(&mut funded);
-    let (mut payer, _payer_dir, payer_handle, _) =
+    let (mut payer, _payer_dir, payer_handle, _, _) =
         client_on_mock_guardian(funded_api, &funded, keystore).await;
     let fee_faucet = crate::transaction::synced_fee_faucet_id(&payer.miden_client)
         .await
@@ -1733,4 +1719,253 @@ async fn execute_imported_proposal_refuses_a_proposal_pinned_to_another_state() 
             .any(|call| call == "push_delta"),
         "no acknowledgement is requested for a refused proposal"
     );
+}
+
+use sync_counting::SyncCountingRpc;
+
+mod sync_counting {
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use miden_client::rpc::domain::account::{AccountProof, GetAccountRequest};
+    use miden_client::rpc::domain::account_vault::AccountVaultInfo;
+    use miden_client::rpc::domain::note::{FetchedNote, SyncNotesBlock};
+    use miden_client::rpc::domain::nullifier::NullifierUpdate;
+    use miden_client::rpc::domain::storage_map::StorageMapInfo;
+    use miden_client::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
+    use miden_client::rpc::domain::transaction::{TransactionLogsInfo, TransactionRecord};
+    use miden_client::rpc::encryption::{
+        AttestedTransactionEncryptionKey, SealedTransactionInputs,
+    };
+    use miden_client::rpc::{
+        NetworkNoteStatusInfo, NodeRpcClient, RpcError, RpcLimits, RpcStatusInfo,
+    };
+    use miden_client::testing::mock::MockRpcApi;
+    use miden_protocol::Word;
+    use miden_protocol::account::AccountId;
+    use miden_protocol::address::NetworkId;
+    use miden_protocol::batch::{ProposedBatch, ProvenBatch};
+    use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
+    use miden_protocol::crypto::merkle::mmr::MmrProof;
+    use miden_protocol::note::{NoteId, NoteScript, NoteTag};
+    use miden_protocol::protocol_config::ProtocolConfig;
+    use miden_protocol::transaction::{ProvenTransaction, TransactionId};
+    use miden_protocol::vm::ExecutionProof;
+
+    /// The mock node, counting the `sync_chain_mmr` requests a client sends it.
+    pub(super) struct SyncCountingRpc {
+        inner: Arc<MockRpcApi>,
+        chain_mmr_requests: AtomicUsize,
+    }
+
+    impl SyncCountingRpc {
+        pub(super) fn new(inner: Arc<MockRpcApi>) -> Self {
+            Self {
+                inner,
+                chain_mmr_requests: AtomicUsize::new(0),
+            }
+        }
+
+        pub(super) fn chain_mmr_requests(&self) -> usize {
+            self.chain_mmr_requests.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl NodeRpcClient for SyncCountingRpc {
+        async fn sync_chain_mmr(
+            &self,
+            current_block_height: BlockNumber,
+            upper_bound: SyncTarget,
+        ) -> Result<ChainMmrInfo, RpcError> {
+            self.chain_mmr_requests.fetch_add(1, Ordering::SeqCst);
+            self.inner
+                .sync_chain_mmr(current_block_height, upper_bound)
+                .await
+        }
+
+        async fn set_genesis_commitment(&self, commitment: Word) -> Result<(), RpcError> {
+            self.inner.set_genesis_commitment(commitment).await
+        }
+
+        async fn get_genesis_block_header(
+            &self,
+        ) -> Result<(BlockHeader, ProtocolConfig), RpcError> {
+            self.inner.get_genesis_block_header().await
+        }
+
+        async fn get_transaction_encryption_key(
+            &self,
+        ) -> Result<AttestedTransactionEncryptionKey, RpcError> {
+            self.inner.get_transaction_encryption_key().await
+        }
+
+        async fn submit_proven_transaction(
+            &self,
+            proven_transaction: &ProvenTransaction,
+            sealed_transaction_inputs: SealedTransactionInputs,
+        ) -> Result<BlockNumber, RpcError> {
+            self.inner
+                .submit_proven_transaction(proven_transaction, sealed_transaction_inputs)
+                .await
+        }
+
+        async fn submit_proven_batch(
+            &self,
+            proven_batch: &ProvenBatch,
+            proposed_batch: &ProposedBatch,
+            transaction_inputs: Vec<SealedTransactionInputs>,
+        ) -> Result<BlockNumber, RpcError> {
+            self.inner
+                .submit_proven_batch(proven_batch, proposed_batch, transaction_inputs)
+                .await
+        }
+
+        async fn register_account(
+            &self,
+            invitation_code: &str,
+            account_id: AccountId,
+        ) -> Result<(), RpcError> {
+            self.inner
+                .register_account(invitation_code, account_id)
+                .await
+        }
+
+        async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, RpcError> {
+            self.inner.is_account_allowed(account_id).await
+        }
+
+        async fn is_invitation_code_valid(&self, invitation_code: &str) -> Result<bool, RpcError> {
+            self.inner.is_invitation_code_valid(invitation_code).await
+        }
+
+        async fn get_block_header_by_number(
+            &self,
+            block_num: Option<BlockNumber>,
+            include_mmr_proof: bool,
+        ) -> Result<(BlockHeader, Option<MmrProof>), RpcError> {
+            self.inner
+                .get_block_header_by_number(block_num, include_mmr_proof)
+                .await
+        }
+
+        async fn get_block_by_number(
+            &self,
+            block_num: BlockNumber,
+            include_proof: bool,
+        ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
+            self.inner
+                .get_block_by_number(block_num, include_proof)
+                .await
+        }
+
+        async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {
+            self.inner.get_notes_by_id(note_ids).await
+        }
+
+        async fn sync_notes(
+            &self,
+            block_from: BlockNumber,
+            block_to: BlockNumber,
+            note_tags: &BTreeSet<NoteTag>,
+        ) -> Result<Vec<SyncNotesBlock>, RpcError> {
+            self.inner.sync_notes(block_from, block_to, note_tags).await
+        }
+
+        async fn sync_nullifiers(
+            &self,
+            prefix: &[u16],
+            block_from: BlockNumber,
+            block_to: BlockNumber,
+        ) -> Result<Vec<NullifierUpdate>, RpcError> {
+            self.inner
+                .sync_nullifiers(prefix, block_from, block_to)
+                .await
+        }
+
+        async fn get_account(
+            &self,
+            request: GetAccountRequest,
+        ) -> Result<(BlockNumber, AccountProof), RpcError> {
+            self.inner.get_account(request).await
+        }
+
+        async fn get_note_script_by_root(
+            &self,
+            root: Word,
+        ) -> Result<Option<NoteScript>, RpcError> {
+            self.inner.get_note_script_by_root(root).await
+        }
+
+        async fn get_transaction_logs(
+            &self,
+            account_id: AccountId,
+            transaction_id: TransactionId,
+        ) -> Result<Option<TransactionLogsInfo>, RpcError> {
+            self.inner
+                .get_transaction_logs(account_id, transaction_id)
+                .await
+        }
+
+        async fn sync_storage_maps(
+            &self,
+            block_from: BlockNumber,
+            block_to: BlockNumber,
+            account_id: AccountId,
+        ) -> Result<StorageMapInfo, RpcError> {
+            self.inner
+                .sync_storage_maps(block_from, block_to, account_id)
+                .await
+        }
+
+        async fn sync_account_vault(
+            &self,
+            block_from: BlockNumber,
+            block_to: BlockNumber,
+            account_id: AccountId,
+        ) -> Result<AccountVaultInfo, RpcError> {
+            self.inner
+                .sync_account_vault(block_from, block_to, account_id)
+                .await
+        }
+
+        async fn sync_transactions(
+            &self,
+            block_from: BlockNumber,
+            block_to: BlockNumber,
+            account_ids: Vec<AccountId>,
+        ) -> Result<Vec<TransactionRecord>, RpcError> {
+            self.inner
+                .sync_transactions(block_from, block_to, account_ids)
+                .await
+        }
+
+        async fn get_network_id(&self) -> Result<NetworkId, RpcError> {
+            self.inner.get_network_id().await
+        }
+
+        async fn get_rpc_limits(&self) -> Result<RpcLimits, RpcError> {
+            self.inner.get_rpc_limits().await
+        }
+
+        fn has_rpc_limits(&self) -> Option<RpcLimits> {
+            self.inner.has_rpc_limits()
+        }
+
+        async fn set_rpc_limits(&self, limits: RpcLimits) {
+            self.inner.set_rpc_limits(limits).await;
+        }
+
+        async fn get_status_unversioned(&self) -> Result<RpcStatusInfo, RpcError> {
+            self.inner.get_status_unversioned().await
+        }
+
+        async fn get_network_note_status(
+            &self,
+            note_id: NoteId,
+        ) -> Result<NetworkNoteStatusInfo, RpcError> {
+            self.inner.get_network_note_status(note_id).await
+        }
+    }
 }

@@ -738,11 +738,19 @@ mod tests {
                 .await
         }
 
-        fn has_genesis_commitment(&self) -> Option<miden_protocol::Word> {
-            self.inner.has_genesis_commitment()
+        async fn get_genesis_block_header(
+            &self,
+        ) -> std::result::Result<
+            (
+                miden_protocol::block::BlockHeader,
+                miden_protocol::protocol_config::ProtocolConfig,
+            ),
+            RpcError,
+        > {
+            self.inner.get_genesis_block_header().await
         }
 
-        fn has_rpc_limits(&self) -> Option<miden_client::rpc::domain::limits::RpcLimits> {
+        fn has_rpc_limits(&self) -> Option<miden_client::rpc::RpcLimits> {
             self.inner.has_rpc_limits()
         }
 
@@ -754,11 +762,11 @@ mod tests {
 
         async fn get_rpc_limits(
             &self,
-        ) -> std::result::Result<miden_client::rpc::domain::limits::RpcLimits, RpcError> {
+        ) -> std::result::Result<miden_client::rpc::RpcLimits, RpcError> {
             self.inner.get_rpc_limits().await
         }
 
-        async fn set_rpc_limits(&self, limits: miden_client::rpc::domain::limits::RpcLimits) {
+        async fn set_rpc_limits(&self, limits: miden_client::rpc::RpcLimits) {
             self.inner.set_rpc_limits(limits).await;
         }
 
@@ -841,6 +849,17 @@ mod tests {
             &self,
             _root: miden_protocol::Word,
         ) -> std::result::Result<Option<miden_protocol::note::NoteScript>, RpcError> {
+            unimplemented!("not exercised by the backfill tests")
+        }
+
+        async fn get_transaction_logs(
+            &self,
+            _account_id: miden_protocol::account::AccountId,
+            _transaction_id: miden_protocol::transaction::TransactionId,
+        ) -> std::result::Result<
+            Option<miden_client::rpc::domain::transaction::TransactionLogsInfo>,
+            RpcError,
+        > {
             unimplemented!("not exercised by the backfill tests")
         }
 

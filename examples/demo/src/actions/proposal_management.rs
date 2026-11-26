@@ -5,7 +5,6 @@ use std::num::NonZeroU32;
 use std::path::Path;
 use std::pin::Pin;
 
-use miden_client::Serializable;
 use miden_multisig_client::{
     build_p2id_transaction_request, build_transfer_asset, ensure_hex_prefix, generate_salt,
     word_from_hex, Asset, ExecutionFailureCode, ExecutionState, ExecutionWaitOptions,
@@ -1299,7 +1298,7 @@ async fn action_create_custom_proposal(
         .multisig_auth_args(salt, None, None)
         .await
         .map_err(|e| format!("failed to build the multisig auth args: {}", e))?;
-    let transaction_request_bytes = build_p2id_transaction_request(
+    let transaction_request = build_p2id_transaction_request(
         account.inner(),
         recipient,
         vec![asset.into()],
@@ -1308,8 +1307,8 @@ async fn action_create_custom_proposal(
         &auth_args,
         std::iter::empty(),
     )
-    .map_err(|e| format!("failed to build transaction: {}", e))?
-    .to_bytes();
+    .map_err(|e| format!("failed to build transaction: {}", e))?;
+    let transaction_request_bytes = miden_client_proto::encode(&transaction_request);
 
     print_waiting("Pushing custom proposal to GUARDIAN");
     let proposal = client
@@ -1387,7 +1386,7 @@ async fn action_execute_custom_proposal(
     print_waiting("Preparing custom execution (binding + advice)");
     let client = state.get_client_mut()?;
     let advice = client
-        .prepare_custom_execution(&proposal_id, &request.to_bytes())
+        .prepare_custom_execution(&proposal_id, &miden_client_proto::encode(&request))
         .await
         .map_err(|e| format!("prepare_custom_execution failed: {}", e))?;
 

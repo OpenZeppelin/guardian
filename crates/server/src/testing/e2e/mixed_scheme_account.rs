@@ -30,7 +30,7 @@ use miden_protocol::assembly::Package;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, Signature as EcdsaSignature, SigningKey as EcdsaSecretKey,
 };
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey as FalconSecretKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey as FalconSecretKey;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::vm::AdviceInputs;
 use miden_protocol::{Felt, Hasher, Word};

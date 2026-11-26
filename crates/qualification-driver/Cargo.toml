@@ -21,6 +21,7 @@ guardian-client = { path = "../client" }
 guardian-shared = { path = "../shared" }
 hex = { workspace = true }
 miden-client = { workspace = true, features = ["tonic"] }
+miden-client-proto = { workspace = true }
 miden-client-sqlite-store = { workspace = true }
 libc = "0.2"
 rand = { workspace = true }

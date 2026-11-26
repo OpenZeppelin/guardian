@@ -2,11 +2,12 @@ use base64::Engine;
 use miden_protocol::account::Account;
 use miden_protocol::account::auth::AuthScheme;
 use miden_protocol::account::auth::Signature as AccountSignature;
+use miden_protocol::account::auth::{BoundSignature, SignatureKey};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature as FalconSignature;
+use miden_protocol::crypto::dsa::falcon512_eidos::Signature as FalconSignature;
 use miden_protocol::transaction::TransactionSummary;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
-use miden_protocol::{Felt, Hasher, Word};
+use miden_protocol::{Felt, Word};
 use serde::{Deserialize, Serialize};
 
 pub mod account_delta;
@@ -54,7 +55,7 @@ impl SignatureScheme {
     /// Maps to the upstream `AuthScheme` used by the `AuthGuardedMultisig` component.
     pub const fn auth_scheme(self) -> AuthScheme {
         match self {
-            Self::Falcon => AuthScheme::Falcon512Poseidon2,
+            Self::Falcon => AuthScheme::Falcon512Eidos,
             Self::Ecdsa => AuthScheme::EcdsaK256Keccak,
         }
     }
@@ -96,16 +97,12 @@ impl SignatureScheme {
         signature: &AccountSignature,
         public_key_hex: Option<&str>,
     ) -> Result<(Word, Vec<Felt>), String> {
-        let key = signature_advice_key(pubkey_commitment, message);
-
-        let values = match (self, signature) {
-            (Self::Falcon, AccountSignature::Falcon512Poseidon2(_)) => {
-                signature.to_encoded_signature(message)
-            }
+        match (self, signature) {
+            (Self::Falcon, AccountSignature::Falcon512Eidos(_)) => {}
             (Self::Falcon, _) => {
                 return Err("expected Falcon signature for falcon scheme".to_string());
             }
-            (Self::Ecdsa, AccountSignature::EcdsaK256Keccak(ecdsa_signature)) => {
+            (Self::Ecdsa, AccountSignature::EcdsaK256Keccak(_)) => {
                 let public_key_hex = public_key_hex.ok_or_else(|| {
                     "ECDSA signature requires public key for advice preparation".to_string()
                 })?;
@@ -118,15 +115,16 @@ impl SignatureScheme {
                         word_to_hex(actual_commitment)
                     ));
                 }
-                AccountSignature::EcdsaK256Keccak(ecdsa_signature.clone())
-                    .to_encoded_signature(message)
             }
             (Self::Ecdsa, _) => {
                 return Err("expected ECDSA signature for ecdsa scheme".to_string());
             }
-        };
+        }
 
-        Ok((key, values))
+        let key = SignatureKey::new(pubkey_commitment.into(), message);
+        let bound = BoundSignature::new(key, signature.clone())
+            .map_err(|e| format!("signature does not bind to its key: {e}"))?;
+        Ok((key.to_advice_map_key(), bound.to_encoded_signature()))
     }
 }
 
@@ -146,13 +144,6 @@ fn ensure_hex_prefix(hex: &str) -> String {
 
 fn word_to_hex(word: Word) -> String {
     format!("0x{}", ::hex::encode(word.to_bytes()))
-}
-
-fn signature_advice_key(pubkey_commitment: Word, message: Word) -> Word {
-    let mut elements = Vec::with_capacity(8);
-    elements.extend_from_slice(pubkey_commitment.as_elements());
-    elements.extend_from_slice(message.as_elements());
-    Hasher::hash_elements(&elements)
 }
 
 /// Decodes an optionally `0x`-prefixed hex ECDSA public key.
@@ -278,7 +269,7 @@ pub trait FromJson: Sized {
 
 impl ToJson for Account {
     fn to_json(&self) -> serde_json::Value {
-        let bytes = self.to_bytes();
+        let bytes = miden_client_proto::encode(self);
         let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
         serde_json::json!({
           "data": encoded,
@@ -298,13 +289,14 @@ impl FromJson for Account {
             .decode(encoded)
             .map_err(|e| format!("Base64 decode error: {e}"))?;
 
-        Account::read_from_bytes(&bytes).map_err(|e| format!("Deserialization error: {e}"))
+        miden_client_proto::decode::<Account>(&bytes)
+            .map_err(|e| format!("Deserialization error: {e}"))
     }
 }
 
 impl ToJson for TransactionSummary {
     fn to_json(&self) -> serde_json::Value {
-        let bytes = self.to_bytes();
+        let bytes = miden_client_proto::encode(self);
         let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
         serde_json::json!({
           "data": encoded,
@@ -323,7 +315,7 @@ impl FromJson for TransactionSummary {
             .decode(encoded)
             .map_err(|e| format!("Base64 decode error: {e}"))?;
 
-        TransactionSummary::read_from_bytes(&bytes)
+        miden_client_proto::decode::<TransactionSummary>(&bytes)
             .map_err(|e| format!("AccountDelta deserialization error: {e}"))
     }
 }
@@ -332,10 +324,11 @@ impl FromJson for TransactionSummary {
 mod tests {
     use super::*;
     use miden_protocol::{
+        Hasher,
         account::auth::{AuthScheme, Signature as AccountSignature},
         account::{AccountBuilder, auth::PublicKeyCommitment},
         crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey,
-        crypto::dsa::falcon512_poseidon2::SecretKey,
+        crypto::dsa::falcon512_eidos::SecretKey,
     };
     use miden_standards::account::{
         auth::{Approver, AuthSingleSig},
@@ -355,7 +348,7 @@ mod tests {
             Some(SignatureScheme::Ecdsa)
         );
         assert_eq!(
-            SignatureScheme::from_auth_scheme_id(AuthScheme::Falcon512Poseidon2 as u64),
+            SignatureScheme::from_auth_scheme_id(AuthScheme::Falcon512Eidos as u64),
             Some(SignatureScheme::Falcon)
         );
         assert_eq!(SignatureScheme::from_auth_scheme_id(0), None);
@@ -371,7 +364,7 @@ mod tests {
         let account = AccountBuilder::new([0xff; 32])
             .with_component(AuthSingleSig::new(Approver::new(
                 public_key_commitment,
-                AuthScheme::Falcon512Poseidon2,
+                AuthScheme::Falcon512Eidos,
             )))
             .with_component(BasicWallet)
             .build()
@@ -453,7 +446,7 @@ mod tests {
             .parse_signature_hex(&signature_hex)
             .unwrap();
 
-        assert!(matches!(parsed, AccountSignature::Falcon512Poseidon2(_)));
+        assert!(matches!(parsed, AccountSignature::Falcon512Eidos(_)));
     }
 
     #[test]
@@ -474,7 +467,7 @@ mod tests {
     fn signature_scheme_build_signature_advice_entry_accepts_falcon_signatures() {
         let secret_key = SecretKey::new();
         let message = Word::from([1u32, 2, 3, 4]);
-        let commitment = Word::from([5u32, 6, 7, 8]);
+        let commitment = secret_key.public_key().to_commitment();
         let signature = AccountSignature::from(secret_key.sign(message));
 
         let (key, values) = SignatureScheme::Falcon

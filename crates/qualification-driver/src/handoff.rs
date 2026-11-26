@@ -60,7 +60,7 @@ pub async fn cosign(
         .account_dir(account_dir);
 
     let builder = match key {
-        AuthSecretKey::Falcon512Poseidon2(secret) => builder.with_secret_key(secret),
+        AuthSecretKey::Falcon512Eidos(secret) => builder.with_secret_key(secret),
         AuthSecretKey::EcdsaK256Keccak(secret) => builder.with_ecdsa_secret_key(secret),
         other => anyhow::bail!("the handoff key uses an unsupported scheme: {other:?}"),
     };

@@ -6,14 +6,13 @@ use std::time::Duration;
 
 use miden_client::rpc::domain::account::{AccountProof, GetAccountRequest};
 use miden_client::rpc::domain::account_vault::AccountVaultInfo;
-use miden_client::rpc::domain::limits::RpcLimits;
 use miden_client::rpc::domain::note::{FetchedNote, SyncNotesBlock};
 use miden_client::rpc::domain::nullifier::NullifierUpdate;
 use miden_client::rpc::domain::storage_map::StorageMapInfo;
 use miden_client::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
-use miden_client::rpc::domain::transaction::TransactionRecord;
+use miden_client::rpc::domain::transaction::{TransactionLogsInfo, TransactionRecord};
 use miden_client::rpc::encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
-use miden_client::rpc::{NetworkNoteStatusInfo, NodeRpcClient, RpcError, RpcStatusInfo};
+use miden_client::rpc::{NetworkNoteStatusInfo, NodeRpcClient, RpcError, RpcLimits, RpcStatusInfo};
 use miden_client::testing::mock::MockRpcApi;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -22,7 +21,8 @@ use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
-use miden_protocol::transaction::ProvenTransaction;
+use miden_protocol::protocol_config::ProtocolConfig;
+use miden_protocol::transaction::{ProvenTransaction, TransactionId};
 use miden_protocol::vm::ExecutionProof;
 use tokio::time::Instant;
 
@@ -87,8 +87,17 @@ impl NodeRpcClient for TestNode {
     async fn set_genesis_commitment(&self, commitment: Word) -> Result<(), RpcError> {
         self.inner.set_genesis_commitment(commitment).await
     }
-    fn has_genesis_commitment(&self) -> Option<Word> {
-        self.inner.has_genesis_commitment()
+    async fn get_genesis_block_header(&self) -> Result<(BlockHeader, ProtocolConfig), RpcError> {
+        self.inner.get_genesis_block_header().await
+    }
+    async fn get_transaction_logs(
+        &self,
+        account_id: AccountId,
+        transaction_id: TransactionId,
+    ) -> Result<Option<TransactionLogsInfo>, RpcError> {
+        self.inner
+            .get_transaction_logs(account_id, transaction_id)
+            .await
     }
     async fn get_transaction_encryption_key(
         &self,

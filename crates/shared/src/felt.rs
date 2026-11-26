@@ -1,5 +1,4 @@
-use miden_protocol::crypto::hash::rpo::Rpo256;
-use miden_protocol::{Felt, Word};
+use miden_protocol::{Felt, Hasher, Word};
 
 /// Maps an arbitrary `u64` onto a canonical field element by reducing modulo
 /// the field order.
@@ -22,5 +21,5 @@ pub fn domain_tag_word(bytes: &[u8]) -> Word {
             felt_from_u64_reduced(u64::from_le_bytes(chunk_bytes))
         })
         .collect();
-    Rpo256::hash_elements(&elements)
+    Hasher::hash_elements(&elements)
 }

@@ -37,7 +37,7 @@ use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
 use miden_protocol::account::{Account, AccountType};
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::{AuthGuardedMultisig, MultisigAuthArgs};

@@ -241,7 +241,7 @@ impl ScriptedNode {
         }
         let burns_a_failure = self
             .failures_before_success
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
                 remaining.checked_sub(1)
             })
             .is_ok();
@@ -483,6 +483,13 @@ impl rpc::node_service_server::NodeService for ScriptedNode {
         _: tonic::Request<rpc::GetTransactionEncryptionKeyRequest>,
     ) -> std::result::Result<tonic::Response<rpc::GetTransactionEncryptionKeyResponse>, tonic::Status>
     {
+        Err(tonic::Status::unimplemented("scripted node"))
+    }
+
+    async fn get_transaction_logs(
+        &self,
+        _: tonic::Request<rpc::GetTransactionLogsRequest>,
+    ) -> std::result::Result<tonic::Response<rpc::GetTransactionLogsResponse>, tonic::Status> {
         Err(tonic::Status::unimplemented("scripted node"))
     }
 

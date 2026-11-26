@@ -2,7 +2,7 @@ use anyhow::{Context, anyhow};
 use miden_protocol::account::{
     Account, AccountBuilder, AccountId, AccountType, auth::PublicKeyCommitment,
 };
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_standards::account::auth::{Approver, AuthSingleSig};
 use miden_standards::account::wallets::BasicWallet;
@@ -90,7 +90,7 @@ fn build_wallet(secret_key: &SecretKey, account_type: AccountType) -> anyhow::Re
         .account_type(account_type)
         .with_component(AuthSingleSig::new(Approver::new(
             commitment,
-            miden_protocol::account::auth::AuthScheme::Falcon512Poseidon2,
+            miden_protocol::account::auth::AuthScheme::Falcon512Eidos,
         )))
         .with_component(BasicWallet)
         .build()

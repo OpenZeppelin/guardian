@@ -2057,7 +2057,8 @@ mod tests {
             AccountCodePatch, AccountDelta, AccountId, AccountVaultDelta,
         };
         use miden_protocol::transaction::{
-            InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+            InputNotes, RawOutputNotes, TransactionLogs, TransactionSummary,
+            TransactionSummaryUserParams,
         };
         use miden_protocol::{Felt, Word, ZERO};
 
@@ -2079,6 +2080,7 @@ mod tests {
             Word::from([ZERO; 4]),
             0,
             TransactionSummaryUserParams::new([ZERO; 6]),
+            TransactionLogs::default(),
         );
         let (result, storage) = push_on_multisig(
             std::slice::from_ref(&approver.commitment_hex),

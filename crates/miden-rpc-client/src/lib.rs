@@ -1300,9 +1300,12 @@ mod tests {
                     }),
                     input_notes: vec![],
                     output_notes: vec![],
+                    code_patch_commitment: None,
+                    logs_commitment: None,
                 }),
                 output_note_proofs: vec![],
                 consumed_note_refs: vec![],
+                transaction_index: 0,
             }],
         };
         let (client, requests) = history_client(100, vec![page.clone()]).await;

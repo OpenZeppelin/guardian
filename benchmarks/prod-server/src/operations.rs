@@ -5,7 +5,7 @@ use miden_protocol::account::delta::AccountVaultDelta;
 use miden_protocol::account::{AccountCodePatch, AccountDelta, AccountId};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::transaction::{
-    InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    InputNotes, RawOutputNotes, TransactionLogs, TransactionSummary, TransactionSummaryUserParams,
 };
 use miden_protocol::{Felt, ONE, Word, ZERO};
 use serde_json::Value;
@@ -57,6 +57,7 @@ pub fn create_delta_summary(account_id: &AccountId, nonce: u64) -> Result<Transa
             ZERO,
             ZERO,
         ]),
+        TransactionLogs::default(),
     ))
 }
 

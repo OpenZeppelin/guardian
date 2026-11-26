@@ -1,6 +1,7 @@
 pub mod account_inspector;
 pub mod block_feed;
 pub mod execution;
+pub(crate) mod paid_fee;
 
 use crate::metadata::auth::{Auth, Credentials};
 use crate::network::miden::account_inspector::{
@@ -313,8 +314,11 @@ impl MidenNetworkClient {
     fn apply_summary(
         prev_account: Result<Account, String>,
         tx_summary: &TransactionSummary,
+        delta_payload: &serde_json::Value,
     ) -> Result<AppliedState, String> {
-        let account_delta = tx_summary.account_delta();
+        let account_delta =
+            paid_fee::settled_account_delta(tx_summary, paid_fee::paid_fee(delta_payload)?)?;
+        let account_delta = account_delta.as_ref();
 
         // An undecodable prior state skips the ID check: a creation delta then builds the
         // account from the delta alone. Only `apply_delta` passes an undecodable prior state;
@@ -528,7 +532,11 @@ impl NetworkClient for MidenNetworkClient {
         delta_payload: &serde_json::Value,
     ) -> Result<AppliedState, String> {
         let tx_summary = TransactionSummary::from_json(delta_payload)?;
-        Self::apply_summary(Account::from_json(prev_state_json), &tx_summary)
+        Self::apply_summary(
+            Account::from_json(prev_state_json),
+            &tx_summary,
+            delta_payload,
+        )
     }
 
     fn verify_and_apply_delta(
@@ -549,7 +557,7 @@ impl NetworkClient for MidenNetworkClient {
     ) -> Result<AppliedState, String> {
         let tx_summary = TransactionSummary::from_json(delta_payload)?;
         Self::ensure_prev_commitment(&prev_account, prev_commitment)?;
-        Self::apply_summary(Ok(prev_account), &tx_summary)
+        Self::apply_summary(Ok(prev_account), &tx_summary, delta_payload)
     }
 
     fn merge_deltas(
@@ -571,15 +579,21 @@ impl NetworkClient for MidenNetworkClient {
             return Err("No valid deltas to merge".to_string());
         }
 
-        let merged_account_delta =
-            merge_account_deltas(tx_summaries.iter().map(TransactionSummary::account_delta))
-                .map_err(|e| {
-                    tracing::error!(
-                        error = %e,
-                        "Failed to merge account deltas"
-                    );
-                    format!("Failed to merge account deltas: {e}")
-                })?;
+        let settled_deltas = tx_summaries
+            .iter()
+            .zip(&delta_payloads)
+            .map(|(tx_summary, payload)| {
+                paid_fee::settled_account_delta(tx_summary, paid_fee::paid_fee(payload)?)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let merged_account_delta = merge_account_deltas(settled_deltas.iter().map(AsRef::as_ref))
+            .map_err(|e| {
+            tracing::error!(
+                error = %e,
+                "Failed to merge account deltas"
+            );
+            format!("Failed to merge account deltas: {e}")
+        })?;
         let all_input_notes: Vec<InputNote> = tx_summaries
             .iter()
             .flat_map(|tx_summary| tx_summary.input_notes().iter().cloned())
@@ -605,7 +619,7 @@ impl NetworkClient for MidenNetworkClient {
             format!("Failed to create aggregated output notes: {e}")
         })?;
 
-        // Carry the bound block, expiration delta and user params from the last
+        // Carry the bound block, expiration delta, user params and logs from the last
         // TransactionSummary. Since Miden 0.17 the user params hold the approval
         // expiration and the salt the multisig binds; they are carried through
         // opaquely.
@@ -614,6 +628,7 @@ impl NetworkClient for MidenNetworkClient {
         let block_commitment = last.block_commitment();
         let expiration_delta = last.expiration_delta();
         let user_params = last.user_params();
+        let logs = last.logs().clone();
 
         // Create the merged TransactionSummary
         let merged_tx_summary = TransactionSummary::new(
@@ -624,6 +639,7 @@ impl NetworkClient for MidenNetworkClient {
             block_commitment,
             expiration_delta,
             user_params,
+            logs,
         );
 
         Ok(merged_tx_summary.to_json())
@@ -1430,9 +1446,12 @@ mod tests {
                 final_state_commitment: Some(proto_word(final_commitment)),
                 input_notes: vec![],
                 output_notes: vec![],
+                code_patch_commitment: None,
+                logs_commitment: None,
             }),
             output_note_proofs: vec![],
             consumed_note_refs: vec![],
+            transaction_index: 0,
         }
     }
 
@@ -2375,6 +2394,7 @@ mod tests {
             Word::default(),
             0,
             TransactionSummaryUserParams::new([Felt::ZERO; 6]),
+            miden_protocol::transaction::TransactionLogs::default(),
         );
 
         let delta_payload = tx_summary.to_json();
@@ -2447,6 +2467,7 @@ mod tests {
             Word::default(),
             0,
             TransactionSummaryUserParams::new([Felt::ZERO; 6]),
+            miden_protocol::transaction::TransactionLogs::default(),
         )
         .to_json()
     }

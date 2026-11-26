@@ -10,12 +10,13 @@ use miden_tx::TransactionExecutorError;
 
 pub(super) const APPROVAL_EXPIRED: &str =
     "the multisig approval expired at or before the transaction reference block";
-pub(super) const VAULT_SHORTFALL: &str = "failed to remove the fungible asset from the vault since the amount of the asset in the vault is less than the amount to remove";
+pub(super) const FEE_INSUFFICIENT_BALANCE: &str =
+    "native account vault holds less of the fee asset than the fee to pay";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Abort {
     ApprovalExpired,
-    VaultShortfall,
+    FeeInsufficientBalance,
 }
 
 impl Abort {
@@ -29,7 +30,7 @@ impl Abort {
         else {
             return None;
         };
-        [Self::ApprovalExpired, Self::VaultShortfall]
+        [Self::ApprovalExpired, Self::FeeInsufficientBalance]
             .into_iter()
             .find(|abort| abort.code() == *err_code)
     }
@@ -37,7 +38,7 @@ impl Abort {
     fn code(self) -> Felt {
         error_code_from_msg(match self {
             Self::ApprovalExpired => APPROVAL_EXPIRED,
-            Self::VaultShortfall => VAULT_SHORTFALL,
+            Self::FeeInsufficientBalance => FEE_INSUFFICIENT_BALANCE,
         })
     }
 }

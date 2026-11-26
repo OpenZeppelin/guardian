@@ -12,6 +12,7 @@ miden-confidential-contracts = { path = "../../crates/contracts" }
 # Miden client for transaction execution and proving
 miden-client = { workspace = true, features = ["tonic"] }
 miden-client-sqlite-store = { workspace = true }
+miden-client-proto = { workspace = true }
 # miden-protocol is needed for types not re-exported by miden_client
 miden-protocol = { workspace = true }
 # Upstream guarded-multisig MASM library

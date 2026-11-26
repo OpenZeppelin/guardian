@@ -1,5 +1,5 @@
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey as FalconSecretKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey as FalconSecretKey;
 
 use crate::manifest::Scheme;
 
@@ -28,7 +28,7 @@ impl RunSigner {
     pub fn to_auth_secret_key(&self) -> miden_protocol::account::auth::AuthSecretKey {
         use miden_protocol::account::auth::AuthSecretKey;
         match self {
-            Self::Falcon(key) => AuthSecretKey::Falcon512Poseidon2(key.clone()),
+            Self::Falcon(key) => AuthSecretKey::Falcon512Eidos(key.clone()),
             Self::Ecdsa(key) => AuthSecretKey::EcdsaK256Keccak(key.clone()),
         }
     }

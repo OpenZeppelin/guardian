@@ -508,7 +508,7 @@ mod tests {
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
     use miden_protocol::account::{AccountId, AccountStoragePatch};
     use miden_protocol::asset::FungibleAsset;
-    use miden_protocol::crypto::rand::RandomCoin;
+    use miden_protocol::crypto::rand::EidosRandomCoin;
     use miden_protocol::note::NoteType;
     use miden_protocol::{Felt, Word};
     use miden_standards::note::P2idNote;
@@ -519,7 +519,7 @@ mod tests {
     fn build_test_note(seed: u64) -> Note {
         let sender = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
         let target = AccountId::from_hex("0x1b1b1b1a1b1b1b011b1b1b1b1b1b1b").unwrap();
-        let mut rng = RandomCoin::new(Word::from([Felt::new_unchecked(seed); 4]));
+        let mut rng = EidosRandomCoin::new(Word::from([Felt::new_unchecked(seed); 4]));
         P2idNote::builder()
             .sender(sender)
             .target(target)
@@ -712,6 +712,7 @@ mod tests {
             miden_protocol::transaction::TransactionSummaryUserParams::new(
                 [miden_protocol::Felt::ZERO; 6],
             ),
+            miden_protocol::transaction::TransactionLogs::default(),
         );
         Proposal {
             id: id.to_string(),

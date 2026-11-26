@@ -1,7 +1,6 @@
 use crate::auth_request_payload::AuthRequestPayload;
 use miden_protocol::account::AccountId;
-use miden_protocol::crypto::hash::rpo::Rpo256;
-use miden_protocol::{Felt, Word};
+use miden_protocol::{Felt, Hasher, Word};
 use serde::Serialize;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,7 +64,7 @@ impl AuthRequestMessage {
             payload_elements[2],
             payload_elements[3],
         ];
-        Rpo256::hash_elements(&message_elements)
+        Hasher::hash_elements(&message_elements)
     }
 }
 

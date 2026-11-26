@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use miden_client::Serializable;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
 use miden_protocol::utils::serde::Deserializable;
 
 use guardian_client::{ClientResult, FalconKeyStore, GuardianClient};

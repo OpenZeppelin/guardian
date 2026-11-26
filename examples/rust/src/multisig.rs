@@ -11,7 +11,7 @@ use miden_client::{Client, ClientError, Deserializable, Word};
 use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
-use miden_protocol::account::auth::Signature;
+use miden_protocol::account::auth::{BoundSignature, Signature, SignatureKey};
 use miden_protocol::account::AccountId;
 use miden_protocol::assembly::Package;
 use miden_protocol::{Felt, Hasher};
@@ -191,9 +191,11 @@ pub fn build_signature_advice_entry(
     message: Word,
     signature: &Signature,
 ) -> (Word, Vec<Felt>) {
-    let key = Hasher::merge(&[pubkey_commitment, message]);
-    let values = signature.to_encoded_signature(message);
-    (key, values)
+    let key = SignatureKey::new(pubkey_commitment.into(), message);
+    let values = BoundSignature::new(key, signature.clone())
+        .expect("signature binds to its key")
+        .to_encoded_signature();
+    (key.to_advice_map_key(), values)
 }
 
 #[allow(dead_code)]

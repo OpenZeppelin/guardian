@@ -7,7 +7,7 @@ use miden_client::note::NoteConsumptionStatus;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::crypto::rand::RandomCoin;
+use miden_protocol::crypto::rand::EidosRandomCoin;
 use miden_protocol::note::{Note, NoteId};
 use miden_standards::note::{P2idNote, P2ideNote};
 
@@ -272,7 +272,7 @@ impl MultisigClient {
         let salt = proposal.metadata.salt()?;
         let asset = crate::execution::build_transfer_asset(*faucet_id, *amount)?;
 
-        let mut rng = RandomCoin::new(salt);
+        let mut rng = EidosRandomCoin::new(salt);
         let note: miden_protocol::note::Note = if heights.is_p2ide() {
             P2ideNote::builder()
                 .sender(account.id())

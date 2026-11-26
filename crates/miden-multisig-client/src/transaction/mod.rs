@@ -32,7 +32,9 @@ pub use guardian::build_update_guardian_transaction_request;
 pub use payment::{build_p2id_transaction_request, build_p2id_transaction_request_with_expiration};
 
 use miden_client::ClientError;
-use miden_client::transaction::{TransactionExecutorError, TransactionRequest, TransactionSummary};
+use miden_client::transaction::{
+    RequestAuthArgs, TransactionExecutorError, TransactionRequest, TransactionSummary,
+};
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::{Felt, Word};
@@ -41,10 +43,9 @@ use crate::MidenSdkClient;
 use crate::error::{MultisigError, Result};
 
 /// Deserializes a producer-supplied transaction request bytes (issue #266 producer
-/// API). The bytes are the serialized form of a Miden `TransactionRequest`.
+/// API). The bytes are the protobuf encoding of a Miden `TransactionRequest`.
 pub fn deserialize_transaction_request(bytes: &[u8]) -> Result<TransactionRequest> {
-    use miden_client::Deserializable;
-    TransactionRequest::read_from_bytes(bytes).map_err(|e| {
+    miden_client_proto::decode::<TransactionRequest>(bytes).map_err(|e| {
         MultisigError::InvalidConfig(format!("failed to decode transaction request: {e}"))
     })
 }
@@ -176,8 +177,10 @@ pub(crate) fn declared_bound_block(request: &TransactionRequest) -> Result<Optio
 fn request_bound_block_num(request: &TransactionRequest) -> Option<BlockNumber> {
     const AUTH_ARGS_NUM_ELEMENTS: usize = 12;
 
-    let auth_arg = (*request.auth_arg())?;
-    let preimage = request.advice_map().get(&auth_arg)?;
+    let RequestAuthArgs::Explicit(auth_arg) = request.auth_args() else {
+        return None;
+    };
+    let preimage = request.advice_map().get(auth_arg)?;
     if preimage.len() != AUTH_ARGS_NUM_ELEMENTS {
         return None;
     }
@@ -295,7 +298,7 @@ mod tests {
         use miden_protocol::transaction::TransactionKernel;
 
         const EXPECTED_KERNEL_COMMITMENT: &str =
-            "0x12b6033c1334140b2d553b871260ff87b62275a7eccd3829975ffd58f9f2a80a";
+            "0xc71983f6a7868a624ca5ee591134262d9c3e571c342fbf34c751d59a59590e74";
 
         let actual = word_to_hex(&TransactionKernel.to_commitment());
         assert_eq!(

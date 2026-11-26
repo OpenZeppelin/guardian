@@ -44,7 +44,9 @@ mod tests {
     use miden_protocol::account::AccountCodePatch;
     use miden_protocol::account::delta::AccountVaultDelta;
     use miden_protocol::account::{AccountDelta, AccountId, AccountStoragePatch};
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummaryUserParams};
+    use miden_protocol::transaction::{
+        InputNotes, RawOutputNotes, TransactionLogs, TransactionSummaryUserParams,
+    };
     use miden_protocol::{Felt, Word, ZERO};
 
     fn create_test_tx_summary() -> TransactionSummary {
@@ -69,6 +71,7 @@ mod tests {
             Word::from([ZERO; 4]),
             0,
             TransactionSummaryUserParams::new([ZERO; 6]),
+            TransactionLogs::default(),
         )
     }
 

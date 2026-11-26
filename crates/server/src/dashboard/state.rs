@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use guardian_shared::hex::{FromHex, IntoHex};
-use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature;
+use miden_protocol::crypto::dsa::falcon512_eidos::Signature;
 use tokio::sync::RwLock;
 
 use super::allowlist::{

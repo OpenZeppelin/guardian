@@ -1,3 +1,6 @@
+// Diesel's `QueryableByName` derive expands to `field: field` initializers.
+#![allow(clippy::redundant_field_names)]
+
 pub use guardian_shared::{FromJson, ToJson};
 
 pub mod ack;

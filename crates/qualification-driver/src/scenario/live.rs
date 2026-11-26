@@ -2199,7 +2199,7 @@ pub async fn create_custom_proposal(runner: &Runner) -> ActionOutcome {
             ));
         }
     };
-    let bytes = miden_protocol::utils::serde::Serializable::to_bytes(&request);
+    let bytes = miden_client_proto::encode(&request);
 
     match session.clients[0]
         .propose_custom_transaction(&bytes, CUSTOM_PROPOSAL_TYPE)

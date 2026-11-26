@@ -22,9 +22,9 @@ use guardian_shared::{FromJson, ToJson};
 use miden_protocol::account::AccountCodePatch;
 use miden_protocol::account::{AccountDelta, AccountId, AccountVaultDelta};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
 use miden_protocol::transaction::{
-    InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    InputNotes, RawOutputNotes, TransactionLogs, TransactionSummary, TransactionSummaryUserParams,
 };
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word, ZERO};
@@ -839,6 +839,7 @@ pub fn create_test_delta_payload(account_id_hex: &str) -> serde_json::Value {
         Word::from([ZERO; 4]),
         0,
         TransactionSummaryUserParams::new([ZERO; 6]),
+        TransactionLogs::default(),
     );
 
     tx_summary.to_json()
@@ -1088,7 +1089,7 @@ pub fn generate_ecdsa_signature(account_id_hex: &str) -> (String, String, String
 }
 
 pub fn pubkey_hex_to_commitment_hex(pubkey_hex: &str) -> String {
-    use miden_protocol::crypto::dsa::falcon512_poseidon2::PublicKey;
+    use miden_protocol::crypto::dsa::falcon512_eidos::PublicKey;
     use miden_protocol::utils::serde::{Deserializable, Serializable};
 
     let pubkey_hex = pubkey_hex.strip_prefix("0x").unwrap_or(pubkey_hex);

@@ -2,7 +2,7 @@ use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
 use guardian_shared::session_grant::SessionGrant;
 use miden_protocol::Word;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature;
+use miden_protocol::crypto::dsa::falcon512_eidos::Signature;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 
 /// Verify a Falcon RPO signature for a request with timestamp.
@@ -124,7 +124,7 @@ fn parse_signature(hex_str: &str) -> Result<Signature, String> {
 mod tests {
     use super::*;
     use miden_protocol::account::AccountId;
-    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+    use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
     use miden_protocol::utils::serde::Serializable;
 
     #[test]

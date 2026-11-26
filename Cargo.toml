@@ -27,7 +27,7 @@ resolver = "2"
 [workspace.package]
 version = "0.19.1"
 edition = "2024"
-rust-version = "1.98.1"
+rust-version = "1.99.1"
 authors = ["OpenZeppelin"]
 license = "AGPL-3.0"
 repository = "https://github.com/OpenZeppelin/guardian"
@@ -84,12 +84,13 @@ utoipa = { version = "5", features = ["axum_extras"] }
 # args, which the determinism vectors and the browser parity gate check. A
 # pin on either side that changes them makes the two clients compute
 # different transaction summary commitments and auth procedure roots.
-miden-protocol = "=0.18.0"
-miden-standards = "=0.18.0"
-miden-tx = "=0.18.0"
-miden-tx-batch = "=0.18.0"
-miden-node-proto-build = { version = "=0.18.2", default-features = false }
-miden-testing = "=0.18.0"
-miden-client = "=0.18.0"
-miden-client-sqlite-store = "=0.18.0"
-miden-processor = "=0.36.4"
+miden-protocol = { git = "https://github.com/0xMiden/protocol", rev = "0a5cbc49dd5e61782e779da4741b74ebe24ab108" }
+miden-standards = { git = "https://github.com/0xMiden/protocol", rev = "0a5cbc49dd5e61782e779da4741b74ebe24ab108" }
+miden-tx = { git = "https://github.com/0xMiden/protocol", rev = "0a5cbc49dd5e61782e779da4741b74ebe24ab108" }
+miden-tx-batch = { git = "https://github.com/0xMiden/protocol", rev = "0a5cbc49dd5e61782e779da4741b74ebe24ab108" }
+miden-node-proto-build = { git = "https://github.com/0xMiden/node", rev = "629ddf23acd8b21ca48911d0ad7293b31b03f95d", default-features = false }
+miden-testing = { git = "https://github.com/0xMiden/protocol", rev = "0a5cbc49dd5e61782e779da4741b74ebe24ab108" }
+miden-client = { git = "https://github.com/0xMiden/rust-sdk", rev = "ca8f4d7a205edc4aae604b0a061b707c25115670" }
+miden-client-sqlite-store = { git = "https://github.com/0xMiden/rust-sdk", rev = "ca8f4d7a205edc4aae604b0a061b707c25115670" }
+miden-client-proto = { git = "https://github.com/0xMiden/rust-sdk", rev = "ca8f4d7a205edc4aae604b0a061b707c25115670" }
+miden-processor = "=1.0.0-rc.1"

@@ -77,6 +77,7 @@ diesel_migrations = { version = "2.2", optional = true }
 # Guardian execution: reproducing, proving and submitting a proposal. Always built; it stays
 # off at run time until a prover is configured.
 miden-client = { workspace = true, features = ["tonic"] }
+miden-client-proto = { workspace = true }
 miden-tx = { workspace = true }
 # Batched submission (#239): the batch kernel executor and prover.
 miden-tx-batch = { workspace = true }

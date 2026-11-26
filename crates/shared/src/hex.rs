@@ -1,5 +1,5 @@
 use miden_protocol::Word;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::{PublicKey, Signature};
+use miden_protocol::crypto::dsa::falcon512_eidos::{PublicKey, Signature};
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 
 /// Trait for converting types to hex strings with `0x` prefix
@@ -86,7 +86,7 @@ impl FromHex for Word {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+    use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
 
     #[test]
     fn test_public_key_into_hex() {

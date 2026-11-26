@@ -57,7 +57,7 @@ fn word_to_sdk_hex(word: &Word) -> String {
 
 fn scheme_name(scheme: AuthScheme) -> &'static str {
     match scheme {
-        AuthScheme::Falcon512Poseidon2 => "falcon",
+        AuthScheme::Falcon512Eidos => "falcon",
         AuthScheme::EcdsaK256Keccak => "ecdsa",
         _ => panic!("unexpected auth scheme"),
     }
@@ -67,7 +67,7 @@ fn main() {
     let approvers = vec![
         Approver::new(
             PublicKeyCommitment::from(mock_commitment(1)),
-            AuthScheme::Falcon512Poseidon2,
+            AuthScheme::Falcon512Eidos,
         ),
         Approver::new(
             PublicKeyCommitment::from(mock_commitment(100)),
@@ -75,7 +75,7 @@ fn main() {
         ),
         Approver::new(
             PublicKeyCommitment::from(mock_commitment(200)),
-            AuthScheme::Falcon512Poseidon2,
+            AuthScheme::Falcon512Eidos,
         ),
     ];
     let guardian = Approver::new(
@@ -97,7 +97,7 @@ fn main() {
         .expect("failed to build account");
 
     let output = MixedSchemeAccountOutput {
-        account_hex: format!("0x{}", hex::encode(account.to_bytes())),
+        account_hex: format!("0x{}", hex::encode(miden_client_proto::encode(&account))),
         seed_hex: format!("0x{}", hex::encode(SEED)),
         threshold: THRESHOLD,
         signers: approvers

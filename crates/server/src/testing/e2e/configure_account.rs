@@ -10,7 +10,7 @@ use crate::testing::helpers::{
 use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
 use guardian_shared::hex::IntoHex;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use std::sync::Arc;
 

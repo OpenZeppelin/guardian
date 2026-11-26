@@ -101,6 +101,7 @@ fn consumable_now(status: &NoteConsumptionStatus) -> bool {
             true
         }
         NoteConsumptionStatus::ConsumableAfter(_)
+        | NoteConsumptionStatus::InsufficientFee
         | NoteConsumptionStatus::UnconsumableConditions
         | NoteConsumptionStatus::NeverConsumable(_) => false,
     }

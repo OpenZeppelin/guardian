@@ -9,7 +9,7 @@ A minimal Rust client library for interacting with the Guardian gRPC service.
 ```rust
 use std::sync::Arc;
 
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
 use guardian_client::{FalconKeyStore, GuardianClient};
 
 // Without authentication (only for configure endpoint)
@@ -226,14 +226,14 @@ both sides use the same error contract.
 
 ## Authentication
 
-The client uses Falcon Poseidon2 signatures for authenticated requests. Here is how to set it up:
+The client uses Falcon Eidos signatures for authenticated requests. Here is how to set it up:
 
 ### 1. Create a Signer
 
 ```rust
 use std::sync::Arc;
 
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
 use guardian_client::FalconKeyStore;
 
 // Generate a new secret key

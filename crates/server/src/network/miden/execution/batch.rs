@@ -756,6 +756,7 @@ mod tests {
     use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey;
     use miden_protocol::crypto::dsa::eddsa_25519_sha512::KeyExchangeKey;
     use miden_protocol::note::{Note, NoteType};
+    use miden_protocol::transaction::TransactionWitness;
     use miden_protocol::utils::serde::Serializable;
     use miden_testing::utils::create_p2any_note;
     use miden_testing::{Auth, MockChain, MockChainBuilder};
@@ -897,7 +898,7 @@ mod tests {
             }
             let executed = transaction.build().unwrap().execute().await.unwrap();
             let proven = LocalTransactionProver::default()
-                .prove(executed.tx_inputs().clone())
+                .prove(TransactionWitness::from(executed.clone()))
                 .unwrap();
             let sealed =
                 seal_transaction_inputs(&mut rand::rng(), key, proven.id(), executed.tx_inputs())

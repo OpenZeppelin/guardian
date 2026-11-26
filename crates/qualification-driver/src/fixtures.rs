@@ -4,7 +4,7 @@ use guardian_shared::auth_request_payload::AuthRequestPayload;
 use guardian_shared::hex::IntoHex;
 use guardian_shared::{FromJson, ProposalSignature};
 use miden_multisig_client::ProposalPayload;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
 use miden_protocol::transaction::TransactionSummary;
 use miden_protocol::utils::serde::Deserializable;
 use serde_json::Value;
@@ -223,6 +223,7 @@ impl Fixtures {
             summary.block_commitment(),
             miden_multisig_client::GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA.get(),
             TransactionSummaryUserParams::new(params),
+            summary.logs().clone(),
         ))
     }
 
