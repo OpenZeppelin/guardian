@@ -1,6 +1,7 @@
 pub mod account_inspector;
 pub mod block_feed;
 pub mod execution;
+pub(crate) mod paid_fee;
 
 use crate::metadata::auth::{Auth, Credentials};
 use crate::network::miden::account_inspector::{
@@ -313,8 +314,11 @@ impl MidenNetworkClient {
     fn apply_summary(
         prev_account: Result<Account, String>,
         tx_summary: &TransactionSummary,
+        delta_payload: &serde_json::Value,
     ) -> Result<AppliedState, String> {
-        let account_delta = tx_summary.account_delta();
+        let account_delta =
+            paid_fee::settled_account_delta(tx_summary, paid_fee::paid_fee(delta_payload)?)?;
+        let account_delta = account_delta.as_ref();
 
         // An undecodable prior state skips the ID check: a creation delta then builds the
         // account from the delta alone. Only `apply_delta` passes an undecodable prior state;
@@ -528,7 +532,11 @@ impl NetworkClient for MidenNetworkClient {
         delta_payload: &serde_json::Value,
     ) -> Result<AppliedState, String> {
         let tx_summary = TransactionSummary::from_json(delta_payload)?;
-        Self::apply_summary(Account::from_json(prev_state_json), &tx_summary)
+        Self::apply_summary(
+            Account::from_json(prev_state_json),
+            &tx_summary,
+            delta_payload,
+        )
     }
 
     fn verify_and_apply_delta(
@@ -549,7 +557,7 @@ impl NetworkClient for MidenNetworkClient {
     ) -> Result<AppliedState, String> {
         let tx_summary = TransactionSummary::from_json(delta_payload)?;
         Self::ensure_prev_commitment(&prev_account, prev_commitment)?;
-        Self::apply_summary(Ok(prev_account), &tx_summary)
+        Self::apply_summary(Ok(prev_account), &tx_summary, delta_payload)
     }
 
     fn merge_deltas(
@@ -571,15 +579,21 @@ impl NetworkClient for MidenNetworkClient {
             return Err("No valid deltas to merge".to_string());
         }
 
-        let merged_account_delta =
-            merge_account_deltas(tx_summaries.iter().map(TransactionSummary::account_delta))
-                .map_err(|e| {
-                    tracing::error!(
-                        error = %e,
-                        "Failed to merge account deltas"
-                    );
-                    format!("Failed to merge account deltas: {e}")
-                })?;
+        let settled_deltas = tx_summaries
+            .iter()
+            .zip(&delta_payloads)
+            .map(|(tx_summary, payload)| {
+                paid_fee::settled_account_delta(tx_summary, paid_fee::paid_fee(payload)?)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let merged_account_delta = merge_account_deltas(settled_deltas.iter().map(AsRef::as_ref))
+            .map_err(|e| {
+            tracing::error!(
+                error = %e,
+                "Failed to merge account deltas"
+            );
+            format!("Failed to merge account deltas: {e}")
+        })?;
         let all_input_notes: Vec<InputNote> = tx_summaries
             .iter()
             .flat_map(|tx_summary| tx_summary.input_notes().iter().cloned())

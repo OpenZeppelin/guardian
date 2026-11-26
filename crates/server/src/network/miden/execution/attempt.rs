@@ -20,6 +20,7 @@ use miden_client::rpc::encryption::SealedTransactionInputs;
 use miden_client::transaction::TransactionProver;
 use miden_protocol::account::Account;
 use miden_protocol::account::auth::Signature as AccountSignature;
+use miden_protocol::asset::FungibleAsset;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::transaction::{
     ExecutedTransaction, ProvenTransaction, RawOutputNote, RawOutputNotes, TransactionSummary,
@@ -32,6 +33,7 @@ use miden_tx::auth::UnreachableAuth;
 use miden_tx::{TransactionExecutor, TransactionExecutorError};
 use serde::Deserialize;
 
+use super::super::paid_fee::with_paid_fee;
 use super::aborts::Abort;
 use super::batch::{BatchSettings, Batcher, Member};
 use super::chain::{ChainViewError, build_chain_view_from, fetch_genesis};
@@ -55,6 +57,8 @@ use guardian_shared::multisig_threshold::ThresholdedTransaction;
 
 const PROVER_BACKOFF_START: Duration = Duration::from_secs(1);
 const PROVER_BACKOFF_CAP: Duration = Duration::from_secs(30);
+/// The multisig auth binds the max fee its signers accept as the summary's second user parameter.
+const MAX_FEE_USER_PARAM: usize = 1;
 /// Fewer blocks than this between the reference block and the tip measure the chain's pace too
 /// coarsely against one-second timestamps, so the pace is taken over the chain since genesis.
 const MIN_MEASURED_BLOCKS: u32 = 4;
@@ -684,6 +688,29 @@ impl MidenAttempt {
             .as_ref()
             .expect("the attempt executes before it proves, seals or submits")
     }
+
+    /// The summary payload with the fee `executed` paid after its signers signed the summary,
+    /// when it paid one. The fee may not exceed the max fee the summary binds.
+    fn settled_payload(
+        &self,
+        executed: &ExecutedTransaction,
+    ) -> Result<Option<serde_json::Value>, ExecutionFailure> {
+        let Some(fee) = paid_fee(executed)? else {
+            return Ok(None);
+        };
+        let max_fee =
+            self.summary.user_params().as_elements()[MAX_FEE_USER_PARAM].as_canonical_u64();
+        let paid = fee.amount().as_u64();
+        if paid > max_fee {
+            return Err(ExecutionFailure::new(
+                ExecutionFailureCode::BindingMismatch,
+                format!(
+                    "the transaction paid a fee of {paid}, over the signed max fee of {max_fee}"
+                ),
+            ));
+        }
+        Ok(Some(with_paid_fee(&self.summary_payload, &fee)))
+    }
 }
 
 #[async_trait]
@@ -784,12 +811,14 @@ impl ExecutionAttempt for MidenAttempt {
                 "the executed transaction's notes differ from the signed summary",
             ));
         }
+        let settled_payload = self.settled_payload(&executed)?;
         self.ensure_not_expired(executed.expiration_block_num())
             .await?;
         let info = ExecutedTransactionInfo {
             final_account_commitment: executed.final_account().to_commitment().into_hex(),
             reference_block: self.reference_block(),
             expiration_block: executed.expiration_block_num().as_u32(),
+            settled_payload,
         };
         self.executed = Some(executed);
         Ok(info)
@@ -1022,6 +1051,29 @@ fn signed_output_notes_commitment(executed: &ExecutedTransaction) -> Option<Word
 fn is_fee_note(note: &RawOutputNote) -> bool {
     note.recipient()
         .is_some_and(|recipient| recipient.script().root() == TxFeeNote::script_root())
+}
+
+/// The asset of the kernel fee note, which the auth procedure withdrew from the vault after the
+/// signers signed the summary.
+fn paid_fee(executed: &ExecutedTransaction) -> Result<Option<FungibleAsset>, ExecutionFailure> {
+    let mut fee_notes = executed
+        .output_notes()
+        .iter()
+        .filter(|note| is_fee_note(note));
+    let Some(fee_note) = fee_notes.next() else {
+        return Ok(None);
+    };
+    let mut assets = fee_note.assets().iter();
+    match (fee_notes.next(), assets.next(), assets.next()) {
+        (None, Some(asset), None) => asset.as_fungible().map(Some),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        ExecutionFailure::new(
+            ExecutionFailureCode::BindingMismatch,
+            "the transaction's fee is not one fee note with a single fungible asset",
+        )
+    })
 }
 
 /// The chain's time per block, measured over the blocks since the attempt's reference block, or

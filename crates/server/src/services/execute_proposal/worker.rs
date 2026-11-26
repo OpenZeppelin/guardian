@@ -16,7 +16,7 @@ use crate::coordination::{LeaderElector, Lease, Renewal, release_quietly};
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::error::GuardianError;
 use crate::services::account_status::ensure_account_active_metadata;
-use crate::services::ack_delta_internal::{AcknowledgedDelta, acknowledge_delta};
+use crate::services::ack_delta_internal::{AcknowledgedDelta, acknowledge_delta, apply_to_base};
 use crate::state::AppState;
 use crate::storage::execution::ExpirationBound;
 use crate::storage::{
@@ -393,6 +393,7 @@ async fn approach_boundary(
     });
 
     let executed = attempt.execute(ack).await?;
+    let acknowledged = settle(state, &current_state, acknowledged, &executed).await?;
     if !executed
         .final_account_commitment
         .eq_ignore_ascii_case(&acknowledged.applied.commitment)
@@ -465,6 +466,36 @@ async fn acknowledge(
         };
         failure.into()
     })
+}
+
+/// Re-applies the acknowledged delta with the payload the execution settled, so the candidate and
+/// the state it leaves include what the transaction paid after its signers signed it.
+async fn settle(
+    state: &AppState,
+    current_state: &crate::state_object::StateObject,
+    mut acknowledged: AcknowledgedDelta,
+    executed: &ExecutedTransactionInfo,
+) -> Result<AcknowledgedDelta, Stop> {
+    let Some(payload) = &executed.settled_payload else {
+        return Ok(acknowledged);
+    };
+    acknowledged.delta.delta_payload = payload.clone();
+    acknowledged.applied = apply_to_base(
+        state,
+        &current_state.commitment,
+        &current_state.state_json,
+        &acknowledged.delta,
+    )
+    .await
+    .map_err(|error| {
+        ExecutionFailure::with_logged_cause(
+            ExecutionFailureCode::BindingMismatch,
+            "the executed transaction does not apply to the account state",
+            &error,
+        )
+    })?;
+    acknowledged.delta.new_commitment = Some(acknowledged.applied.commitment.clone());
+    Ok(acknowledged)
 }
 
 /// `guardian` is the guardian slot read at selection; an account still at the base state has the
