@@ -840,7 +840,7 @@ pub async fn push_delta_proposal(
     path = "/delta/proposal/check",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key); omitted for raw wallet signatures")),
     request_body = DeltaProposalRequest,
     responses(
         (status = 200, description = "Proposal creation would pass", body = CheckProposalResponse),
@@ -883,7 +883,7 @@ pub async fn check_delta_proposal(
     path = "/policies",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(StateQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    params(StateQuery, ("x-auth-format" = Option<String>, Header, description = "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key); omitted for raw wallet signatures")),
     responses(
         (status = 200, description = "Disclosed policies", body = PoliciesResponse),
         (status = 400, description = "The account is not a Miden account (unsupported_for_network)", body = crate::openapi::ApiErrorResponse),

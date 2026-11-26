@@ -275,6 +275,9 @@ pub struct RacingStore {
     pub inner: super::store::FsModuleStore,
     pub before_account_params: std::sync::Mutex<Vec<RacingWrite>>,
     pub before_set_global_if: std::sync::Mutex<Vec<RacingWrite>>,
+    /// Reads of the instance rows, their version or a snapshot, counted to pin a caller to one
+    /// store call.
+    pub reads: std::sync::atomic::AtomicUsize,
 }
 
 impl RacingStore {
@@ -283,6 +286,7 @@ impl RacingStore {
             inner: super::store::FsModuleStore::in_memory(),
             before_account_params: Default::default(),
             before_set_global_if: Default::default(),
+            reads: Default::default(),
         }
     }
 
@@ -336,6 +340,7 @@ impl super::store::ModuleStore for RacingStore {
     }
 
     async fn instances(&self) -> Result<Vec<super::store::InstanceRow>, String> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.inner.instances().await
     }
 
@@ -344,6 +349,7 @@ impl super::store::ModuleStore for RacingStore {
         account_id: &str,
         cached_version: Option<u64>,
     ) -> Result<super::store::ModuleSnapshot, String> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let writes = std::mem::take(&mut *self.before_account_params.lock().unwrap());
         self.commit(writes).await?;
         self.inner.snapshot(account_id, cached_version).await
@@ -451,6 +457,7 @@ impl super::store::ModuleStore for RacingStore {
     }
 
     async fn instance_version(&self) -> Result<u64, String> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.inner.instance_version().await
     }
 }
