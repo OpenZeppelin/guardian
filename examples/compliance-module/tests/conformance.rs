@@ -88,6 +88,7 @@ fn paying(params: serde_json::Value, notes: Vec<OutputNote>) -> HookRequest {
 #[tokio::test]
 async fn signers_must_be_kyc_verified() {
     let added = json!({ "signers": "added" });
+    let unverified_upper = format!("0x{}", UNVERIFIED_SIGNER[2..].to_ascii_uppercase());
     Suite::new(Compliance::new(lists()))
         .allows(
             "registration with verified signers",
@@ -115,7 +116,11 @@ async fn signers_must_be_kyc_verified() {
         )
         .allows(
             "a transaction of an account whose unverified signer predates the check, when only added signers are checked",
-            transaction(added, &[UNVERIFIED_SIGNER], &[UNVERIFIED_SIGNER], vec![]),
+            transaction(added.clone(), &[UNVERIFIED_SIGNER], &[UNVERIFIED_SIGNER], vec![]),
+        )
+        .allows(
+            "a signer spelled in another hex case before and after is not added",
+            transaction(added, &[&unverified_upper], &[UNVERIFIED_SIGNER], vec![]),
         )
         .denies_with(
             "any transaction of an account with an unverified signer, when every signer is checked",

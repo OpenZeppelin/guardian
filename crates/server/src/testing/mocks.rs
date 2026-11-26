@@ -719,6 +719,8 @@ pub struct MockStorageBackend {
     /// state: a commitment read that sees another state than the full
     /// read after it.
     pub pull_state_commitment_override: Arc<StdMutex<Option<String>>>,
+    /// Scripted `pull_state_commitment` failures, popped last first, before any other answer.
+    pub pull_state_commitment_errors: Arc<StdMutex<Vec<String>>>,
     /// Scripted `pull_state_commitments_batch` failures, popped last first.
     pub state_commitments_errors: Arc<StdMutex<Vec<String>>>,
     /// The ids of every `pull_state_commitments_batch` call, in order.
@@ -772,6 +774,15 @@ impl MockStorageBackend {
             .lock()
             .unwrap()
             .insert(account_id.to_string(), commitment.to_string());
+        self
+    }
+
+    /// Fail the next `pull_state_commitment` with `error`, then answer as usual.
+    pub fn with_pull_state_commitment_error(self, error: &str) -> Self {
+        self.pull_state_commitment_errors
+            .lock()
+            .unwrap()
+            .push(error.to_string());
         self
     }
 
@@ -1383,6 +1394,9 @@ impl StorageBackend for MockStorageBackend {
     /// The commitment of the stored state, without consuming a response:
     /// see [`Self::peek_stored_state`].
     async fn pull_state_commitment(&self, _account_id: &str) -> StdResult<String, String> {
+        if let Some(error) = self.pull_state_commitment_errors.lock().unwrap().pop() {
+            return Err(error);
+        }
         if let Some(commitment) = self.pull_state_commitment_override.lock().unwrap().clone() {
             return Ok(commitment);
         }
