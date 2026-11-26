@@ -150,13 +150,22 @@ pub struct RegistrationInput<'a> {
     pub account_id: &'a str,
     pub submitter: &'a str,
     pub submitter_session: bool,
+    /// The auth configuration the request registers, which a single-key `after` takes its
+    /// signer from.
     pub auth: &'a Auth,
     pub network_config: &'a NetworkConfig,
-    /// The view of the state already stored for the account, when there is one.
-    pub stored: Option<Result<ModuleAccount, String>>,
+    /// The state already stored for the account, when there is one.
+    pub stored: Option<StoredRegistration<'a>>,
     /// The view and the whole state of the initial state the request registers.
     pub initial: ModuleAccountInputs,
     pub accounting_time: DateTime<Utc>,
+}
+
+/// The account as stored before the request: its state's view and the auth configuration stored
+/// with it, which a single-key `before` takes its signer from.
+pub struct StoredRegistration<'a> {
+    pub view: Result<ModuleAccount, String>,
+    pub auth: &'a Auth,
 }
 
 pub fn registration_request(input: RegistrationInput<'_>) -> Result<HookRequest, String> {
@@ -170,7 +179,7 @@ pub fn registration_request(input: RegistrationInput<'_>) -> Result<HookRequest,
         submitter_session: input.submitter_session,
         before: input
             .stored
-            .map(|stored| view(stored, input.auth))
+            .map(|stored| view(stored.view, stored.auth))
             .transpose()?,
         after: Some(view(input.initial.view, input.auth)?),
         subject: Some(hook_request::Subject::Registration(RegistrationSubject {
@@ -256,6 +265,62 @@ mod tests {
             initial,
             accounting_time: Utc::now(),
         })
+    }
+
+    /// A single-key `before` takes its signer from the auth stored with the account, `after`
+    /// from the auth the request registers, so a rotated signer shows as added, and a move to a
+    /// multisig is judged against the stored single key.
+    #[test]
+    fn a_single_key_before_takes_the_stored_auth_and_after_the_registered_one() {
+        let stored_auth = Auth::MidenFalconRpo {
+            cosigner_commitments: vec!["0xold".into()],
+        };
+        let single = || {
+            Ok(ModuleAccount {
+                view: AccountView::default(),
+                nonce: 3,
+            })
+        };
+        let request = |auth: &Auth, initial: ModuleAccountInputs| {
+            registration_request(RegistrationInput {
+                network_id: "mainnet",
+                account_id: "0xacc",
+                submitter: "0xnew",
+                submitter_session: false,
+                auth,
+                network_config: &NetworkConfig::miden_default(),
+                stored: Some(StoredRegistration {
+                    view: single(),
+                    auth: &stored_auth,
+                }),
+                initial,
+                accounting_time: Utc::now(),
+            })
+        };
+
+        let rotated = Auth::MidenEcdsa {
+            cosigner_commitments: vec!["0xnew".into()],
+        };
+        let rotation = request(&rotated, decoded(AccountView::default())).unwrap();
+        let before = rotation.before.unwrap();
+        assert_eq!(before.signer_commitments, vec!["0xold".to_string()]);
+        assert_eq!(before.auth_scheme, "falcon");
+        let after = rotation.after.unwrap();
+        assert_eq!(after.signer_commitments, vec!["0xnew".to_string()]);
+        assert_eq!(after.auth_scheme, "ecdsa");
+
+        let multisig = Auth::MidenFalconRpo {
+            cosigner_commitments: vec!["0xold".into(), "0xnew".into()],
+        };
+        let upgrade = request(
+            &multisig,
+            decoded(multisig_view(&[("0xold", "falcon"), ("0xnew", "falcon")])),
+        )
+        .expect("a single key moving to a multisig is judged, not refused");
+        assert_eq!(
+            upgrade.before.unwrap().signer_commitments,
+            vec!["0xold".to_string()]
+        );
     }
 
     fn decoded(view: AccountView) -> ModuleAccountInputs {

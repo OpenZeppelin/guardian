@@ -274,6 +274,16 @@ impl ModulePipeline {
         &self.breakers
     }
 
+    /// The instance passed its startup checks on this replica, as an operator's enable runs
+    /// them: it is no longer unchecked, and an open breaker lets the next real call through as a
+    /// passing probe would, instead of waiting for the next probe.
+    pub fn checks_passed(&self, module_id: &str) {
+        if let Ok(mut unchecked) = self.unchecked.lock() {
+            unchecked.remove(module_id);
+        }
+        self.breakers.probe_succeeded(module_id);
+    }
+
     pub fn instances(&self) -> &[Instance] {
         &self.instances
     }
@@ -333,12 +343,7 @@ impl ModulePipeline {
                 .map(|row| (row.module_id, (row.global_params, row.enabled)))
                 .collect(),
         );
-        if let Ok(mut cache) = self.cache.write() {
-            *cache = Cache {
-                version: Some(version),
-                rows: rows.clone(),
-            };
-        }
+        self.cache_rows(version, &rows);
         Ok((version, rows))
     }
 
@@ -380,12 +385,7 @@ impl ModulePipeline {
                         .map(|row| (row.module_id, (row.global_params, row.enabled)))
                         .collect(),
                 );
-                if let Ok(mut cache) = self.cache.write() {
-                    *cache = Cache {
-                        version: Some(snapshot.instance_version),
-                        rows: rows.clone(),
-                    };
-                }
+                self.cache_rows(snapshot.instance_version, &rows);
                 rows
             }
             (None, Some((_, rows))) => rows,
@@ -401,6 +401,19 @@ impl ModulePipeline {
             rows,
             account_rows: snapshot.account_params,
         })
+    }
+
+    /// Caches the instance rows read at `version`, whatever version the cache held. A slow
+    /// request can move it back to an older version, which costs the next request one read of
+    /// the rows; refusing to move back would keep rows from before a reset of the version
+    /// counter, and the store omits the rows whenever the versions are equal.
+    fn cache_rows(&self, version: u64, rows: &Rows) {
+        if let Ok(mut cache) = self.cache.write() {
+            *cache = Cache {
+                version: Some(version),
+                rows: rows.clone(),
+            };
+        }
     }
 
     pub(super) fn global_params_in(rows: &Rows, instance: &Instance) -> serde_json::Value {
@@ -466,9 +479,6 @@ impl ModulePipeline {
         first_registration: bool,
     ) -> Result<(Option<Plan<'_>>, Vec<Assigned>), GuardianError> {
         let account_id = account_id.to_ascii_lowercase();
-        let subscribed = |rows: &Rows, instance: &&Instance| {
-            instance.config.hooks.contains(&hook) && Self::enabled_in(rows, instance)
-        };
         let relevant = self.instances.iter().any(|instance| {
             instance.config.hooks.contains(&hook)
                 || first_registration && instance.config.scope == Scope::Default
@@ -476,19 +486,34 @@ impl ModulePipeline {
         if !relevant {
             return Ok((None, Vec::new()));
         }
+        let snapshot = self.snapshot(&account_id).await?;
+        Ok(self.plan_in(hook, account_id, first_registration, &snapshot))
+    }
+
+    /// The plan for `hook` and the default copies, built from one snapshot the caller read.
+    fn plan_in(
+        &self,
+        hook: HookName,
+        account_id: String,
+        first_registration: bool,
+        snapshot: &Snapshot,
+    ) -> (Option<Plan<'_>>, Vec<Assigned>) {
+        let subscribed = |rows: &Rows, instance: &&Instance| {
+            instance.config.hooks.contains(&hook) && Self::enabled_in(rows, instance)
+        };
         let Snapshot {
             params_version,
             account_params_version,
             rows,
             account_rows,
-        } = self.snapshot(&account_id).await?;
+        } = snapshot;
         let defaults: Vec<Assigned> = if first_registration {
             self.instances
                 .iter()
                 .filter(|instance| instance.config.scope == Scope::Default)
                 .map(|instance| Assigned {
                     module_id: instance.config.id.clone(),
-                    params: Self::global_params_in(&rows, instance),
+                    params: Self::global_params_in(rows, instance),
                 })
                 .collect()
         } else {
@@ -497,10 +522,10 @@ impl ModulePipeline {
         let active: Vec<&Instance> = self
             .instances
             .iter()
-            .filter(|instance| subscribed(&rows, instance))
+            .filter(|instance| subscribed(rows, instance))
             .collect();
         if active.is_empty() {
-            return Ok((None, defaults));
+            return (None, defaults);
         }
         let mut modules = Vec::new();
         for instance in active
@@ -509,7 +534,7 @@ impl ModulePipeline {
         {
             modules.push((
                 *instance,
-                Self::global_params_in(&rows, instance),
+                Self::global_params_in(rows, instance),
                 Layer::Global,
             ));
             if let Some(layer) = account_rows
@@ -543,13 +568,13 @@ impl ModulePipeline {
             modules,
             network_id: self.network_id,
             catalog_hash: self.catalog_hash.clone(),
-            params_version,
-            account_params_version,
+            params_version: *params_version,
+            account_params_version: *account_params_version,
             limits: self.limits,
             breakers: self.breakers.clone(),
             dry_run: false,
         });
-        Ok((plan, defaults))
+        (plan, defaults)
     }
 
     /// The plans for a dry-run check of a proposal: the `before_proposal_created` instances,
@@ -563,25 +588,28 @@ impl ModulePipeline {
         &self,
         account_id: &str,
     ) -> Result<(Vec<Plan<'_>>, bool), GuardianError> {
-        let (_, rows) = self.versioned_rows().await?;
-        let complete = !self.instances.iter().any(|instance| {
-            Self::enabled_in(&rows, instance)
-                && !instance.config.dry_run
-                && (instance
-                    .config
-                    .hooks
-                    .contains(&HookName::BeforeProposalCreated)
-                    || instance
-                        .config
-                        .hooks
-                        .contains(&HookName::BeforeTransactionApproved))
-        });
-        let mut plans = Vec::new();
-        for hook in [
+        const HOOKS: [HookName; 2] = [
             HookName::BeforeProposalCreated,
             HookName::BeforeTransactionApproved,
-        ] {
-            let Some(mut plan) = self.plan(hook, account_id).await? else {
+        ];
+        let gates = |instance: &&Instance| {
+            HOOKS
+                .iter()
+                .any(|hook| instance.config.hooks.contains(hook))
+        };
+        if !self.instances.iter().any(|instance| gates(&instance)) {
+            return Ok((Vec::new(), true));
+        }
+        let account_id = account_id.to_ascii_lowercase();
+        let snapshot = self.snapshot(&account_id).await?;
+        let complete = !self.instances.iter().any(|instance| {
+            Self::enabled_in(&snapshot.rows, instance)
+                && !instance.config.dry_run
+                && gates(&instance)
+        });
+        let mut plans = Vec::new();
+        for hook in HOOKS {
+            let Some(mut plan) = self.plan_in(hook, account_id.clone(), false, &snapshot).0 else {
                 continue;
             };
             plan.modules
@@ -1101,6 +1129,52 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
         assert_eq!(client_message("  \n "), None);
+    }
+
+    /// A dry-run check plans both hooks from one store read, so its `complete` and both plans
+    /// see the same params versions.
+    #[tokio::test]
+    async fn a_dry_run_plans_both_hooks_from_one_store_read() {
+        use crate::modules::testing::RacingStore;
+        use std::sync::atomic::Ordering;
+        let store = Arc::new(RacingStore::new());
+        let pipeline = ModulePipeline::from_instances_with_store(
+            vec![instance(
+                "screening",
+                &[
+                    HookName::BeforeProposalCreated,
+                    HookName::BeforeTransactionApproved,
+                ],
+                OnError::Deny,
+                StubModule::new(Behaviour::Hang),
+            )],
+            store.clone(),
+        );
+        let (plans, complete) = pipeline.plan_dry_run("0xACC").await.unwrap();
+        assert_eq!(plans.len(), 2);
+        assert!(complete);
+        assert_eq!(store.reads.load(Ordering::SeqCst), 1);
+    }
+
+    /// The cache always takes the rows just read: after the version counter is reset under a
+    /// running replica, rows cached at the old, higher version must not be served once the
+    /// counter climbs back to it.
+    #[test]
+    fn the_instance_cache_takes_the_rows_just_read_even_at_an_older_version() {
+        let pipeline = ModulePipeline::from_instances(Vec::new());
+        let newer: Rows = Arc::new(HashMap::from([(
+            "m".to_string(),
+            (serde_json::json!({ "v": 2 }), true),
+        )]));
+        let older: Rows = Arc::new(HashMap::from([(
+            "m".to_string(),
+            (serde_json::json!({ "v": 1 }), true),
+        )]));
+        pipeline.cache_rows(2, &newer);
+        pipeline.cache_rows(1, &older);
+        let cache = pipeline.cache.read().unwrap();
+        assert_eq!(cache.version, Some(1));
+        assert_eq!(cache.rows, older);
     }
 
     #[tokio::test]
