@@ -1,7 +1,7 @@
 use miden_protocol::Word;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::{PublicKey, SecretKey, Signature};
+use miden_protocol::crypto::dsa::falcon512_eidos::{PublicKey, SecretKey, Signature};
 
-/// Generate a new Falcon Poseidon2-512 key pair
+/// Generate a new Falcon Eidos-512 key pair
 ///
 /// # Returns
 /// A tuple of (SecretKey, PublicKey)
@@ -11,19 +11,19 @@ pub fn generate_keypair() -> (SecretKey, PublicKey) {
     (secret_key, public_key)
 }
 
-/// Sign a message using a Falcon Poseidon2-512 secret key
+/// Sign a message using a Falcon Eidos-512 secret key
 ///
 /// # Arguments
 /// * `secret_key` - The secret key to sign with
 /// * `message` - The message as a Word (4 field elements)
 ///
 /// # Returns
-/// A Falcon Poseidon2-512 signature
+/// A Falcon Eidos-512 signature
 pub fn sign_message(secret_key: &SecretKey, message: Word) -> Signature {
     secret_key.sign(message)
 }
 
-/// Verify a Falcon Poseidon2-512 signature
+/// Verify a Falcon Eidos-512 signature
 ///
 /// # Arguments
 /// * `public_key` - The public key to verify against

@@ -61,7 +61,7 @@ pub async fn track_account(
     client: &mut MidenClient,
     data_dir: &std::path::Path,
     account: &Account,
-    secret_key: &miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey,
+    secret_key: &miden_protocol::crypto::dsa::falcon512_eidos::SecretKey,
 ) -> anyhow::Result<()> {
     use miden_client::keystore::Keystore;
     use miden_protocol::account::auth::AuthSecretKey;
@@ -70,7 +70,7 @@ pub async fn track_account(
         .map_err(|error| anyhow!("cannot open the keystore: {error}"))?;
     keystore
         .add_key(
-            &AuthSecretKey::Falcon512Poseidon2(secret_key.clone()),
+            &AuthSecretKey::Falcon512Eidos(secret_key.clone()),
             account.id(),
         )
         .await

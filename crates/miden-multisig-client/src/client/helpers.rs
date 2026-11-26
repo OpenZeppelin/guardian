@@ -756,7 +756,8 @@ mod tests {
     use miden_protocol::account::AccountStoragePatch;
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
     use miden_protocol::transaction::{
-        InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+        InputNotes, RawOutputNotes, TransactionLogs, TransactionSummary,
+        TransactionSummaryUserParams,
     };
     use miden_protocol::{Felt, Word};
 
@@ -780,6 +781,7 @@ mod tests {
             Word::default(),
             0,
             TransactionSummaryUserParams::new([Felt::ZERO; 6]),
+            TransactionLogs::default(),
         )
         .to_json()
     }

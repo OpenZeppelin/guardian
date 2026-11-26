@@ -166,6 +166,9 @@ fn classify_note_tag(note: &Note) -> NoteTag {
         | Some(StandardNote::BLOCKLIST_CONFIG)
         | Some(StandardNote::PAUSE_CONFIG)
         | Some(StandardNote::OWNER_CONFIG)
+        | Some(StandardNote::AUTHORITY_CONFIG)
+        | Some(StandardNote::ENCRYPTED_ASSETS_ISSUER_KEY_CONFIG)
+        | Some(StandardNote::SUPPLY_RESTRICTION_CONFIG)
         | Some(StandardNote::RBAC_CONFIG)
         | Some(StandardNote::NETWORK_ACCOUNT_CONFIG)
         | Some(StandardNote::UPGRADE)
@@ -344,7 +347,7 @@ mod tests {
         AccountDelta, AccountVaultDelta, AssetDelta, AssetDeltaOperation,
     };
     use miden_protocol::asset::{FungibleAsset, NonFungibleAsset};
-    use miden_protocol::crypto::rand::RandomCoin;
+    use miden_protocol::crypto::rand::EidosRandomCoin;
     use miden_protocol::note::NoteType;
     use miden_protocol::transaction::InputNote;
     use miden_protocol::transaction::{
@@ -364,7 +367,7 @@ mod tests {
         let asset: miden_protocol::asset::Asset = FungibleAsset::new(faucet, 100_000_000)
             .expect("fungible asset")
             .into();
-        let mut rng = RandomCoin::new(Word::from([1u32, 2, 3, 4]));
+        let mut rng = EidosRandomCoin::new(Word::from([1u32, 2, 3, 4]));
         let note = miden_protocol::note::Note::from(
             P2idNote::builder()
                 .sender(sender)
@@ -392,6 +395,7 @@ mod tests {
             Word::from([ZERO; 4]),
             0,
             TransactionSummaryUserParams::new([ZERO; 6]),
+            miden_protocol::transaction::TransactionLogs::default(),
         )
     }
 
@@ -543,7 +547,7 @@ mod tests {
             vec![VaultChange::NonFungible {
                 asset_id: faucet_id,
                 added: vec![
-                    "0xf1433e1e588f04cbcbee98fc5f0c2ab601ef000000dd000011ca0000000000bc"
+                    "0x83051948af32d4608b43b92c16ad0c0301ef000000dd000011ca0000000000bc"
                         .to_string(),
                 ],
                 removed: Vec::new(),

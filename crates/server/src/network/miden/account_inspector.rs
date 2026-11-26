@@ -331,7 +331,7 @@ mod tests {
 
         assert!(
             inspector.has_guardian_auth(),
-            "Fixture account should have GUARDIAN auth enabled (auth_tx_falcon512_poseidon2_multisig procedure)"
+            "Fixture account should have GUARDIAN auth enabled (auth_tx_falcon512_eidos_multisig procedure)"
         );
     }
 

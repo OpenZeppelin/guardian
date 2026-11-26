@@ -36,9 +36,9 @@ use miden_confidential_contracts::multisig_guardian::{
 use miden_protocol::account::AccountCodePatch;
 use miden_protocol::account::delta::AccountVaultDelta;
 use miden_protocol::account::{AccountDelta, AccountStoragePatch, StorageMapKey, StorageSlotName};
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
 use miden_protocol::transaction::{
-    InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    InputNotes, RawOutputNotes, TransactionLogs, TransactionSummary, TransactionSummaryUserParams,
 };
 use miden_protocol::{Felt, Word as MidenWord, ZERO};
 use miden_standards::account::auth::AuthGuardedMultisig;
@@ -166,6 +166,7 @@ fn tx_summary_json(delta: AccountDelta) -> serde_json::Value {
         MidenWord::from([ZERO; 4]),
         0,
         TransactionSummaryUserParams::new([ZERO; 6]),
+        TransactionLogs::default(),
     )
     .to_json()
 }

@@ -7,7 +7,7 @@ use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder};
 use miden_protocol::account::{AccountCodeInterface, AccountId};
 use miden_protocol::asset::Asset;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::crypto::rand::RandomCoin;
+use miden_protocol::crypto::rand::EidosRandomCoin;
 use miden_protocol::note::NoteType;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::MultisigAuthArgs;
@@ -68,7 +68,7 @@ pub fn build_p2id_transaction_request_with_expiration<I>(
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
 {
-    let mut rng = RandomCoin::new(auth_args.salt());
+    let mut rng = EidosRandomCoin::new(auth_args.salt());
 
     let note: miden_protocol::note::Note = if heights.is_p2ide() {
         P2ideNote::builder()
@@ -131,20 +131,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_client::transaction::TransactionScriptTemplate;
+    use miden_client::transaction::RequestTransactionScript;
     use miden_confidential_contracts::multisig_guardian::{
         MultisigGuardianBuilder, MultisigGuardianConfig,
     };
     use miden_protocol::account::auth::AuthScheme;
     use miden_protocol::account::{AccountId, AccountType};
     use miden_protocol::asset::{AssetAmount, TokenSymbol};
-    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+    use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
     use miden_standards::account::auth::{Approver, AuthSingleSig};
     use miden_standards::account::faucets::{
         FungibleFaucet, TokenName, create_singlesig_user_fungible_faucet,
     };
     use miden_standards::account::policies::{
-        BurnPolicy, MintPolicy, TokenPolicyManager, TransferPolicy,
+        BurnPolicy, MintPolicy, ReceivePolicy, SendPolicy, TokenPolicyManager,
     };
 
     #[test]
@@ -167,13 +167,13 @@ mod tests {
             .unwrap();
         let auth_component = AuthSingleSig::new(Approver::new(
             secret_key.public_key().to_commitment().into(),
-            AuthScheme::Falcon512Poseidon2,
+            AuthScheme::Falcon512Eidos,
         ));
         let policy_manager = TokenPolicyManager::builder()
             .active_mint_policy(MintPolicy::allow_all())
             .active_burn_policy(BurnPolicy::allow_all())
-            .active_send_policy(TransferPolicy::allow_all())
-            .active_receive_policy(TransferPolicy::allow_all())
+            .active_send_policy(SendPolicy::allow_all())
+            .active_receive_policy(ReceivePolicy::allow_all())
             .build();
         let faucet = create_singlesig_user_fungible_faucet(
             [5u8; 32],
@@ -200,8 +200,8 @@ mod tests {
         .unwrap();
 
         assert!(matches!(
-            request.script_template(),
-            Some(TransactionScriptTemplate::CustomScript(_))
+            request.transaction_script(),
+            RequestTransactionScript::Custom { .. }
         ));
         assert_eq!(request.expected_output_recipients().count(), 1);
     }
@@ -226,13 +226,13 @@ mod tests {
             .unwrap();
         let auth_component = AuthSingleSig::new(Approver::new(
             secret_key.public_key().to_commitment().into(),
-            AuthScheme::Falcon512Poseidon2,
+            AuthScheme::Falcon512Eidos,
         ));
         let policy_manager = TokenPolicyManager::builder()
             .active_mint_policy(MintPolicy::allow_all())
             .active_burn_policy(BurnPolicy::allow_all())
-            .active_send_policy(TransferPolicy::allow_all())
-            .active_receive_policy(TransferPolicy::allow_all())
+            .active_send_policy(SendPolicy::allow_all())
+            .active_receive_policy(ReceivePolicy::allow_all())
             .build();
         let faucet = create_singlesig_user_fungible_faucet(
             [5u8; 32],
@@ -265,8 +265,7 @@ mod tests {
 
         // The note type feeds the generated send script, so identically
         // parameterized public and private requests must not be identical.
-        use miden_protocol::utils::serde::Serializable;
-        assert_ne!(private_request.to_bytes(), public_request.to_bytes());
+        assert_ne!(private_request, public_request);
     }
 
     /// Presence of a reclaim/timelock height must switch the output note to
@@ -293,13 +292,13 @@ mod tests {
             .unwrap();
         let auth_component = AuthSingleSig::new(Approver::new(
             secret_key.public_key().to_commitment().into(),
-            AuthScheme::Falcon512Poseidon2,
+            AuthScheme::Falcon512Eidos,
         ));
         let policy_manager = TokenPolicyManager::builder()
             .active_mint_policy(MintPolicy::allow_all())
             .active_burn_policy(BurnPolicy::allow_all())
-            .active_send_policy(TransferPolicy::allow_all())
-            .active_receive_policy(TransferPolicy::allow_all())
+            .active_send_policy(SendPolicy::allow_all())
+            .active_receive_policy(ReceivePolicy::allow_all())
             .build();
         let faucet = create_singlesig_user_fungible_faucet(
             [5u8; 32],
@@ -405,7 +404,7 @@ mod tests {
             .target(recipient)
             .assets(vec![asset])
             .note_type(NoteType::Public)
-            .generate_serial_number(&mut RandomCoin::new(auth_args.salt()))
+            .generate_serial_number(&mut EidosRandomCoin::new(auth_args.salt()))
             .build()
             .unwrap()
             .into();
@@ -415,18 +414,20 @@ mod tests {
             .multisig_auth_args(&auth_args)
             .build()
             .unwrap();
-        assert!(matches!(
-            template.script_template(),
-            Some(TransactionScriptTemplate::SendNotes(_))
-        ));
+        let RequestTransactionScript::Generated {
+            own_output_notes, ..
+        } = template.transaction_script()
+        else {
+            panic!("the template generates its send script");
+        };
         assert_eq!(
             custom
                 .expected_output_recipients()
                 .map(|r| r.digest())
                 .collect::<Vec<_>>(),
-            template
-                .expected_output_recipients()
-                .map(|r| r.digest())
+            own_output_notes
+                .iter()
+                .map(|note| note.recipient().digest())
                 .collect::<Vec<_>>(),
         );
 

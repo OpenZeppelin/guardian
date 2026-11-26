@@ -11,6 +11,7 @@ description = "Shared types and utilities for Guardian"
 
 [dependencies]
 async-trait = "0.1"
+miden-client-proto = { workspace = true }
 miden-protocol = { workspace = true }
 miden-standards = { workspace = true }
 tokio = { workspace = true, features = ["time"] }

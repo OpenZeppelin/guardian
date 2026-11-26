@@ -1,5 +1,5 @@
 use miden_protocol::Word;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::{SecretKey, Signature};
+use miden_protocol::crypto::dsa::falcon512_eidos::{SecretKey, Signature};
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use rand::{CryptoRng, Rng, SeedableRng};
 use std::fs::{self, OpenOptions};

@@ -282,7 +282,7 @@ mod tests {
         use miden_protocol::account::AccountId;
         use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
         use miden_protocol::asset::FungibleAsset;
-        use miden_protocol::crypto::rand::RandomCoin;
+        use miden_protocol::crypto::rand::EidosRandomCoin;
         use miden_protocol::note::NoteType;
         use miden_protocol::transaction::InputNote;
         use miden_protocol::transaction::{
@@ -301,7 +301,7 @@ mod tests {
         let asset: miden_protocol::asset::Asset = FungibleAsset::new(faucet, 100_000_000)
             .expect("fungible asset")
             .into();
-        let mut rng = RandomCoin::new(Word::from([9u32, 8, 7, 6]));
+        let mut rng = EidosRandomCoin::new(Word::from([9u32, 8, 7, 6]));
         let note = miden_protocol::note::Note::from(
             P2idNote::builder()
                 .sender(sender)
@@ -328,6 +328,7 @@ mod tests {
             Word::from([ZERO; 4]),
             0,
             TransactionSummaryUserParams::new([ZERO; 6]),
+            miden_protocol::transaction::TransactionLogs::default(),
         );
         let delta_payload = summary.to_json();
         let proposal_payload = synthetic_proposal_payload(json!({

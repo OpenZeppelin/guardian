@@ -31,9 +31,9 @@ use miden_protocol::account::{
 };
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey as FalconSecretKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey as FalconSecretKey;
 use miden_protocol::transaction::{
-    InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    InputNotes, RawOutputNotes, TransactionLogs, TransactionSummary, TransactionSummaryUserParams,
 };
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word, ZERO};
@@ -576,6 +576,7 @@ fn nonce_only_summary(account_id: AccountId) -> Result<TransactionSummary, Actio
         Word::from([ZERO; 4]),
         0,
         TransactionSummaryUserParams::new([ZERO; TransactionSummaryUserParams::NUM_ELEMENTS]),
+        TransactionLogs::default(),
     ))
 }
 

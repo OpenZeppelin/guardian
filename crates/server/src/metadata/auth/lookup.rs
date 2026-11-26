@@ -11,7 +11,7 @@ use miden_protocol::Word;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, Signature as EcdsaSignature,
 };
-use miden_protocol::crypto::dsa::falcon512_poseidon2::{
+use miden_protocol::crypto::dsa::falcon512_eidos::{
     PublicKey as FalconPublicKey, Signature as FalconSignature,
 };
 use miden_protocol::utils::serde::Deserializable;
@@ -176,7 +176,7 @@ mod tests {
     use miden_protocol::Word;
     use miden_protocol::account::AccountId;
     use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
-    use miden_protocol::crypto::dsa::falcon512_poseidon2::{PK_LEN, SecretKey as FalconSecretKey};
+    use miden_protocol::crypto::dsa::falcon512_eidos::{PK_LEN, SecretKey as FalconSecretKey};
     use miden_protocol::utils::serde::Serializable;
 
     #[test]

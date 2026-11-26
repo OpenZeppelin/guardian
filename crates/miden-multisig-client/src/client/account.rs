@@ -13,7 +13,6 @@ use miden_client::account::Account;
 use miden_client::note::{NoteFile, NoteSyncHint};
 use miden_client::store::{InputNoteState, NoteFilter, TransactionFilter};
 use miden_client::transaction::TransactionStatus;
-use miden_client::{Deserializable, Serializable};
 use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
@@ -243,7 +242,7 @@ impl MultisigClient {
             .decode(account_base64)
             .map_err(|e| MultisigError::MidenClient(format!("failed to decode account: {}", e)))?;
 
-        let account = Account::read_from_bytes(&account_bytes).map_err(|e| {
+        let account = miden_client_proto::decode::<Account>(&account_bytes).map_err(|e| {
             MultisigError::MidenClient(format!("failed to deserialize account: {}", e))
         })?;
 
@@ -278,7 +277,7 @@ impl MultisigClient {
 
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
 
-        let account_bytes = account.inner().to_bytes();
+        let account_bytes = miden_client_proto::encode(account.inner());
         let account_base64 = base64::engine::general_purpose::STANDARD.encode(&account_bytes);
 
         let initial_state = serde_json::json!({
@@ -566,7 +565,7 @@ impl MultisigClient {
             .decode(account_base64)
             .map_err(|e| MultisigError::MidenClient(format!("failed to decode account: {}", e)))?;
 
-        let fresh_account = Account::read_from_bytes(&account_bytes).map_err(|e| {
+        let fresh_account = miden_client_proto::decode::<Account>(&account_bytes).map_err(|e| {
             MultisigError::MidenClient(format!("failed to deserialize account: {}", e))
         })?;
 
@@ -813,9 +812,10 @@ impl MultisigClient {
                         MultisigError::MidenClient(format!("failed to decode account: {}", e))
                     })?;
 
-                let fresh_account = Account::read_from_bytes(&account_bytes).map_err(|e| {
-                    MultisigError::MidenClient(format!("failed to deserialize account: {}", e))
-                })?;
+                let fresh_account =
+                    miden_client_proto::decode::<Account>(&account_bytes).map_err(|e| {
+                        MultisigError::MidenClient(format!("failed to deserialize account: {}", e))
+                    })?;
 
                 self.ensure_safe_to_overwrite_local_state(
                     account_id,

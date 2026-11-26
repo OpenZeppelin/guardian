@@ -12,14 +12,15 @@ use miden_client::note_transport::{
 };
 use miden_client::rpc::domain::account::{AccountProof, GetAccountRequest};
 use miden_client::rpc::domain::account_vault::AccountVaultInfo;
-use miden_client::rpc::domain::limits::RpcLimits;
 use miden_client::rpc::domain::note::{FetchedNote, SyncNotesBlock};
 use miden_client::rpc::domain::nullifier::NullifierUpdate;
 use miden_client::rpc::domain::storage_map::StorageMapInfo;
 use miden_client::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
-use miden_client::rpc::domain::transaction::TransactionRecord;
+use miden_client::rpc::domain::transaction::{TransactionLogsInfo, TransactionRecord};
 use miden_client::rpc::encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
-use miden_client::rpc::{GrpcError, NetworkNoteStatusInfo, NodeRpcClient, RpcError, RpcStatusInfo};
+use miden_client::rpc::{
+    GrpcError, NetworkNoteStatusInfo, NodeRpcClient, RpcError, RpcLimits, RpcStatusInfo,
+};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
@@ -28,7 +29,8 @@ use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::NoteInclusionProof;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
-use miden_protocol::transaction::ProvenTransaction;
+use miden_protocol::protocol_config::ProtocolConfig;
+use miden_protocol::transaction::{ProvenTransaction, TransactionId};
 use miden_protocol::vm::ExecutionProof;
 
 use crate::error::{MultisigError, Result, rpc_kind};
@@ -170,10 +172,7 @@ pub(crate) fn is_transient_multisig_error(error: &MultisigError) -> bool {
 
 /// `Connection` wraps endpoint parsing, TLS configuration, and actual
 /// connect failures indiscriminately; only the last class is worth another
-/// attempt, so the wrapped chain decides. The match stays exhaustive, so it
-/// still names `PaginationDidNotTerminate`, deprecated since miden-client
-/// 0.17.1.
-#[allow(deprecated)]
+/// attempt, so the wrapped chain decides.
 fn note_transport_link_evidence(cause: &(dyn Error + 'static)) -> StructuredEvidence {
     match cause.downcast_ref::<NoteTransportError>() {
         Some(NoteTransportError::Connection(inner)) => {
@@ -188,8 +187,7 @@ fn note_transport_link_evidence(cause: &(dyn Error + 'static)) -> StructuredEvid
             | NoteTransportError::Deserialization(_)
             | NoteTransportError::NoteDetailsMismatch { .. }
             | NoteTransportError::InvalidFetchedNote(_)
-            | NoteTransportError::UnrequestedTag(_)
-            | NoteTransportError::PaginationDidNotTerminate(_),
+            | NoteTransportError::UnrequestedTag(_),
         ) => StructuredEvidence::Permanent,
         Some(NoteTransportError::Network(_)) | None => StructuredEvidence::Indeterminate,
     }
@@ -252,8 +250,10 @@ impl NodeRpcClient for RetryingNodeRpcClient {
             .await
     }
 
-    fn has_genesis_commitment(&self) -> Option<Word> {
-        self.inner.has_genesis_commitment()
+    async fn get_genesis_block_header(
+        &self,
+    ) -> std::result::Result<(BlockHeader, ProtocolConfig), RpcError> {
+        self.execute(|| self.inner.get_genesis_block_header()).await
     }
 
     async fn get_transaction_encryption_key(
@@ -386,6 +386,15 @@ impl NodeRpcClient for RetryingNodeRpcClient {
         root: Word,
     ) -> std::result::Result<Option<NoteScript>, RpcError> {
         self.execute(|| self.inner.get_note_script_by_root(root))
+            .await
+    }
+
+    async fn get_transaction_logs(
+        &self,
+        account_id: AccountId,
+        transaction_id: TransactionId,
+    ) -> std::result::Result<Option<TransactionLogsInfo>, RpcError> {
+        self.execute(|| self.inner.get_transaction_logs(account_id, transaction_id))
             .await
     }
 
@@ -737,14 +746,16 @@ mod tests {
             Ok(NetworkId::Devnet)
         }
 
-        fn has_genesis_commitment(&self) -> Option<Word> {
-            None
-        }
         fn has_rpc_limits(&self) -> Option<RpcLimits> {
             None
         }
         async fn set_rpc_limits(&self, _: RpcLimits) {}
         async fn set_genesis_commitment(&self, _: Word) -> std::result::Result<(), RpcError> {
+            unimplemented!()
+        }
+        async fn get_genesis_block_header(
+            &self,
+        ) -> std::result::Result<(BlockHeader, ProtocolConfig), RpcError> {
             unimplemented!()
         }
         async fn get_transaction_encryption_key(
@@ -833,6 +844,13 @@ mod tests {
             &self,
             _: Word,
         ) -> std::result::Result<Option<NoteScript>, RpcError> {
+            unimplemented!()
+        }
+        async fn get_transaction_logs(
+            &self,
+            _: AccountId,
+            _: TransactionId,
+        ) -> std::result::Result<Option<TransactionLogsInfo>, RpcError> {
             unimplemented!()
         }
         async fn sync_storage_maps(

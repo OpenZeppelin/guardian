@@ -18,6 +18,7 @@ guardian-shared = { path = "../../crates/shared" }
 hex = { workspace = true }
 miden-confidential-contracts = { path = "../../crates/contracts" }
 miden-protocol = { workspace = true }
+miden-client-proto = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

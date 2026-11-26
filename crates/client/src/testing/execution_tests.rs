@@ -9,7 +9,7 @@ use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::{AuthRequestPayload, SignedOperation};
 use guardian_shared::hex::FromHex;
 use miden_protocol::account::AccountId;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::{SecretKey, Signature};
+use miden_protocol::crypto::dsa::falcon512_eidos::{SecretKey, Signature};
 use std::sync::Arc;
 
 const PROPOSAL: &str = "0x2222";

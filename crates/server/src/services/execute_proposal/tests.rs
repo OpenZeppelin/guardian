@@ -53,9 +53,10 @@ pub(crate) fn summary_with_output_note(
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
     use miden_protocol::account::{AccountCodePatch, AccountId, AccountStoragePatch};
     use miden_protocol::asset::FungibleAsset;
-    use miden_protocol::crypto::rand::RandomCoin;
+    use miden_protocol::crypto::rand::EidosRandomCoin;
     use miden_protocol::transaction::{
-        InputNotes, RawOutputNote, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+        InputNotes, RawOutputNote, RawOutputNotes, TransactionLogs, TransactionSummary,
+        TransactionSummaryUserParams,
     };
     use miden_protocol::{Felt, Word, ZERO};
     use miden_standards::note::P2idNote;
@@ -64,7 +65,7 @@ pub(crate) fn summary_with_output_note(
     let target = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
     let faucet = AccountId::from_hex("0x3f3f3f3e3f3f3f013f3f3f3f3f3f3f").unwrap();
     let asset: miden_protocol::asset::Asset = FungibleAsset::new(faucet, 100).unwrap().into();
-    let mut rng = RandomCoin::new(Word::from([9u32, 8, 7, 6]));
+    let mut rng = EidosRandomCoin::new(Word::from([9u32, 8, 7, 6]));
     let note = miden_protocol::note::Note::from(
         P2idNote::builder()
             .sender(sender)
@@ -91,6 +92,7 @@ pub(crate) fn summary_with_output_note(
         Word::from([ZERO; 4]),
         0,
         TransactionSummaryUserParams::new([ZERO; 6]),
+        TransactionLogs::default(),
     )
     .to_json()
 }
@@ -115,7 +117,8 @@ fn summary_patching_guardian(create: bool) -> serde_json::Value {
         StorageMapPatchEntries, StorageSlotPatch,
     };
     use miden_protocol::transaction::{
-        InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+        InputNotes, RawOutputNotes, TransactionLogs, TransactionSummary,
+        TransactionSummaryUserParams,
     };
     use miden_protocol::{Felt, Word, ZERO};
     use miden_standards::account::auth::AuthGuardedMultisig;
@@ -150,6 +153,7 @@ fn summary_patching_guardian(create: bool) -> serde_json::Value {
         Word::from([ZERO; 4]),
         0,
         TransactionSummaryUserParams::new([ZERO; 6]),
+        TransactionLogs::default(),
     )
     .to_json()
 }

@@ -5,16 +5,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use miden_client::rpc::NodeRpcClient;
-use miden_protocol::Word;
 use miden_protocol::account::{
     Account, AccountId, PartialAccount, StorageMapKey, StorageMapWitness, StorageSlotContent,
 };
 use miden_protocol::asset::{AssetId, AssetWitness};
+use miden_protocol::block::code_tree::{CodeTreeRoot, CodeWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::code::ProcedureRoot;
 use miden_protocol::note::{Note, NoteScript, NoteScriptRoot};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_protocol::vm::FutureMaybeSend;
+use miden_protocol::{MastForest, Word};
 use miden_tx::{
     DataStore, DataStoreError, LoadedMastForest, MastForestStore, TransactionMastStore,
 };
@@ -258,6 +260,29 @@ impl DataStore for ExecutionDataStore {
                         account_id.to_hex()
                     ))
                 })
+        }
+    }
+
+    fn get_code_witnesses(
+        &self,
+        _code_tree_root: CodeTreeRoot,
+        _procedure_roots: Vec<ProcedureRoot>,
+    ) -> impl FutureMaybeSend<Result<Vec<CodeWitness>, DataStoreError>> {
+        async move {
+            Err(DataStoreError::other(
+                "the transaction executor does not request code witnesses",
+            ))
+        }
+    }
+
+    fn get_code_to_register(
+        &self,
+        _procedure_roots: BTreeSet<ProcedureRoot>,
+    ) -> impl FutureMaybeSend<Result<Vec<Arc<MastForest>>, DataStoreError>> {
+        async move {
+            Err(DataStoreError::other(
+                "the transaction executor does not request code to register",
+            ))
         }
     }
 

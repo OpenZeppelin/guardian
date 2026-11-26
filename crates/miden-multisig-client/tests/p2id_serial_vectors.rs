@@ -3,7 +3,8 @@ use std::path::PathBuf;
 
 use miden_multisig_client::word_from_hex;
 use miden_protocol::Word;
-use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
+use miden_protocol::crypto::rand::EidosRandomCoin;
+use rand::RngExt;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -37,12 +38,13 @@ fn word_to_hex(word: &Word) -> String {
 }
 
 #[test]
-fn draw_word_matches_shared_p2id_serial_vectors() {
+#[ignore = "TypeScript parity: regenerate the fixture once the web SDK ships Eidos"]
+fn serial_number_matches_shared_p2id_serial_vectors() {
     for vector in load_vectors() {
         let seed = word_from_hex(&vector.seed)
             .unwrap_or_else(|err| panic!("vector '{}' has invalid seed: {}", vector.name, err));
-        let mut rng = RandomCoin::new(seed);
-        let actual = word_to_hex(&rng.draw_word());
+        let mut rng = EidosRandomCoin::new(seed);
+        let actual = word_to_hex(&rng.random::<Word>());
 
         assert_eq!(actual, vector.output, "vector '{}'", vector.name);
     }

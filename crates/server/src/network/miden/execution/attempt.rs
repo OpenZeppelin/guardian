@@ -22,8 +22,8 @@ use miden_protocol::account::Account;
 use miden_protocol::account::auth::Signature as AccountSignature;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::transaction::{
-    ExecutedTransaction, ProvenTransaction, TransactionInputs, TransactionSummary,
-    TransactionVerifier,
+    ExecutedTransaction, ProvenTransaction, TransactionSummary, TransactionVerifier,
+    TransactionWitness,
 };
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::Eip712TransactionSummary;
@@ -116,9 +116,7 @@ impl MidenExecutor {
             .get_or_try_init(|| async {
                 let genesis = fetch_genesis(self.rpc.as_ref()).await?;
                 for rpc in [&self.rpc, &self.submission_rpc] {
-                    if rpc.has_genesis_commitment().is_none() {
-                        rpc.set_genesis_commitment(genesis.commitment()).await?;
-                    }
+                    rpc.set_genesis_commitment(genesis.commitment()).await?;
                 }
                 Ok(genesis)
             })
@@ -528,9 +526,9 @@ impl SelectedProposal for MidenSelected {
 }
 
 /// Maps an execution error onto a stable cause. The foreign-account cause is read from the data
-/// store because the executor reports it only as an opaque data-store error. A vault shortfall
-/// is a fee shortfall: the base state is the one the proposer executed against and every input
-/// note is pinned, so only the fee, computed at the new reference block, can have grown.
+/// store because the executor reports it only as an opaque data-store error. The base state is
+/// the one the proposer executed against and every input note is pinned, so a fee the vault can't
+/// cover means the fee, computed at the new reference block, has grown.
 fn execution_failure(
     store: &ExecutionDataStore,
     error: &TransactionExecutorError,
@@ -572,7 +570,7 @@ fn execution_failure(
             ExecutionFailureCode::ExpirationReached(ExpirationBound::Approval),
             "the multisig approval expired at or before the reference block",
         ),
-        Some(Abort::VaultShortfall) => ExecutionFailure::new(
+        Some(Abort::FeeInsufficientBalance) => ExecutionFailure::new(
             ExecutionFailureCode::InsufficientFee,
             "the account cannot pay the transaction fee at the reference block",
         ),
@@ -797,12 +795,12 @@ impl ExecutionAttempt for MidenAttempt {
 
     async fn prove(&mut self) -> Result<ProvenTransactionInfo, ExecutionFailure> {
         let expiration = self.executed().expiration_block_num();
-        let inputs: TransactionInputs = self.executed().tx_inputs().clone();
+        let witness: TransactionWitness = self.executed().clone().into();
         let mut backoff = PROVER_BACKOFF_START;
         let proving = std::time::Instant::now();
         let record_duration = || record_proving(proving.elapsed());
         let proven = loop {
-            match self.prover.prove(inputs.clone()).await {
+            match self.prover.prove(witness.clone()).await {
                 Ok(proven) => {
                     record_duration();
                     break proven;

@@ -4,10 +4,9 @@ use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
 use guardian_shared::hex::{FromHex, IntoHex};
 use miden_protocol::account::AccountId;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::{PublicKey, SecretKey, Signature};
-use miden_protocol::crypto::hash::rpo::Rpo256;
+use miden_protocol::crypto::dsa::falcon512_eidos::{PublicKey, SecretKey, Signature};
 use miden_protocol::utils::serde::{Deserializable, Serializable};
-use miden_protocol::{Felt, Word};
+use miden_protocol::{Felt, Hasher, Word};
 
 /// A signer that uses Falcon signatures with RPO hashing.
 pub struct FalconRpoSigner {
@@ -73,7 +72,7 @@ pub fn account_id_timestamp_to_word(account_id: AccountId, timestamp: i64) -> Wo
         Felt::ZERO,
     ];
 
-    Rpo256::hash_elements(&message_elements)
+    Hasher::hash_elements(&message_elements)
 }
 
 /// Verifies a signature using commitment-based authentication.

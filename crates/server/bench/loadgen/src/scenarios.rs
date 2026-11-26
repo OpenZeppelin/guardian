@@ -17,11 +17,11 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, SigningKey as EcdsaSecretKey,
 };
-use miden_protocol::crypto::dsa::falcon512_poseidon2::{
+use miden_protocol::crypto::dsa::falcon512_eidos::{
     PublicKey as FalconPublicKey, SecretKey as FalconSecretKey,
 };
 use miden_protocol::transaction::{
-    InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    InputNotes, RawOutputNotes, TransactionLogs, TransactionSummary, TransactionSummaryUserParams,
 };
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{Felt, ONE, ZERO};
@@ -789,7 +789,8 @@ fn create_account_seed(
 
     let account_id = account.id();
     let commitment = format!("0x{}", hex::encode(account.to_commitment().as_bytes()));
-    let account_data = base64::engine::general_purpose::STANDARD.encode(account.to_bytes());
+    let account_data =
+        base64::engine::general_purpose::STANDARD.encode(miden_client_proto::encode(&account));
     let initial_state = serde_json::json!({
         "data": account_data,
         "account_id": account_id.to_string(),
@@ -833,6 +834,7 @@ fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value> {
             ZERO,
             ZERO,
         ]),
+        TransactionLogs::default(),
     );
     Ok(tx_summary.to_json())
 }

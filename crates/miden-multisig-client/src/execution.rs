@@ -341,8 +341,10 @@ mod tests {
         AssetCallbackFlag,
     };
     use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey;
-    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummaryUserParams};
+    use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
+    use miden_protocol::transaction::{
+        InputNotes, RawOutputNotes, TransactionLogs, TransactionSummaryUserParams,
+    };
 
     #[test]
     fn test_collect_mixed_raw_and_eip712_ecdsa_advice() {
@@ -368,6 +370,7 @@ mod tests {
             Word::default(),
             0,
             TransactionSummaryUserParams::new([Felt::ZERO; 6]),
+            TransactionLogs::default(),
         );
         let raw_key = SigningKey::new();
         let eip_key = SigningKey::new();

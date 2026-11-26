@@ -171,12 +171,6 @@ fn classify_drain_failure(err: &ClientError) -> (TransportRecoveryStatus, bool) 
             // The transport answered with an error — worth retrying once the
             // service recovers.
             NoteTransportError::Network(_) => (TransportRecoveryStatus::Unavailable, true),
-            // Deprecated since miden-client 0.17.1, which no longer raises
-            // it: a bounded fetch continues on the next call instead.
-            #[allow(deprecated)]
-            NoteTransportError::PaginationDidNotTerminate(_) => {
-                (TransportRecoveryStatus::Failed, true)
-            }
             // Undecodable or inconsistent payloads: a rerun would hit the same
             // bytes again.
             NoteTransportError::Deserialization(_)
@@ -197,13 +191,13 @@ fn classify_drain_failure(err: &ClientError) -> (TransportRecoveryStatus, bool) 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::sync::Arc;
 
     use miden_client::ClientError;
     use miden_client::note_transport::{
-        NOTE_TRANSPORT_SYNC_STATE_KEY, NoteTransportClient, NoteTransportError,
+        NoteTransportClient, NoteTransportCursor, NoteTransportError, NoteTransportSyncState,
     };
-    use miden_client::store::SettingScope;
     use miden_client::testing::note_transport::{MockNoteTransportApi, MockNoteTransportNode};
     use miden_protocol::note::{Note, NoteTag, NoteType};
     use miden_tx::utils::sync::RwLock;
@@ -407,10 +401,13 @@ mod tests {
 
         client
             .miden_store
-            .remove_setting(
-                SettingScope::Client,
-                NOTE_TRANSPORT_SYNC_STATE_KEY.to_string(),
-            )
+            .set_note_transport_sync_state(&NoteTransportSyncState {
+                cursor: NoteTransportCursor {
+                    nonce: 0,
+                    sequence: 0,
+                },
+                covered_tags: BTreeSet::new(),
+            })
             .await
             .unwrap();
         add_to_transport(&node, private_note_for(&account, held + 1));
@@ -550,7 +547,7 @@ mod tests {
         {
             let allowed = self
                 .fetches_before_failure
-                .fetch_update(
+                .try_update(
                     std::sync::atomic::Ordering::SeqCst,
                     std::sync::atomic::Ordering::SeqCst,
                     |n| n.checked_sub(1),

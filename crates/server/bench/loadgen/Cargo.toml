@@ -11,6 +11,7 @@ clap = { version = "4.5", features = ["derive"] }
 hex = { workspace = true }
 miden-confidential-contracts = { path = "../../../contracts" }
 miden-protocol = { workspace = true }
+miden-client-proto = { workspace = true }
 guardian-client = { path = "../../../client" }
 rand = { workspace = true }
 serde = { workspace = true }

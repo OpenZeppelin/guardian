@@ -10,7 +10,7 @@ use aws_config::BehaviorVersion;
 use aws_sdk_secretsmanager::Client as SecretsManagerClient;
 use guardian_shared::hex::{FromHex, IntoHex};
 use miden_protocol::Word;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::PublicKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::PublicKey;
 use serde::Deserialize;
 
 use super::permissions::Permission;

@@ -1,7 +1,7 @@
 use guardian_shared::SignatureScheme;
 use guardian_shared::hex::FromHex;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey as EcdsaPublicKey;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::PublicKey as FalconPublicKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::PublicKey as FalconPublicKey;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use std::collections::HashSet;
 

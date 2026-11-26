@@ -39,25 +39,25 @@ impl ProcedureName {
     pub fn root(&self) -> Word {
         match self {
             ProcedureName::UpdateSigners => procedure_root_word(
-                "0x0f664cdaae422fe43bb45d959c7e469b0c855ad1fc4e79fddd730ec3cb983c6e",
+                "0xb7b2cf42cc4f2f331acfeee835e60c4115c9ee5f80db0448dd098f6b56785d19",
             ),
             ProcedureName::UpdateProcedureThreshold => procedure_root_word(
-                "0xa32cd13808fd8fb91adb3dceaed4d8faebc3bd80fa49c2903be4b8d7bf89ba77",
+                "0x9cc9ab8112578967b43b8a34a98314443511e6f3fdc5f81581777f415c1d7b33",
             ),
             ProcedureName::AuthTx => procedure_root_word(
-                "0x71ba7380c6138d5e80e911094a9767ed0fa5c8ffefcf6a776754bfc75bc163b9",
+                "0x08fc0b2d1dd361737c8cfd1890a5826c07bee5ed1edd743f798d47969168727e",
             ),
             ProcedureName::UpdateGuardian => procedure_root_word(
-                "0x93dedb135fd5bb7112c07aacf4a5680ddc76e45ecf043bfc42ea735b6d971911",
+                "0xc6971a2e9a617e2c88a96ff44d7af65ca5b50a42114f7422a522111baf1cc173",
             ),
             ProcedureName::SendAsset => procedure_root_word(
-                "0xf261e7bdd1faee5db3b0abe4bb67b153fbca6ece3e456b83eff98697f21f6a97",
+                "0x6bd84395a8aace697f1a8e0bc5a74d5d2ee5125cd506b3440d74d6a31bc60611",
             ),
             ProcedureName::ReceiveAsset => procedure_root_word(
-                "0xd7416b798a70aabbca510c3cd0f48ba35473b5d76dc302375157c6f563fffc15",
+                "0xfa82d5e3a621c413649d383b07ea7c09ea4d5e63f9661516b97f5d9a994a736c",
             ),
             ProcedureName::CreateNote => procedure_root_word(
-                "0x27641b79c8aec7ec29820c907eb5c05134b7d02cf69e7e73a5b7dcd09c803a95",
+                "0x23e4c270aa766134ec2998dbe7cae25260444819f68d10002668202cde6db04c",
             ),
         }
     }

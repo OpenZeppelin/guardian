@@ -7,8 +7,7 @@
 //! wallets sign a domain-separated RPO digest of the same fields.
 
 use chrono::DateTime;
-use miden_protocol::crypto::hash::rpo::Rpo256;
-use miden_protocol::{Felt, Word};
+use miden_protocol::{Felt, Hasher, Word};
 use std::sync::OnceLock;
 
 /// Domain-tag byte string. The 4-felt RPO digest of these bytes is the first
@@ -71,7 +70,7 @@ fn felts_from_bytes(bytes: &[u8]) -> Vec<Felt> {
 }
 
 fn hash_bytes(bytes: &[u8]) -> Word {
-    Rpo256::hash_elements(&felts_from_bytes(bytes))
+    Hasher::hash_elements(&felts_from_bytes(bytes))
 }
 
 /// The canonical readable expiry, `YYYY-MM-DD HH:MM:SS UTC`, derived from
@@ -228,7 +227,7 @@ impl SessionGrant {
         elements.extend_from_slice(hash_bytes(SESSION_GRANT_SCOPE.as_bytes()).as_elements());
         elements.extend_from_slice(self.guardian_commitment.as_elements());
         elements.extend_from_slice(hash_bytes(self.network.as_bytes()).as_elements());
-        Rpo256::hash_elements(&elements)
+        Hasher::hash_elements(&elements)
     }
 }
 
@@ -261,7 +260,7 @@ impl SessionLogoutMessage {
         elements.extend_from_slice(session_logout_domain_tag().as_elements());
         elements.push(crate::felt::felt_from_u64_reduced(self.timestamp_ms as u64));
         elements.extend(felts_from_bytes(&self.session_public_key));
-        Rpo256::hash_elements(&elements)
+        Hasher::hash_elements(&elements)
     }
 }
 
@@ -304,7 +303,7 @@ impl SessionRevokeAllMessage {
         elements.extend_from_slice(session_revoke_all_domain_tag().as_elements());
         elements.push(crate::felt::felt_from_u64_reduced(self.timestamp_ms as u64));
         elements.extend_from_slice(self.signer_commitment.as_elements());
-        Rpo256::hash_elements(&elements)
+        Hasher::hash_elements(&elements)
     }
 }
 

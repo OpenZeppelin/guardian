@@ -19,7 +19,7 @@ use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountId, AccountType, auth::AuthSecretKey};
 use miden_protocol::asset::{Asset, FungibleAsset};
 use miden_protocol::crypto::SequentialCommit;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::{PublicKey, SecretKey};
+use miden_protocol::crypto::dsa::falcon512_eidos::{PublicKey, SecretKey};
 use miden_protocol::note::NoteType;
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_FEE_FAUCET, ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE,
@@ -56,15 +56,15 @@ fn guarded_fixture() -> anyhow::Result<GuardedFixture> {
     for _ in 0..NUM_APPROVERS {
         let secret_key = SecretKey::with_rng(&mut rng);
         approver_keys.push(secret_key.public_key());
-        approver_auths.push(BasicAuthenticator::new(&[
-            AuthSecretKey::Falcon512Poseidon2(secret_key),
-        ]));
+        approver_auths.push(BasicAuthenticator::new(&[AuthSecretKey::Falcon512Eidos(
+            secret_key,
+        )]));
     }
 
     let guardian_secret_key = SecretKey::with_rng(&mut rng);
     let guardian_key = guardian_secret_key.public_key();
     let guardian_auth =
-        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Poseidon2(guardian_secret_key)]);
+        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Eidos(guardian_secret_key)]);
 
     let config = MultisigGuardianConfig::new(
         u32::try_from(NUM_APPROVERS)?,

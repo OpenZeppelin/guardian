@@ -10,7 +10,7 @@ use miden_confidential_contracts::multisig_guardian::{
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey as FalconSecretKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey as FalconSecretKey;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -307,7 +307,8 @@ fn create_account_seed(
 
     let account_id = account.id();
     let commitment = format!("0x{}", hex::encode(account.to_commitment().as_bytes()));
-    let account_data = base64::engine::general_purpose::STANDARD.encode(account.to_bytes());
+    let account_data =
+        base64::engine::general_purpose::STANDARD.encode(miden_client_proto::encode(&account));
     let initial_state = serde_json::json!({
         "data": account_data,
         "account_id": account_id.to_string(),

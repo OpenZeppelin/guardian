@@ -12,7 +12,7 @@ use miden_protocol::Word;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, Signature as EcdsaSignature,
 };
-use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature as FalconSignature;
+use miden_protocol::crypto::dsa::falcon512_eidos::Signature as FalconSignature;
 use miden_protocol::transaction::TransactionSummary;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_standards::account::auth::Eip712TransactionSummary;

@@ -16,7 +16,7 @@ use miden_client::{
 use miden_client_sqlite_store::SqliteStore;
 
 use miden_protocol::account::auth::Signature as AccountSignature;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature as RawFalconSignature;
+use miden_protocol::crypto::dsa::falcon512_eidos::Signature as RawFalconSignature;
 use miden_standards::account::auth::{FeeConversionInfo, MultisigAuthArgs};
 
 use guardian_client::auth_config::AuthType;
@@ -246,7 +246,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })),
     };
 
-    let account_bytes = account.to_bytes();
+    let account_bytes = miden_client_proto::encode(&account);
     let account_base64 =
         base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &account_bytes);
 
@@ -291,7 +291,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         data_str,
                     )
                     .expect("Failed to decode account data");
-                    match Account::read_from_bytes(&bytes) {
+                    match miden_client_proto::decode::<Account>(&bytes) {
                         Ok(account) => Some(account),
                         Err(e) => {
                             println!("  ✗ Failed to deserialize: {}", e);
@@ -432,7 +432,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let approve =
             async |name: &str,
                    client: &mut GuardianClient,
-                   secret_key: &miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey|
+                   secret_key: &miden_protocol::crypto::dsa::falcon512_eidos::SecretKey|
                    -> bool {
                 let signature = guardian_shared::ProposalSignature::Falcon {
                     signature: format!("0x{}", hex::encode(secret_key.sign(tx_message).to_bytes())),

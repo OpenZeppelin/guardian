@@ -16,7 +16,7 @@ use miden_client::Serializable;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::note_transport::NoteTransportClient;
-use miden_client::rpc::Endpoint;
+use miden_client::rpc::{Endpoint, NodeRpcClient};
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::testing::note_transport::{MockNoteTransportApi, MockNoteTransportNode};
 use miden_client_sqlite_store::SqliteStore;
@@ -27,9 +27,10 @@ use miden_protocol::Word;
 use miden_protocol::account::Account;
 use miden_protocol::account::auth::AuthSecretKey;
 use miden_protocol::asset::FungibleAsset;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
-use miden_protocol::crypto::rand::RandomCoin;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
+use miden_protocol::crypto::rand::EidosRandomCoin;
 use miden_protocol::note::{Note, NoteDetails, NoteType};
+use miden_protocol::protocol_config::ProtocolConfig;
 use miden_standards::note::P2idNote;
 use miden_tx::utils::sync::RwLock;
 
@@ -62,6 +63,19 @@ pub(crate) async fn offline_client_parts_with_keystore(
     transport: Option<Arc<dyn NoteTransportClient>>,
     keystore: Arc<dyn KeyManager>,
 ) -> (MultisigClient, Arc<SqliteStore>) {
+    let protocol_config = node.protocol_config();
+    offline_client_parts_with_rpc(dir, node, protocol_config, transport, keystore).await
+}
+
+/// [`offline_client_parts_with_keystore`] with the inner client on `rpc`, for
+/// tests that wrap the mock node to observe the client's calls.
+pub(crate) async fn offline_client_parts_with_rpc(
+    dir: &Path,
+    rpc: Arc<dyn NodeRpcClient>,
+    protocol_config: ProtocolConfig,
+    transport: Option<Arc<dyn NoteTransportClient>>,
+    keystore: Arc<dyn KeyManager>,
+) -> (MultisigClient, Arc<SqliteStore>) {
     let store_path = dir.join("store.sqlite3");
     let store = Arc::new(
         SqliteStore::new(store_path.clone())
@@ -74,9 +88,8 @@ pub(crate) async fn offline_client_parts_with_keystore(
     // A sync stores the protocol configuration each header commits to. Seed the
     // mock chain's one so a test that executes before its first sync resolves the
     // same fee asset the chain does.
-    let protocol_config = node.protocol_config();
     let mut builder = ClientBuilder::<FilesystemKeyStore>::new()
-        .rpc(node)
+        .rpc(rpc)
         .store(store.clone())
         .filesystem_keystore(keystore_dir)
         .expect("keystore opens");
@@ -157,15 +170,15 @@ pub(crate) fn add_to_transport(node: &Arc<RwLock<MockNoteTransportNode>>, note: 
 /// store-side account/tag behavior under test (no multisig components
 /// needed).
 pub(crate) fn test_wallet(seed: u8) -> Account {
-    use miden_client::account::component::BasicWallet;
     use miden_client::account::{AccountBuilder, AccountBuilderSchemaCommitmentExt, AccountType};
     use miden_protocol::account::auth::AuthScheme;
     use miden_standards::account::auth::{Approver, AuthSingleSig};
+    use miden_standards::account::wallets::BasicWallet;
 
-    let key_pair = AuthSecretKey::new_falcon512_poseidon2();
+    let key_pair = AuthSecretKey::new_falcon512_eidos();
     let auth_component = AuthSingleSig::new(Approver::new(
         key_pair.public_key().to_commitment(),
-        AuthScheme::Falcon512Poseidon2,
+        AuthScheme::Falcon512Eidos,
     ));
     AccountBuilder::new([seed; 32])
         .account_type(AccountType::Private)
@@ -217,7 +230,7 @@ pub(crate) fn guarded_multisig_account() -> Account {
 /// A distinct (per `seed`) P2ID note addressed at `target` from an unrelated
 /// sender wallet.
 pub(crate) fn p2id_note_for(target: &Account, seed: u32, note_type: NoteType) -> Note {
-    let mut rng = RandomCoin::new(Word::from(&[seed, 0, 0, 0]));
+    let mut rng = EidosRandomCoin::new(Word::from(&[seed, 0, 0, 0]));
     P2idNote::builder()
         .sender(test_wallet(200).id())
         .target(target.id())
@@ -269,7 +282,7 @@ pub(crate) fn registered_state(account: &Account) -> GetStateResponse {
         state: Some(AccountState {
             account_id: account.id().to_string(),
             state_json: serde_json::json!({
-                "data": BASE64.encode(account.to_bytes()),
+                "data": BASE64.encode(miden_client_proto::encode(account)),
             })
             .to_string(),
             commitment: word_to_hex(&account.to_commitment()),

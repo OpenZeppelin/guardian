@@ -15,7 +15,7 @@ use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, Signature as EcdsaSignature,
 };
-use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature as Poseidon2FalconSignature;
+use miden_protocol::crypto::dsa::falcon512_eidos::Signature as EidosFalconSignature;
 use miden_protocol::note::{Note, NoteId, NoteType};
 use miden_protocol::transaction::TransactionSummary;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
@@ -696,7 +696,7 @@ impl ProposalSignatureEntry {
                         "EIP-712 requires an ECDSA signer".to_string(),
                     ));
                 }
-                Poseidon2FalconSignature::from_hex(&signature_hex).map_err(|e| {
+                EidosFalconSignature::from_hex(&signature_hex).map_err(|e| {
                     MultisigError::Signature(format!("invalid proposal signature: {}", e))
                 })?;
             }
@@ -1102,7 +1102,9 @@ mod tests {
     use miden_protocol::account::AccountCodePatch;
     use miden_protocol::account::AccountStoragePatch;
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummaryUserParams};
+    use miden_protocol::transaction::{
+        InputNotes, RawOutputNotes, TransactionLogs, TransactionSummaryUserParams,
+    };
 
     fn create_test_tx_summary() -> TransactionSummary {
         tx_summary_binding(0)
@@ -1128,6 +1130,7 @@ mod tests {
             Word::default(),
             0,
             TransactionSummaryUserParams::new([Felt::ZERO; 6]),
+            TransactionLogs::default(),
         )
     }
 

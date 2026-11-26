@@ -106,8 +106,8 @@ mod tests {
     use crate::auth::miden_falcon_rpo::account_id_timestamp_to_word;
     use guardian_shared::auth_request_message::AuthRequestMessage;
     use guardian_shared::auth_request_payload::AuthRequestPayload;
-    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
-    use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature;
+    use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
+    use miden_protocol::crypto::dsa::falcon512_eidos::Signature;
     use miden_protocol::utils::serde::Deserializable;
 
     #[test]

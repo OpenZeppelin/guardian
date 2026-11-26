@@ -1,5 +1,4 @@
-use miden_protocol::crypto::hash::rpo::Rpo256;
-use miden_protocol::{Felt, Word};
+use miden_protocol::{Felt, Hasher, Word};
 use std::sync::OnceLock;
 
 /// Domain-tag byte string. The 4-felt RPO digest of these bytes is prepended to
@@ -75,7 +74,7 @@ impl LookupAuthMessage {
             kc_elements[2],
             kc_elements[3],
         ];
-        Rpo256::hash_elements(&message_elements)
+        Hasher::hash_elements(&message_elements)
     }
 }
 
@@ -187,7 +186,7 @@ mod tests {
                 bytes,
             )));
         }
-        let expected = Rpo256::hash_elements(&elements);
+        let expected = Hasher::hash_elements(&elements);
         assert_eq!(tag, expected);
     }
 }

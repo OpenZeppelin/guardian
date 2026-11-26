@@ -605,7 +605,7 @@ impl NetworkClient for MidenNetworkClient {
             format!("Failed to create aggregated output notes: {e}")
         })?;
 
-        // Carry the bound block, expiration delta and user params from the last
+        // Carry the bound block, expiration delta, user params and logs from the last
         // TransactionSummary. Since Miden 0.17 the user params hold the approval
         // expiration and the salt the multisig binds; they are carried through
         // opaquely.
@@ -614,6 +614,7 @@ impl NetworkClient for MidenNetworkClient {
         let block_commitment = last.block_commitment();
         let expiration_delta = last.expiration_delta();
         let user_params = last.user_params();
+        let logs = last.logs().clone();
 
         // Create the merged TransactionSummary
         let merged_tx_summary = TransactionSummary::new(
@@ -624,6 +625,7 @@ impl NetworkClient for MidenNetworkClient {
             block_commitment,
             expiration_delta,
             user_params,
+            logs,
         );
 
         Ok(merged_tx_summary.to_json())
@@ -1430,9 +1432,12 @@ mod tests {
                 final_state_commitment: Some(proto_word(final_commitment)),
                 input_notes: vec![],
                 output_notes: vec![],
+                code_patch_commitment: None,
+                logs_commitment: None,
             }),
             output_note_proofs: vec![],
             consumed_note_refs: vec![],
+            transaction_index: 0,
         }
     }
 
@@ -2375,6 +2380,7 @@ mod tests {
             Word::default(),
             0,
             TransactionSummaryUserParams::new([Felt::ZERO; 6]),
+            miden_protocol::transaction::TransactionLogs::default(),
         );
 
         let delta_payload = tx_summary.to_json();
@@ -2447,6 +2453,7 @@ mod tests {
             Word::default(),
             0,
             TransactionSummaryUserParams::new([Felt::ZERO; 6]),
+            miden_protocol::transaction::TransactionLogs::default(),
         )
         .to_json()
     }

@@ -14,7 +14,7 @@ use crate::{
 use guardian_shared::ProposalSignature as JsonProposalSignature;
 use guardian_shared::hex::FromHex;
 use miden_protocol::account::AccountId;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
 use std::sync::Arc;
 use tonic::Status;
 
@@ -1095,7 +1095,7 @@ async fn test_start_session_signs_grant_with_wallet_and_signs_requests_with_sess
     )
     .unwrap();
     let signature =
-        miden_protocol::crypto::dsa::falcon512_poseidon2::Signature::from_hex(&request.signature)
+        miden_protocol::crypto::dsa::falcon512_eidos::Signature::from_hex(&request.signature)
             .unwrap();
     assert!(signature.public_key().verify(grant.to_word(), &signature));
 
@@ -1453,7 +1453,7 @@ async fn test_revoke_all_sessions_is_wallet_signed_and_drops_the_active_session(
     )
     .to_word();
     let signature =
-        miden_protocol::crypto::dsa::falcon512_poseidon2::Signature::from_hex(&signature).unwrap();
+        miden_protocol::crypto::dsa::falcon512_eidos::Signature::from_hex(&signature).unwrap();
     assert!(signature.public_key().verify(digest, &signature));
 }
 

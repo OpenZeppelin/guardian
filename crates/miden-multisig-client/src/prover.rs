@@ -7,7 +7,7 @@ use guardian_shared::retry::{
 };
 use miden_client::RemoteTransactionProver;
 use miden_client::transaction::TransactionProver;
-use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
+use miden_protocol::transaction::{ProvenTransaction, TransactionWitness};
 use miden_tx::TransactionProverError;
 use url::Url;
 
@@ -154,14 +154,14 @@ impl RetryingTransactionProver {
 impl TransactionProver for RetryingTransactionProver {
     async fn prove(
         &self,
-        tx_inputs: TransactionInputs,
+        witness: TransactionWitness,
     ) -> std::result::Result<ProvenTransaction, TransactionProverError> {
         run_retries(
             self.policy.max_attempts(),
             self.runtime.as_ref(),
             is_transient_prover_error,
             |_, _| {},
-            || self.inner.prove(tx_inputs.clone()),
+            || self.inner.prove(witness.clone()),
         )
         .await
     }
@@ -187,7 +187,7 @@ mod tests {
 
     use guardian_shared::retry::retry_delay;
 
-    use miden_client::testing::{Auth, MockChain};
+    use miden_client::testing::{Auth, MockChainBuilder};
     use miden_protocol::account::AccountBuilder;
     use miden_standards::account::wallets::BasicWallet;
     use serde::Deserialize;
@@ -378,16 +378,16 @@ mod tests {
 
     struct FailingProver {
         errors: Mutex<VecDeque<TransactionProverError>>,
-        inputs: Mutex<Vec<TransactionInputs>>,
+        witnesses: Mutex<Vec<TransactionWitness>>,
     }
 
     #[async_trait::async_trait]
     impl TransactionProver for FailingProver {
         async fn prove(
             &self,
-            inputs: TransactionInputs,
+            witness: TransactionWitness,
         ) -> std::result::Result<ProvenTransaction, TransactionProverError> {
-            self.inputs.lock().unwrap().push(inputs);
+            self.witnesses.lock().unwrap().push(witness);
             Err(self
                 .errors
                 .lock()
@@ -397,26 +397,35 @@ mod tests {
         }
     }
 
-    fn transaction_inputs() -> TransactionInputs {
-        let mut chain = MockChain::new();
-        chain.prove_next_block().unwrap();
+    async fn transaction_witness() -> TransactionWitness {
         let (auth_components, _) = Auth::IncrNonce.build_components();
         let account = AccountBuilder::new([0; 32])
             .with_components(auth_components)
             .with_component(BasicWallet)
+            .build_existing()
+            .unwrap();
+        let chain = MockChainBuilder::with_accounts([account.clone()])
+            .unwrap()
             .build()
             .unwrap();
-        chain.get_transaction_inputs(&account, &[], &[]).unwrap()
+        chain
+            .build_transaction(account)
+            .build()
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .into()
     }
 
     #[tokio::test]
-    async fn retries_the_same_inputs_and_returns_the_final_upstream_error() {
+    async fn retries_the_same_witness_and_returns_the_final_upstream_error() {
         let inner = Arc::new(FailingProver {
             errors: Mutex::new(VecDeque::from([
                 TransactionProverError::other("service unavailable"),
                 TransactionProverError::other("deadline exceeded: final"),
             ])),
-            inputs: Mutex::new(Vec::new()),
+            witnesses: Mutex::new(Vec::new()),
         });
         let runtime = Arc::new(RecordingRuntime::default());
         let prover = RetryingTransactionProver::with_runtime(
@@ -424,15 +433,15 @@ mod tests {
             ProverRetryPolicy::new(2),
             runtime.clone(),
         );
-        let inputs = transaction_inputs();
+        let witness = transaction_witness().await;
 
-        let error = prover.prove(inputs.clone()).await.unwrap_err();
+        let error = prover.prove(witness.clone()).await.unwrap_err();
 
         assert_eq!(error.to_string(), "deadline exceeded: final");
-        let recorded_inputs = inner.inputs.lock().unwrap();
-        assert_eq!(recorded_inputs.len(), 2);
-        assert_eq!(recorded_inputs[0], inputs);
-        assert_eq!(recorded_inputs[1], inputs);
+        let recorded_witnesses = inner.witnesses.lock().unwrap();
+        assert_eq!(recorded_witnesses.len(), 2);
+        assert_eq!(recorded_witnesses[0], witness);
+        assert_eq!(recorded_witnesses[1], witness);
         assert_eq!(
             runtime.sleeps.lock().unwrap().as_slice(),
             [Duration::from_millis(500)]
@@ -445,7 +454,7 @@ mod tests {
             errors: Mutex::new(VecDeque::from([TransactionProverError::other(
                 "transaction kernel assertion failed",
             )])),
-            inputs: Mutex::new(Vec::new()),
+            witnesses: Mutex::new(Vec::new()),
         });
         let runtime = Arc::new(RecordingRuntime::default());
         let prover = RetryingTransactionProver::with_runtime(
@@ -454,9 +463,9 @@ mod tests {
             runtime.clone(),
         );
 
-        prover.prove(transaction_inputs()).await.unwrap_err();
+        prover.prove(transaction_witness().await).await.unwrap_err();
 
-        assert_eq!(inner.inputs.lock().unwrap().len(), 1);
+        assert_eq!(inner.witnesses.lock().unwrap().len(), 1);
         assert!(runtime.sleeps.lock().unwrap().is_empty());
     }
 }

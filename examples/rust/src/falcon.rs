@@ -1,6 +1,6 @@
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::Serializable;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
 
 /// Generate a Falcon keypair and return (full_pubkey_hex, commitment_hex, secret_key)
 pub fn generate_falcon_keypair(_keystore: &FilesystemKeyStore) -> (String, String, SecretKey) {

@@ -55,7 +55,7 @@ fn main() {
         .expect("failed to build account");
 
     let output = SerializedAccountOutput {
-        account_hex: format!("0x{}", hex::encode(account.to_bytes())),
+        account_hex: format!("0x{}", hex::encode(miden_client_proto::encode(&account))),
         threshold: 2,
         signer_commitments: signers.iter().map(word_to_sdk_hex).collect(),
         guardian_commitment: word_to_sdk_hex(&guardian),

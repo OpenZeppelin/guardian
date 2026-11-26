@@ -1060,7 +1060,8 @@ mod tests {
     use miden_protocol::account::AccountStoragePatch;
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
     use miden_protocol::transaction::{
-        InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+        InputNotes, RawOutputNotes, TransactionLogs, TransactionSummary,
+        TransactionSummaryUserParams,
     };
     use miden_protocol::{Felt, ZERO};
 
@@ -1133,6 +1134,7 @@ mod tests {
                 ZERO,
                 ZERO,
             ]),
+            TransactionLogs::default(),
         );
 
         Proposal::new(
@@ -1180,7 +1182,7 @@ mod tests {
         use super::*;
         use crate::client::test_support::{guarded_multisig_account, p2id_note_for, test_wallet};
         use guardian_shared::SignatureScheme;
-        use miden_client::transaction::TransactionRequest;
+        use miden_client::transaction::{RequestAuthArgs, TransactionRequest};
         use miden_protocol::asset::FungibleAsset;
         use miden_protocol::block::BlockNumber;
         use miden_protocol::crypto::SequentialCommit;
@@ -1196,8 +1198,7 @@ mod tests {
         /// chain tip.
         fn assert_carries_auth_args(request: &TransactionRequest) {
             let commitment = auth_args().to_commitment();
-            assert_eq!(request.fee_conversion_salt(), None);
-            assert_eq!(*request.auth_arg(), Some(commitment));
+            assert_eq!(request.auth_args(), &RequestAuthArgs::Explicit(commitment));
             let preimage = request
                 .advice_map()
                 .get(&commitment)

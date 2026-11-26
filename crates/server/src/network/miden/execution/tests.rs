@@ -310,10 +310,10 @@ mod guarded_multisig {
     use miden_confidential_contracts::multisig_guardian::{
         MultisigGuardianBuilder, MultisigGuardianConfig,
     };
-    use miden_protocol::account::auth::AuthSecretKey;
+    use miden_protocol::account::auth::{AuthSecretKey, BoundSignature, SignatureKey};
     use miden_protocol::account::{Account, AccountType};
     use miden_protocol::crypto::SequentialCommit;
-    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+    use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
     use miden_protocol::transaction::{InputNotes, TransactionArgs, TransactionScript};
     use miden_protocol::{Felt, Word};
     use miden_standards::account::auth::{AuthGuardedMultisig, MultisigAuthArgs};
@@ -441,12 +441,13 @@ mod guarded_multisig {
         let signing = SigningInputs::TransactionSummary(Box::new(reproduced));
         let mut signed_args = tx_args(&proposal);
         for key in &proposal.cosigners {
-            let signature =
-                BasicAuthenticator::new(&[AuthSecretKey::Falcon512Poseidon2(key.clone())])
-                    .get_signature(key.public_key().to_commitment().into(), &signing)
-                    .await
-                    .expect("cosigner signs");
-            signed_args.add_signature(key.public_key().into(), message, signature);
+            let signature = BasicAuthenticator::new(&[AuthSecretKey::Falcon512Eidos(key.clone())])
+                .get_signature(key.public_key().to_commitment().into(), &signing)
+                .await
+                .expect("cosigner signs");
+            let key = SignatureKey::new(key.public_key().to_commitment().into(), message);
+            signed_args
+                .add_signature(BoundSignature::new(key, signature).expect("signature binds"));
         }
         let executor: TransactionExecutor<'_, '_, _, BasicAuthenticator> =
             TransactionExecutor::new(&store);
@@ -601,12 +602,13 @@ mod guarded_multisig {
         let signing = SigningInputs::TransactionSummary(Box::new(reproduced));
         let mut signed_args = tx_args(&proposal);
         for key in &proposal.cosigners {
-            let signature =
-                BasicAuthenticator::new(&[AuthSecretKey::Falcon512Poseidon2(key.clone())])
-                    .get_signature(key.public_key().to_commitment().into(), &signing)
-                    .await
-                    .expect("cosigner signs");
-            signed_args.add_signature(key.public_key().into(), message, signature);
+            let signature = BasicAuthenticator::new(&[AuthSecretKey::Falcon512Eidos(key.clone())])
+                .get_signature(key.public_key().to_commitment().into(), &signing)
+                .await
+                .expect("cosigner signs");
+            let key = SignatureKey::new(key.public_key().to_commitment().into(), message);
+            signed_args
+                .add_signature(BoundSignature::new(key, signature).expect("signature binds"));
         }
         let executor: TransactionExecutor<'_, '_, _, BasicAuthenticator> =
             TransactionExecutor::new(&store);
@@ -681,17 +683,19 @@ mod executor {
     };
     use miden_protocol::account::{Account, AccountType};
     use miden_protocol::crypto::SequentialCommit;
-    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+    use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
     use miden_protocol::note::Note;
     use miden_protocol::transaction::{TransactionScript, TransactionSummary};
-    use miden_protocol::utils::serde::{Deserializable, Serializable};
+    use miden_protocol::utils::serde::Serializable;
     use miden_protocol::{Felt, Word};
     use miden_standards::account::auth::{AuthGuardedMultisig, MultisigAuthArgs};
     use miden_standards::code_builder::CodeBuilder;
     use miden_tx::{LocalTransactionProver, TransactionExecutorError};
 
     use crate::delta_object::CosignerSignature;
-    use crate::network::miden::execution::aborts::{APPROVAL_EXPIRED, Abort, VAULT_SHORTFALL};
+    use crate::network::miden::execution::aborts::{
+        APPROVAL_EXPIRED, Abort, FEE_INSUFFICIENT_BALANCE,
+    };
     use crate::network::miden::execution::{MidenExecutor, StoredRequest};
     use crate::services::execute_proposal::{
         ExecutionAttempt, ExecutionInput, ProposalExecutor, SignatureSelection,
@@ -819,7 +823,7 @@ mod executor {
         if declare_bound_block {
             builder = builder.block_numbers([bound]);
         }
-        let request_bytes = builder.build().unwrap().to_bytes();
+        let request_bytes = miden_client_proto::encode(&builder.build().unwrap());
 
         let rpc = Arc::new(MockRpcApi::new(chain));
         rpc.advance_blocks(60);
@@ -849,9 +853,17 @@ mod executor {
             request: TransactionRequestBuilder,
             signers: &[usize],
         ) -> ExecutionInput {
+            self.with_built_request(request.build().unwrap(), signers)
+        }
+
+        fn with_built_request(
+            &self,
+            request: TransactionRequest,
+            signers: &[usize],
+        ) -> ExecutionInput {
             let mut input = self.input(signers);
             input.proposal_payload["transaction_request"] = serde_json::json!(
-                TransactionRequestEnvelope::seal(&request.build().unwrap().to_bytes())
+                TransactionRequestEnvelope::seal(&miden_client_proto::encode(&request))
             );
             input
         }
@@ -902,16 +914,10 @@ mod executor {
         }
     }
 
-    /// MAST deserialization is not canonical (two decodes of the same bytes re-encode
-    /// differently), so the mirror is held to semantic equality under the upstream decoder.
     #[tokio::test]
-    async fn the_stored_request_re_encodes_to_an_equal_upstream_request() {
+    async fn the_stored_request_decodes_and_passes_its_checks() {
         let proposal = proposal(true).await;
         let decoded = StoredRequest::decode(&proposal.request_bytes).unwrap();
-        assert_eq!(
-            TransactionRequest::read_from_bytes(&decoded.to_bytes()).unwrap(),
-            TransactionRequest::read_from_bytes(&proposal.request_bytes).unwrap()
-        );
         assert!(decoded.block_numbers().contains(&BlockNumber::from(BOUND)));
         decoded.check_against(&proposal.summary).unwrap();
     }
@@ -1042,21 +1048,37 @@ mod executor {
     }
 
     #[tokio::test]
-    #[allow(deprecated)]
-    async fn a_request_without_auth_args_or_their_preimage_is_refused() {
+    async fn a_request_without_auth_args_is_refused() {
         let proposal = proposal(true).await;
-        let without_auth_arg = proposal
+        let request = proposal
             .signed_request()
             .extend_advice_map([(proposal.auth_commitment, proposal.auth_elements.clone())]);
-        let without_preimage = proposal.signed_request().auth_arg(proposal.auth_commitment);
-        for request in [without_auth_arg, without_preimage] {
-            assert_eq!(
-                proposal
-                    .refusal(proposal.with_request(request, &[0, 1]))
-                    .await,
-                ExecutionFailureCode::RequestInvalid(RequestInvalidReason::AuthArgsMissing)
-            );
-        }
+        assert_eq!(
+            proposal
+                .refusal(proposal.with_request(request, &[0, 1]))
+                .await,
+            ExecutionFailureCode::RequestInvalid(RequestInvalidReason::AuthArgsMissing)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_without_the_auth_args_preimage_does_not_decode() {
+        let proposal = proposal(true).await;
+        let mut request = proposal
+            .signed_request()
+            .auth_args(&proposal.auth_args)
+            .build()
+            .unwrap();
+        request
+            .advice_map_mut()
+            .remove(&proposal.auth_commitment)
+            .unwrap();
+        assert_eq!(
+            proposal
+                .refusal(proposal.with_built_request(request, &[0, 1]))
+                .await,
+            ExecutionFailureCode::RequestCodec
+        );
     }
 
     #[tokio::test]
@@ -1251,9 +1273,8 @@ mod executor {
             miden_standards::errors::standards::ERR_MULTISIG_APPROVAL_EXPIRED.message()
         );
         assert_eq!(
-            VAULT_SHORTFALL,
-            miden_protocol::errors::tx_kernel::ERR_VAULT_FUNGIBLE_ASSET_AMOUNT_LESS_THAN_AMOUNT_TO_WITHDRAW
-                .message()
+            FEE_INSUFFICIENT_BALANCE,
+            miden_standards::errors::standards::ERR_FEE_INSUFFICIENT_BALANCE.message()
         );
     }
 
@@ -1263,7 +1284,7 @@ mod executor {
     impl miden_client::transaction::TransactionProver for UnreachableProver {
         async fn prove(
             &self,
-            _inputs: miden_protocol::transaction::TransactionInputs,
+            _witness: miden_protocol::transaction::TransactionWitness,
         ) -> Result<miden_protocol::transaction::ProvenTransaction, miden_tx::TransactionProverError>
         {
             Err(miden_tx::TransactionProverError::Other {
@@ -1322,16 +1343,16 @@ mod executor {
     impl miden_client::transaction::TransactionProver for RecoveringProver {
         async fn prove(
             &self,
-            inputs: miden_protocol::transaction::TransactionInputs,
+            witness: miden_protocol::transaction::TransactionWitness,
         ) -> Result<miden_protocol::transaction::ProvenTransaction, miden_tx::TransactionProverError>
         {
             let remaining = self.failures.load(std::sync::atomic::Ordering::SeqCst);
             if remaining > 0 {
                 self.failures
                     .store(remaining - 1, std::sync::atomic::Ordering::SeqCst);
-                return UnreachableProver.prove(inputs).await;
+                return UnreachableProver.prove(witness).await;
             }
-            miden_client::transaction::TransactionProver::prove(&self.local, inputs).await
+            miden_client::transaction::TransactionProver::prove(&self.local, witness).await
         }
     }
 
@@ -1354,9 +1375,9 @@ mod executor {
         assert!(proven.expiration_block > proven.reference_block);
     }
 
-    /// Proves whatever it is given, and keeps a copy of the inputs.
+    /// Proves whatever it is given, and keeps a copy of the witness.
     struct CapturingProver {
-        captured: std::sync::Mutex<Option<miden_protocol::transaction::TransactionInputs>>,
+        captured: std::sync::Mutex<Option<miden_protocol::transaction::TransactionWitness>>,
         local: LocalTransactionProver,
     }
 
@@ -1364,17 +1385,17 @@ mod executor {
     impl miden_client::transaction::TransactionProver for CapturingProver {
         async fn prove(
             &self,
-            inputs: miden_protocol::transaction::TransactionInputs,
+            witness: miden_protocol::transaction::TransactionWitness,
         ) -> Result<miden_protocol::transaction::ProvenTransaction, miden_tx::TransactionProverError>
         {
-            *self.captured.lock().unwrap() = Some(inputs.clone());
-            miden_client::transaction::TransactionProver::prove(&self.local, inputs).await
+            *self.captured.lock().unwrap() = Some(witness.clone());
+            miden_client::transaction::TransactionProver::prove(&self.local, witness).await
         }
     }
 
     /// Answers every request with a valid proof of another transaction.
     struct ForeignProver {
-        inputs: miden_protocol::transaction::TransactionInputs,
+        witness: miden_protocol::transaction::TransactionWitness,
         local: LocalTransactionProver,
     }
 
@@ -1382,10 +1403,10 @@ mod executor {
     impl miden_client::transaction::TransactionProver for ForeignProver {
         async fn prove(
             &self,
-            _inputs: miden_protocol::transaction::TransactionInputs,
+            _witness: miden_protocol::transaction::TransactionWitness,
         ) -> Result<miden_protocol::transaction::ProvenTransaction, miden_tx::TransactionProverError>
         {
-            miden_client::transaction::TransactionProver::prove(&self.local, self.inputs.clone())
+            miden_client::transaction::TransactionProver::prove(&self.local, self.witness.clone())
                 .await
         }
     }
@@ -1409,7 +1430,7 @@ mod executor {
         let executor = MidenExecutor::new(
             proposal.rpc.clone(),
             Arc::new(ForeignProver {
-                inputs: foreign,
+                witness: foreign,
                 local: LocalTransactionProver::default(),
             }),
         );
@@ -1485,13 +1506,14 @@ mod executor {
             TransactionExecutorError::Unauthorized(summary) => *summary,
             error => panic!("expected the unsigned abort: {error:?}"),
         };
-        let request_bytes = TransactionRequestBuilder::new()
-            .custom_script(script)
-            .auth_args(&auth_args)
-            .block_numbers([bound])
-            .build()
-            .unwrap()
-            .to_bytes();
+        let request_bytes = miden_client_proto::encode(
+            &TransactionRequestBuilder::new()
+                .custom_script(script)
+                .auth_args(&auth_args)
+                .block_numbers([bound])
+                .build()
+                .unwrap(),
+        );
         let rpc = Arc::new(MockRpcApi::new(chain));
         rpc.advance_blocks(60);
 
@@ -1583,19 +1605,22 @@ mod executor {
         );
     }
 
-    /// An unpayable fee aborts in `pay_fee`, which runs before the unauthorized abort, so an
-    /// unfunded account cannot even be proposed for. The abort is the one Guardian reads as a fee
-    /// shortfall when a fee grows between proposal and execution.
+    /// An unpayable fee aborts the signed execution in `pay_fee`. The abort is the one Guardian
+    /// reports as an insufficient fee when a fee grows between proposal and execution.
     #[tokio::test]
-    async fn an_unpayable_fee_aborts_as_the_shortfall_guardian_reports_as_insufficient_fee() {
+    async fn an_unpayable_fee_aborts_as_guardian_reports_insufficient_fee() {
+        use miden_protocol::account::auth::AuthSecretKey;
+        use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
+
         let cosigners: Vec<SecretKey> = (0..2).map(|_| SecretKey::new()).collect();
+        let guardian = SecretKey::new();
         let config = MultisigGuardianConfig::new(
             2,
             cosigners
                 .iter()
                 .map(|key| key.public_key().to_commitment())
                 .collect(),
-            SecretKey::new().public_key().to_commitment(),
+            guardian.public_key().to_commitment(),
         )
         .with_account_type(AccountType::Public)
         .with_signature_scheme(SignatureScheme::Falcon);
@@ -1619,17 +1644,35 @@ mod executor {
             miden_standards::account::auth::FeeConversionInfo::one_to_one(fee_faucet),
         );
         let commitment = auth_args.to_commitment();
-        let error = chain
-            .build_transaction(account.id())
-            .authenticator(None)
-            .add_advice_map_entry(commitment, auth_args.to_elements())
-            .auth_args(commitment)
-            .build()
-            .unwrap()
-            .execute()
-            .await
-            .unwrap_err();
-        assert_eq!(Abort::of(&error), Some(Abort::VaultShortfall), "{error}");
+        let transaction = || {
+            chain
+                .build_transaction(account.id())
+                .authenticator(None)
+                .add_advice_map_entry(commitment, auth_args.to_elements())
+                .auth_args(commitment)
+        };
+        let summary = match transaction().build().unwrap().execute().await {
+            Err(TransactionExecutorError::Unauthorized(summary)) => summary,
+            other => panic!("the unsigned execution must abort as unauthorized: {other:?}"),
+        };
+
+        let message = summary.to_commitment();
+        let signing = SigningInputs::TransactionSummary(summary);
+        let mut signed = transaction();
+        for key in cosigners.iter().chain([&guardian]) {
+            let signature = BasicAuthenticator::new(&[AuthSecretKey::Falcon512Eidos(key.clone())])
+                .get_signature(key.public_key().to_commitment().into(), &signing)
+                .await
+                .unwrap();
+            signed =
+                signed.add_signature(key.public_key().to_commitment().into(), message, signature);
+        }
+        let error = signed.build().unwrap().execute().await.unwrap_err();
+        assert_eq!(
+            Abort::of(&error),
+            Some(Abort::FeeInsufficientBalance),
+            "{error}"
+        );
     }
 
     #[tokio::test]
@@ -1650,7 +1693,7 @@ mod threshold {
         MultisigGuardianBuilder, MultisigGuardianConfig,
     };
     use miden_protocol::Word;
-    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+    use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
     use miden_standards::account::wallets::BasicWallet;
 
     use guardian_shared::multisig_threshold::{ThresholdProcedure, ThresholdedTransaction};
@@ -1758,7 +1801,7 @@ mod batched {
     use miden_protocol::crypto::SequentialCommit;
     use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey;
     use miden_protocol::crypto::dsa::eddsa_25519_sha512::KeyExchangeKey;
-    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+    use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
     use miden_protocol::transaction::TransactionSummary;
     use miden_protocol::utils::serde::Serializable;
     use miden_protocol::{Felt, Word};
@@ -1863,13 +1906,14 @@ mod batched {
                 TransactionExecutorError::Unauthorized(summary) => *summary,
                 error => panic!("expected the unsigned abort: {error:?}"),
             };
-            let request = TransactionRequestBuilder::new()
-                .custom_script(script)
-                .auth_args(&auth_args)
-                .block_numbers([BlockNumber::from(BOUND)])
-                .build()
-                .unwrap()
-                .to_bytes();
+            let request = miden_client_proto::encode(
+                &TransactionRequestBuilder::new()
+                    .custom_script(script)
+                    .auth_args(&auth_args)
+                    .block_numbers([BlockNumber::from(BOUND)])
+                    .build()
+                    .unwrap(),
+            );
             let message = summary.to_commitment();
             let cosigner_signatures = cosigners
                 .iter()

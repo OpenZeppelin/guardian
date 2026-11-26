@@ -19,7 +19,7 @@ use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
 use miden_client::store::Store;
 use miden_client_sqlite_store::SqliteStore;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
 
 use crate::MidenSdkClient;
 use crate::client::MultisigClient;

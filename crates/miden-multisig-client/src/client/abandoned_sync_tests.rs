@@ -737,13 +737,13 @@ async fn a_note_created_before_a_rollback_still_exports() {
         ..
     } = client_ahead_of_guardian(dir.path(), false).await;
 
-    let (auth, key) = auth_component(AuthSchemeId::Falcon512Poseidon2).unwrap();
+    let (auth, key) = auth_component(AuthSchemeId::Falcon512Eidos).unwrap();
     let (faucet_component, policies) = fungible_faucet_component().unwrap();
     let faucet = AccountBuilder::new([3; 32])
         .account_type(AccountType::Private)
         .with_component(auth)
         .with_component(faucet_component)
-        .with_component(miden_client::account::component::BasicWallet)
+        .with_component(miden_standards::account::wallets::BasicWallet)
         .with_components(policies)
         .build_with_schema_commitment()
         .unwrap();

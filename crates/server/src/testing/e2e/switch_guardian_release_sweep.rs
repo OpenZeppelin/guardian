@@ -46,9 +46,10 @@ use miden_protocol::account::{
     Account, AccountCodePatch, AccountDelta, AccountStoragePatch, AccountType, AccountVaultDelta,
 };
 use miden_protocol::block::BlockNumber;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
 use miden_protocol::transaction::{
-    InputNotes, RawOutputNotes, TransactionHeader, TransactionSummary, TransactionSummaryUserParams,
+    InputNotes, RawOutputNotes, TransactionHeader, TransactionLogs, TransactionSummary,
+    TransactionSummaryUserParams,
 };
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{Felt, Word};
@@ -126,6 +127,7 @@ fn nonce_bump_summary(account: &Account) -> serde_json::Value {
         Word::from([Felt::new_unchecked(9); 4]),
         0,
         TransactionSummaryUserParams::new([Felt::ZERO; 6]),
+        TransactionLogs::default(),
     )
     .to_json()
 }
@@ -193,9 +195,9 @@ async fn execute_switch(
     let summary = abort_summary.as_ref().to_json();
     let signing = SigningInputs::TransactionSummary(abort_summary);
     let authenticator_1 =
-        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Poseidon2(cosigner_keys[0].clone())]);
+        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Eidos(cosigner_keys[0].clone())]);
     let authenticator_2 =
-        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Poseidon2(cosigner_keys[1].clone())]);
+        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Eidos(cosigner_keys[1].clone())]);
     let sig_1 = authenticator_1
         .get_signature(cosigner_pubkeys[0].to_commitment().into(), &signing)
         .await

@@ -17,6 +17,7 @@ miden-confidential-contracts = { version = "=0.19.1", path = "../contracts" }
 
 # Miden
 miden-client = { workspace = true, features = ["tonic"] }
+miden-client-proto = { workspace = true }
 miden-client-sqlite-store = { workspace = true }
 miden-protocol = { workspace = true }
 miden-tx = { workspace = true }

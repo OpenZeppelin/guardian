@@ -29,7 +29,7 @@ spends from, and the limits above.
 
 | Tool | Why | Notes |
 |---|---|---|
-| Rust `1.98.1` | builds the Rust driver | pinned in `rust-toolchain.toml`, so `rustup` selects it for you |
+| Rust `1.99.1` | builds the Rust driver | pinned in `rust-toolchain.toml`, so `rustup` selects it for you |
 | `protoc` | the driver's build tree includes `tonic-build` | a build failure mentioning protoc means this is missing |
 | Docker, daemon running | the stack: server, Postgres, RPC stub, migration target, scheme-gated server | Docker Desktop on macOS is supported; its bind mount can serve a torn view of a file rewritten in place, so the allowlist-reload scenario swaps the file with an atomic rename instead |
 | Node 18 or newer, `npm` | the TypeScript leg | |

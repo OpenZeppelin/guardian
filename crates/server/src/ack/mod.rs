@@ -114,7 +114,7 @@ impl AckRegistry {
     #[cfg(all(test, feature = "e2e"))]
     pub(crate) async fn with_falcon_secret_for_tests(
         keystore_path: PathBuf,
-        falcon_secret: &miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey,
+        falcon_secret: &miden_protocol::crypto::dsa::falcon512_eidos::SecretKey,
     ) -> Result<Self> {
         let falcon = MidenFalconRpoSigner::new(keystore_path.clone(), Some(falcon_secret))?;
         let ecdsa = build_ecdsa_signer(
@@ -277,7 +277,7 @@ mod tests {
     use crate::error::GuardianError;
     use async_trait::async_trait;
     use miden_keystore::{EcdsaKeyStore, FilesystemEcdsaKeyStore, FilesystemKeyStore, KeyStore};
-    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey as FalconSecretKey;
+    use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey as FalconSecretKey;
     use miden_protocol::utils::serde::Serializable;
     use rand_chacha::ChaCha20Rng;
     use std::sync::atomic::{AtomicUsize, Ordering};

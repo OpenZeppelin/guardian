@@ -351,7 +351,9 @@ mod tests {
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
     use miden_protocol::account::{AccountCodePatch, AccountId, AccountStoragePatch};
     use miden_protocol::block::BlockNumber;
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummaryUserParams};
+    use miden_protocol::transaction::{
+        InputNotes, RawOutputNotes, TransactionLogs, TransactionSummaryUserParams,
+    };
     use miden_protocol::{Felt, Word};
 
     use super::*;
@@ -374,6 +376,7 @@ mod tests {
             Word::default(),
             0,
             TransactionSummaryUserParams::new([Felt::ZERO; 6]),
+            TransactionLogs::default(),
         )
     }
 

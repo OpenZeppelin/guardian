@@ -35,7 +35,7 @@ use miden_confidential_contracts::multisig_guardian::{
 };
 use miden_protocol::account::auth::AuthSecretKey;
 use miden_protocol::account::{Account, AccountType};
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::crypto::dsa::falcon512_eidos::SecretKey;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::{AuthGuardedMultisig, MultisigAuthArgs};
@@ -174,9 +174,9 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
 
     let signing = SigningInputs::TransactionSummary(abort_summary);
     let authenticator_1 =
-        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Poseidon2(cosigner_keys[0].clone())]);
+        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Eidos(cosigner_keys[0].clone())]);
     let authenticator_2 =
-        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Poseidon2(cosigner_keys[1].clone())]);
+        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Eidos(cosigner_keys[1].clone())]);
     let sig_1 = authenticator_1
         .get_signature(cosigner_pubkeys[0].to_commitment().into(), &signing)
         .await

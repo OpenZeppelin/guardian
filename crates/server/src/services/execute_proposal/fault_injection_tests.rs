@@ -762,7 +762,7 @@ impl crate::coordination::LeaderElector for FlakyElector {
         use std::sync::atomic::Ordering;
         if self
             .failures
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                 left.checked_sub(1)
             })
             .is_ok()
@@ -980,7 +980,7 @@ impl crate::coordination::LeaderElector for FlakyAfterBoundaryElector {
         if boundary_crossed(self.storage.as_ref()).await
             && self
                 .failures
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                     left.checked_sub(1)
                 })
                 .is_ok()
