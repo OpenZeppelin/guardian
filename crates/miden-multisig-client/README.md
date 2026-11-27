@@ -814,6 +814,32 @@ per-proposal v2 payload is capped at `MAX_CONSUME_NOTES_METADATA_BYTES`
 (256 KiB) and the size is enforced at creation time so the failure
 surfaces to the proposer before any signature collection begins.
 
+### Policy modules: rules and checks
+
+A Guardian can run policy modules that refuse a proposal at creation or a
+transaction at approval. `MultisigClient::get_policies` lists the rules the
+operator discloses. `check_transaction` (and `check_transaction_with_options`)
+builds a `TransactionType` exactly as `propose_transaction` would and asks the
+Guardian whether it would be accepted, without storing it or taking a proposal
+slot:
+
+```rust
+let policies = client.get_policies().await?;
+let check = client.check_transaction(TransactionType::transfer(recipient, faucet, 1_000)).await?;
+// check.complete is false when a module that opts out of checks was skipped
+```
+
+`check_custom_transaction` does the same for a producer-built transaction.
+
+The answer is advisory: approval still decides, and the Guardian rate limits
+checks per account and signer. A refusal, from a check, at creation, push or
+registration, is `MultisigError::ModuleDenied { module, reason_code, layer,
+client_message }` (final; a generic denial carries only `policy_denied`) or
+`MultisigError::ModuleUnavailable { module }` (retryable; `module` is `None` for
+an instance with generic denials). A Guardian execution
+refused by a module ends failed with `ExecutionFailureCode::ModuleDenied` or
+`ExecutionFailureCode::ModuleUnavailable`, and the proposal is kept.
+
 ### Error taxonomy
 
 All five errors below carry a stable, cross-SDK string code via

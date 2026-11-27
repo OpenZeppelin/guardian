@@ -48,6 +48,18 @@ data "aws_kms_key" "tx_prover_url" {
   key_id = data.aws_secretsmanager_secret.tx_prover_url[0].kms_key_id
 }
 
+# The policy module secrets, read so a customer-managed KMS key on any of them can be granted to
+# the task runtime role that reads them.
+data "aws_secretsmanager_secret" "module" {
+  for_each = toset(var.guardian_module_secret_names)
+  name     = each.key
+}
+
+data "aws_kms_key" "module_secret" {
+  for_each = toset(compact([for secret in data.aws_secretsmanager_secret.module : secret.kms_key_id]))
+  key_id   = each.key
+}
+
 # Get default VPC if vpc_id is not specified
 data "aws_vpc" "default" {
   count   = var.vpc_id == "" ? 1 : 0

@@ -14,7 +14,7 @@ mod store;
 pub use attempt::MidenExecutor;
 pub use chain::{ChainViewError, build_chain_view};
 pub use foreign::{ForeignAccountUnavailable, ForeignAccounts};
-pub use request::StoredRequest;
+pub use request::{StoredRequest, approval_expiration_block};
 pub use store::ExecutionDataStore;
 
 #[cfg(all(test, feature = "e2e"))]

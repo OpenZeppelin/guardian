@@ -343,6 +343,7 @@ mod tests {
                     proposal_type: "p2id".to_string(),
                     ..ProposalMetadata::default()
                 }),
+                modules: None,
             }
             .into(),
         );
@@ -371,6 +372,7 @@ mod tests {
                     proposal_type: "remove_signer".to_string(),
                     ..ProposalMetadata::default()
                 }),
+                modules: None,
             }
             .into(),
         );
@@ -430,6 +432,7 @@ mod tests {
         AppState {
             execution: Default::default(),
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage: Arc::new(storage),
             metadata: Arc::new(metadata_store),
             network_client: Arc::new(MockNetworkClient::new()),
@@ -538,6 +541,7 @@ mod tests {
         let state = AppState {
             execution: Default::default(),
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(MockNetworkClient::new()),
@@ -630,6 +634,7 @@ mod tests {
         let state = AppState {
             execution: Default::default(),
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage: Arc::new(svc),
             metadata: Arc::new(metadata),
             network_client: Arc::new(MockNetworkClient::new()),

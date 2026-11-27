@@ -16,6 +16,9 @@ Current coordinated SDK release line: `0.16.x`
 4. `miden-multisig-client`
    - manifest: `crates/miden-multisig-client/Cargo.toml`
    - internal release dependencies: `guardian-client`, `guardian-shared`, `miden-confidential-contracts`
+5. `guardian-module-sdk`
+   - manifest: `crates/guardian-module-sdk/Cargo.toml`
+   - no internal release dependencies; first publish is manual (see SKILL.md, "Rust Publication Workflow")
 
 ## Publishable TypeScript Packages
 
@@ -57,7 +60,7 @@ Stable workflow:
 .github/workflows/publish-crates.yml
 ```
 
-Published releases select all four Rust crates. Manual runs provide `dry-run`,
+Published releases select all five Rust crates. Manual runs provide `dry-run`,
 and one boolean per crate. Pull requests changing the workflow run an
 all-crate dry run without credentials.
 
@@ -67,6 +70,7 @@ The fixed selection and summary order is:
 2. `guardian-client`
 3. `miden-confidential-contracts`
 4. `miden-multisig-client`
+5. `guardian-module-sdk`
 
 Cargo receives selected crates in one multi-package command and owns dependency
 ordering. Actual runs skip exact versions already visible on crates.io.

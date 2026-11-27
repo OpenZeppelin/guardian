@@ -58,6 +58,43 @@ pub struct DeltaMetadata {
     /// `push_delta`, EVM deltas, and pushes where no proposal matched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposal: Option<ProposalMetadata>,
+
+    /// The policy module configuration that approved this delta, for operators: absent when no
+    /// module ran, never included in client API responses, and served to operators on the
+    /// dashboard delta detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modules: Option<ModuleApproval>,
+}
+
+/// The policy modules' approval of a signed delta: the configuration they ran with, when and for
+/// whom. Allowed evaluations are not listed: the catalog, the two params versions and the account determine
+/// which modules ran, so only failures let through by `on_error = allow` are kept.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ModuleApproval {
+    /// SHA-256 of the catalog file the approving replica loaded.
+    pub catalog_hash: String,
+    /// The instance params version: every instance's global params and enabled flag.
+    pub params_version: u64,
+    /// The account's params version: its layers and assignment.
+    pub account_params_version: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_open: Vec<FailedOpen>,
+    /// RFC 3339 time the Guardian signed, the accounting time the modules evaluated with.
+    pub signed_at: String,
+    /// The cosigner the acknowledgment was evaluated for.
+    pub submitter: String,
+    /// The matching proposal's creator; empty when no stored proposal matched.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub proposer: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct FailedOpen {
+    pub module_id: String,
+    pub layer: String,
+    /// `timeout`, `error`, `invalid_decision` or `circuit_open`; the
+    /// detail is logged.
+    pub failure: String,
 }
 
 /// What a stored delta's `metadata` column holds. With storage encryption

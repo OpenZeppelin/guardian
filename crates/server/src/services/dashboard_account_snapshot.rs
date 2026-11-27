@@ -183,6 +183,7 @@ mod tests {
         AppState {
             execution: Default::default(),
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage: Arc::new(mock_storage),
             metadata: Arc::new(mock_metadata),
             network_client: Arc::new(MockNetworkClient::new()),

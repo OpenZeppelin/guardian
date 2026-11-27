@@ -9,6 +9,10 @@ import {
   assertSession,
 } from './actions/operator.js';
 import { assertHttpEnvelope } from './actions/errorEnvelope.js';
+import {
+  assertRefusal as assertModuleRefusal,
+  assertRegistrationRefusal as assertModuleRegistrationRefusal,
+} from './actions/modules.js';
 import { isEnvironmental } from './environment.js';
 import { buildResult } from './report.js';
 import type { Classification, Runtime, Scenario, ScenarioResult } from './types.js';
@@ -63,6 +67,8 @@ export const HANDLERS: Readonly<Record<string, ActionHandler>> = {
   'operator-denial': assertDenial,
   'operator-logout': assertLogout,
   'operator-allowlist-reload': assertAllowlistReload,
+  'module-refusal': assertModuleRefusal,
+  'module-registration-refusal': assertModuleRegistrationRefusal,
 };
 
 /**
@@ -195,6 +201,18 @@ async function runLiveAction(
       return live.lowerProcedureThreshold(context, scenario.id);
     case 'procedure-threshold-assert':
       return live.assertProcedureThreshold(context, scenario.id);
+    case 'module-cap-assign':
+      return live.assignModuleCap(context, scenario.id);
+    case 'module-cap-refuses':
+      return live.assertModuleCapRefuses(context, scenario.id);
+    case 'module-cap-lower':
+      return live.lowerModuleCap(context, scenario.id);
+    case 'module-ack-refused':
+      return live.assertModuleAckRefused(context, scenario.id);
+    case 'module-recipient-assign':
+      return live.assignModuleRecipientDenylist(context, scenario.id);
+    case 'module-recipient-refuses':
+      return live.assertModuleRecipientRefuses(context, scenario.id);
     default:
       return null;
   }

@@ -27,7 +27,8 @@ The server instruments, end to end: HTTP and gRPC request paths (rate, latency,
 in-flight, status/code), Miden RPC (the upstream chain node), storage
 operations and per-pool (`storage`/`metadata`) DB-pool saturation,
 canonicalization, the delta & proposal lifecycle, account growth, operator auth,
-rate limiting, refresher health, and process metrics.
+rate limiting, refresher health, Guardian execution, policy modules, and process
+metrics.
 
 Two properties worth knowing as an operator:
 
@@ -98,11 +99,15 @@ Panels are grouped by subsystem and map 1:1 onto the metric taxonomy in
 | Accounts | total + creation rate by network kind |
 | Auth & rate limiting | operator auth outcomes, sessions, rate-limit rejections, refresh failures |
 | Process / runtime | CPU, RSS, file descriptors |
+| Guardian execution | executions ended by outcome and code, proving p95, reconciliation, oldest reservation |
+| Policy modules | evaluations by module and outcome, p99 per module, health (`up`, circuit open, enabled), fail-open skips, catalog drift, accounts over budget, orphaned assignments |
 
 An `Instance` variable (top-left) filters to a single replica or aggregates
 across all of them. Some panels stay empty in this local filesystem stack —
-**DB pool** needs a Postgres build, and **Miden RPC / deltas / proposals /
-account creation** need a real signed multisig flow. Copy
+**DB pool** needs a Postgres build, **Miden RPC / deltas / proposals /
+account creation** need a real signed multisig flow, and **Policy modules**
+needs a module catalog (`GUARDIAN_MODULES_CONFIG`, see the
+[policy modules guide](../policy-modules/README.md)). Copy
 [`grafana/dashboards/guardian.json`](./grafana/dashboards/guardian.json) into
 your own Grafana and adapt it.
 

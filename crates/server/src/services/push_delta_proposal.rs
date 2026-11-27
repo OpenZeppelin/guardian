@@ -1,16 +1,21 @@
 use crate::builder::state::AppState;
 use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus};
 use crate::error::{GuardianError, Result};
-use crate::metadata::auth::Credentials;
+use crate::metadata::auth::{Credentials, RequestAuthFormat};
+use crate::modules::HookName;
+use crate::modules::request::{self, ProposalContext, TransactionInput};
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::candidate_chain::{self, CandidateChain};
 use crate::services::execution_codec::TransactionRequestEnvelope;
 use crate::services::proposal_signature::{
     ensure_cosigner_approval, proposal_tx_summary, verify_proposal_signature,
 };
-use crate::services::{normalize_payload, resolve_account_allowing_session};
+use crate::services::{
+    normalize_payload, resolve_account_allowing_session, resolve_account_for_read,
+};
 use crate::storage::{ChainPosition, ProposalAdmission, ProposalWrite};
 use guardian_shared::DeltaSignature;
+use guardian_shared::session_request::SessionOperation;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -85,21 +90,65 @@ pub struct PushDeltaProposalResult {
     pub commitment: String,
 }
 
+/// The answer of a dry-run check that passed. A denial or an unavailable module is the same
+/// error proposal creation returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckProposalResult {
+    /// False when an instance that opts out of dry runs was skipped.
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Create,
+    DryRun,
+}
+
+enum Outcome {
+    Created(Box<PushDeltaProposalResult>),
+    Checked(CheckProposalResult),
+}
+
+pub async fn push_delta_proposal(
+    state: &AppState,
+    params: PushDeltaProposalParams,
+) -> Result<PushDeltaProposalResult> {
+    match propose(state, params, Mode::Create).await? {
+        Outcome::Created(result) => Ok(*result),
+        Outcome::Checked(_) => Err(GuardianError::StorageError(
+            "proposal creation ended as a check".into(),
+        )),
+    }
+}
+
+/// Runs proposal creation up to the `before_proposal_created` modules without storing
+/// anything (RFC 0002 section 2.7). Advisory: approval still decides.
+pub async fn check_proposal(
+    state: &AppState,
+    params: PushDeltaProposalParams,
+) -> Result<CheckProposalResult> {
+    match propose(state, params, Mode::DryRun).await? {
+        Outcome::Checked(result) => Ok(result),
+        Outcome::Created(_) => Err(GuardianError::StorageError(
+            "a proposal check stored a proposal".into(),
+        )),
+    }
+}
+
 #[tracing::instrument(
+    name = "push_delta_proposal",
     level = "info",
     skip(state, params),
     fields(
         account_id = %params.account_id,
         nonce = params.nonce,
+        ?mode,
         proposer_id = tracing::field::Empty,
         commitment = tracing::field::Empty,
         signer_count = tracing::field::Empty
     )
 )]
-pub async fn push_delta_proposal(
-    state: &AppState,
-    params: PushDeltaProposalParams,
-) -> Result<PushDeltaProposalResult> {
+async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) -> Result<Outcome> {
     tracing::debug!("Pushing delta proposal");
 
     if crate::metadata::network::is_evm_account_id(&params.account_id)
@@ -125,14 +174,43 @@ pub async fn push_delta_proposal(
     let delta_payload = normalize_payload(delta_payload)?;
     let base_commitment = proposal_base_commitment(&delta_payload)?;
 
-    let resolved = resolve_account_allowing_session(
-        state,
-        &account_id,
-        &credentials,
-        guardian_shared::session_request::SessionOperation::PushDeltaProposal,
-    )
-    .await?;
+    let resolved = match mode {
+        Mode::Create => {
+            resolve_account_allowing_session(
+                state,
+                &account_id,
+                &credentials,
+                SessionOperation::PushDeltaProposal,
+            )
+            .await?
+        }
+        Mode::DryRun => {
+            resolve_account_for_read(
+                state,
+                &account_id,
+                &credentials,
+                SessionOperation::CheckDeltaProposal,
+            )
+            .await?
+        }
+    };
     ensure_account_active_metadata(&resolved.metadata)?;
+    let credentials_session = credentials.auth_format() == RequestAuthFormat::Session;
+    let mut creation_slot = match mode {
+        Mode::DryRun => {
+            crate::modules::check_limit::admit(&account_id, &resolved.signer_commitment)?;
+            None
+        }
+        Mode::Create if state.modules.is_some() => Some(
+            crate::modules::check_limit::admit_creation(&account_id, &resolved.signer_commitment)?,
+        ),
+        Mode::Create => None,
+    };
+    let dry_run = match (mode, state.modules.as_deref()) {
+        (Mode::DryRun, Some(modules)) => Some(modules.plan_dry_run(&account_id).await?),
+        (Mode::DryRun, None) => Some((Vec::new(), true)),
+        (Mode::Create, _) => None,
+    };
     if resolved.metadata.network_config.is_evm() {
         return Err(GuardianError::UnsupportedForNetwork {
             network: "evm".to_string(),
@@ -372,16 +450,49 @@ pub async fn push_delta_proposal(
         .cloned()
         .unwrap_or_default();
 
-    // Validate delta using network client (check validity but don't apply)
+    let (plans, complete) = match (dry_run, state.modules.as_deref()) {
+        (Some(planned), _) => planned,
+        (None, Some(modules)) => (
+            modules
+                .plan(HookName::BeforeProposalCreated, &account_id)
+                .await?
+                .into_iter()
+                .collect(),
+            true,
+        ),
+        (None, None) => (Vec::new(), true),
+    };
+    // With modules to run, one decode verifies the delta against the tail and builds what they
+    // receive, after the chain fee is loaded; without, the delta is only verified.
+    if !plans.is_empty()
+        && let Err(error) = state.network_client.load_fee_faucet().await
     {
+        tracing::warn!(%error, "Fee faucet unknown; no output note is treated as the fee note");
+    }
+    let applied = {
         let client = state.network_client.clone();
         let prev_commitment = tail.commitment.clone();
         let prev_state_json = tail.state_json.clone();
         let tx_summary = Arc::new(tx_summary.clone());
+        let evaluate = !plans.is_empty();
         crate::network::reconstructor()
-            .run(move || client.verify_delta(&prev_commitment, &prev_state_json, &tx_summary))
-            .await?;
-    }
+            .run(move || {
+                if evaluate {
+                    client
+                        .apply_delta_with_module_inputs(
+                            Some(&prev_commitment),
+                            &prev_state_json,
+                            &tx_summary,
+                        )
+                        .map(Some)
+                } else {
+                    client
+                        .verify_delta(&prev_commitment, &prev_state_json, &tx_summary)
+                        .map(|()| None)
+                }
+            })
+            .await?
+    };
     let commitment = proposal_id.map_err(GuardianError::InvalidDelta)?;
     tracing::Span::current().record("commitment", tracing::field::display(&commitment));
 
@@ -421,6 +532,68 @@ pub async fn push_delta_proposal(
         });
     }
     tracing::Span::current().record("signer_count", cosigner_sigs.len());
+
+    // The bytes the account's viable proposals hold, read before the modules run so a request
+    // that cannot be stored is refused before they judge it; creation counts them again when it
+    // inserts, which also catches a concurrent write, so a creation no module judges skips this.
+    if !already_pending && (mode == Mode::DryRun || !plans.is_empty()) {
+        let used = resolved
+            .storage
+            .viable_request_bytes(&account_id, &tail.commitment, next_nonce)
+            .await
+            .map_err(GuardianError::StorageError)?;
+        let limit = u64::from(state.execution.config.max_account_request_bytes);
+        if used.saturating_add(request_bytes) > limit {
+            return Err(GuardianError::AccountRequestCapacityExceeded { limit, used });
+        }
+    }
+
+    let mut evaluations = Vec::new();
+    if let Some((_, inputs)) = applied {
+        let proposal = ProposalContext {
+            proposer: proposer_id.clone(),
+            metadata: delta_payload
+                .get("metadata")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        };
+        for plan in plans {
+            let network_id = plan.network_id();
+            plan.run(|| {
+                request::transaction_request(TransactionInput {
+                    network_id,
+                    account_id: &account_id,
+                    submitter: &proposer_id,
+                    submitter_session: credentials_session,
+                    auth: &resolved.metadata.auth,
+                    network_config: &resolved.metadata.network_config,
+                    inputs: inputs.clone(),
+                    proposal: Some(proposal.clone()),
+                    accounting_time: state.clock.now(),
+                })
+            })
+            .await
+            .map(|evaluation| evaluations.push(evaluation))
+            .inspect_err(|error| {
+                if matches!(
+                    error,
+                    GuardianError::ModuleDenied { .. } | GuardianError::ModuleDeniedGeneric
+                ) && let Some(slot) = creation_slot.take()
+                {
+                    slot.denied();
+                }
+            })?;
+        }
+    }
+    if mode == Mode::DryRun {
+        tracing::info!(
+            account_id = %account_id,
+            signer = %proposer_id,
+            complete,
+            "Proposal dry-run check passed"
+        );
+        return Ok(Outcome::Checked(CheckProposalResult { complete }));
+    }
     // Create delta object with Pending status including any provided signatures
     let timestamp = state.clock.now_rfc3339();
     let delta_proposal = DeltaObject {
@@ -461,6 +634,19 @@ pub async fn push_delta_proposal(
             )
             .increment(1);
             tracing::info!("Delta proposal created");
+            if let DeltaStatus::Pending { proposer_id, .. } = &delta_proposal.status {
+                for evaluation in &evaluations {
+                    evaluation.audit_failed_open(
+                        state.auditor.as_ref(),
+                        HookName::BeforeProposalCreated,
+                        &account_id,
+                        proposer_id,
+                        [("proposal_id".to_string(), commitment.clone().into())]
+                            .into_iter()
+                            .collect(),
+                    );
+                }
+            }
             delta_proposal
         }
         ProposalWrite::AlreadyStored => {
@@ -484,7 +670,10 @@ pub async fn push_delta_proposal(
         }
     };
 
-    Ok(PushDeltaProposalResult { delta, commitment })
+    Ok(Outcome::Created(Box::new(PushDeltaProposalResult {
+        delta,
+        commitment,
+    })))
 }
 
 /// A proposal is identified by its summary alone, so pushing it again stores nothing: the
@@ -2865,5 +3054,404 @@ mod tests {
                 .is_empty(),
             "judged on the replayed tail"
         );
+    }
+
+    async fn propose_with_module(
+        module: Arc<crate::modules::testing::StubModule>,
+        hook: HookName,
+    ) -> (Result<PushDeltaProposalResult>, MockStorageBackend, String) {
+        let (state, storage, params, commitment) = module_setup(module, hook, |_| {});
+        (
+            push_delta_proposal(&state, params).await,
+            storage,
+            commitment,
+        )
+    }
+
+    /// State, storage, request and proposer for one module at `hook`, after `configure` adjusts
+    /// the instance.
+    fn module_setup(
+        module: Arc<crate::modules::testing::StubModule>,
+        hook: HookName,
+        configure: impl FnOnce(&mut crate::modules::registry::Instance),
+    ) -> (
+        AppState,
+        MockStorageBackend,
+        PushDeltaProposalParams,
+        String,
+    ) {
+        use crate::modules::catalog::OnError;
+        use crate::modules::testing::{instance, pipeline};
+
+        let (mut state, storage, network, metadata) = create_test_state();
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
+        let (pubkey, commitment, signature, timestamp) =
+            crate::testing::helpers::generate_falcon_signature(&account_id);
+
+        let _ = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment.clone()],
+            },
+        ))));
+        let storage = storage.with_pull_state(Ok(create_state_object(
+            account_id.clone(),
+            "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392".into(),
+            account_json,
+        )));
+        let _ = network
+            .with_verify_delta(Ok(()))
+            .with_validate_credential(Ok(()))
+            .with_apply_delta(Ok((serde_json::json!({ "after": true }), "0xafter".into())))
+            .with_module_views(
+                guardian_module_sdk::AccountView::default(),
+                guardian_module_sdk::MidenTransaction::default(),
+            );
+        let mut configured = instance("caps", &[hook], OnError::Deny, module);
+        configure(&mut configured);
+        state.modules = Some(pipeline(vec![configured]));
+
+        let params = PushDeltaProposalParams {
+            account_id,
+            nonce: 1,
+            delta_payload: serde_json::json!({
+                "tx_summary": delta_fixture["delta_payload"].clone(),
+                "signatures": [],
+                "metadata": { "proposal_type": "p2id", "description": "pay rent" }
+            }),
+            credentials: Credentials::signature(pubkey, signature, timestamp),
+        };
+        (state, storage, params, commitment)
+    }
+
+    #[tokio::test]
+    async fn a_check_runs_the_creation_modules_and_stores_nothing() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let (state, storage, params, _) =
+            module_setup(module.clone(), HookName::BeforeProposalCreated, |_| {});
+        let result = check_proposal(&state, params).await.unwrap();
+        assert!(result.complete);
+        assert_eq!(module.calls(), 1);
+        assert!(storage.get_submit_delta_proposal_calls().is_empty());
+
+        let module = crate::modules::testing::StubModule::denying("amount_cap_exceeded");
+        let (state, storage, params, _) =
+            module_setup(module, HookName::BeforeProposalCreated, |_| {});
+        assert!(matches!(
+            check_proposal(&state, params).await,
+            Err(GuardianError::ModuleDenied { .. })
+        ));
+        assert!(storage.get_submit_delta_proposal_calls().is_empty());
+    }
+
+    /// A check and a creation both read the bytes the account's viable proposals hold before
+    /// the modules run, so an account at its limit (here, one whose limit was lowered below what
+    /// it already holds) is refused without a module judging the request.
+    #[tokio::test]
+    async fn a_request_over_the_account_byte_limit_is_refused_before_the_modules_run() {
+        for create in [false, true] {
+            let module = crate::modules::testing::StubModule::allowing();
+            let (state, storage, params, _) =
+                module_setup(module.clone(), HookName::BeforeProposalCreated, |_| {});
+            let limit = u64::from(state.execution.config.max_account_request_bytes);
+            let storage = storage.with_viable_request_bytes(limit + 1);
+            let refused = if create {
+                push_delta_proposal(&state, params).await.map(|_| ())
+            } else {
+                check_proposal(&state, params).await.map(|_| ())
+            };
+            assert!(
+                matches!(
+                    refused,
+                    Err(GuardianError::AccountRequestCapacityExceeded { used, .. }) if used == limit + 1
+                ),
+                "create = {create}: {refused:?}"
+            );
+            assert_eq!(module.calls(), 0, "create = {create}");
+            assert!(storage.get_submit_delta_proposal_calls().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_check_runs_approval_only_rules_too_and_marks_every_request_as_a_check() {
+        let module = crate::modules::testing::StubModule::denying("amount_cap_exceeded");
+        let (state, storage, params, _) =
+            module_setup(module.clone(), HookName::BeforeTransactionApproved, |_| {});
+        assert!(matches!(
+            check_proposal(&state, params).await,
+            Err(GuardianError::ModuleDenied { .. })
+        ));
+        let request = module.last_request().expect("the approval rule ran");
+        assert!(request.dry_run);
+        assert_eq!(
+            request.hook,
+            guardian_module_sdk::Hook::BeforeTransactionApproved as i32
+        );
+        assert!(storage.get_submit_delta_proposal_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_instance_on_both_transaction_hooks_is_asked_at_each_in_a_check() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let (state, _, params, _) = module_setup(
+            module.clone(),
+            HookName::BeforeProposalCreated,
+            |instance| {
+                instance.config.hooks = vec![
+                    HookName::BeforeProposalCreated,
+                    HookName::BeforeTransactionApproved,
+                ];
+            },
+        );
+        let result = check_proposal(&state, params).await.unwrap();
+        assert!(result.complete);
+        assert_eq!(module.calls(), 2, "it may decide differently at approval");
+        assert_eq!(
+            module.last_request().unwrap().hook,
+            guardian_module_sdk::Hook::BeforeTransactionApproved as i32
+        );
+    }
+
+    #[tokio::test]
+    async fn an_opted_out_instance_makes_every_check_incomplete_even_where_it_does_not_apply() {
+        let (state, _, params, _) = module_setup(
+            crate::modules::testing::StubModule::allowing(),
+            HookName::BeforeTransactionApproved,
+            |instance| {
+                instance.config.scope = crate::modules::catalog::Scope::Assigned;
+                instance.config.dry_run = false;
+            },
+        );
+        let result = check_proposal(&state, params).await.unwrap();
+        assert!(
+            !result.complete,
+            "the answer must not reveal which accounts carry the hidden instance"
+        );
+    }
+
+    #[tokio::test]
+    async fn creating_a_proposal_is_not_marked_as_a_check() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let (state, _, params, _) =
+            module_setup(module.clone(), HookName::BeforeProposalCreated, |_| {});
+        let _ = push_delta_proposal(&state, params).await;
+        assert!(
+            !module
+                .last_request()
+                .expect("the creation rule ran")
+                .dry_run
+        );
+    }
+
+    #[tokio::test]
+    async fn a_module_that_opts_out_is_skipped_and_the_check_is_incomplete() {
+        let module = crate::modules::testing::StubModule::denying("would_deny");
+        let (state, _, params, _) = module_setup(
+            module.clone(),
+            HookName::BeforeProposalCreated,
+            |instance| {
+                instance.config.dry_run = false;
+            },
+        );
+        let result = check_proposal(&state, params).await.unwrap();
+        assert!(!result.complete, "the skip is reported, not hidden");
+        assert_eq!(module.calls(), 0);
+
+        let (state, _, params, _) =
+            module_setup(module, HookName::BeforeProposalCreated, |instance| {
+                instance.config.dry_run = false;
+            });
+        assert!(
+            matches!(
+                push_delta_proposal(&state, params).await,
+                Err(GuardianError::ModuleDenied { .. })
+            ),
+            "creation still runs it"
+        );
+    }
+
+    #[tokio::test]
+    async fn module_denial_at_creation_stores_no_proposal() {
+        let module = crate::modules::testing::StubModule::denying("amount_cap_exceeded");
+        let (result, storage, _) =
+            propose_with_module(module, HookName::BeforeProposalCreated).await;
+        assert!(matches!(result, Err(GuardianError::ModuleDenied { .. })));
+        assert!(storage.get_submit_delta_proposal_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_creation_in_flight_holds_its_place_in_the_denial_window() {
+        let module = crate::modules::testing::StubModule::denying("recipient_blocked");
+        let (state, _, params, proposer) =
+            module_setup(module.clone(), HookName::BeforeProposalCreated, |_| {});
+        for _ in 1..crate::modules::check_limit::CHECK_RATE_DEFAULT {
+            crate::modules::check_limit::admit_creation(&params.account_id, &proposer)
+                .expect("the window has room")
+                .denied();
+        }
+        let in_flight = crate::modules::check_limit::admit_creation(&params.account_id, &proposer)
+            .expect("the last place");
+        assert!(
+            matches!(
+                push_delta_proposal(&state, params).await,
+                Err(GuardianError::RateLimitExceeded { .. })
+            ),
+            "a creation reserves its place before the modules run, so creations in flight at once cannot all be judged against the same window"
+        );
+        assert_eq!(module.calls(), 0);
+        drop(in_flight);
+    }
+
+    #[tokio::test]
+    async fn only_a_creation_the_modules_deny_counts_toward_the_denial_window() {
+        use crate::modules::check_limit::denials_counted;
+        let (state, _, params, proposer) = module_setup(
+            crate::modules::testing::StubModule::denying("recipient_blocked"),
+            HookName::BeforeProposalCreated,
+            |_| {},
+        );
+        let account_id = params.account_id.clone();
+        assert!(matches!(
+            push_delta_proposal(&state, params).await,
+            Err(GuardianError::ModuleDenied { .. })
+        ));
+        assert_eq!(denials_counted(&account_id, &proposer), 1);
+
+        let (state, _, params, proposer) = module_setup(
+            crate::modules::testing::StubModule::allowing(),
+            HookName::BeforeProposalCreated,
+            |_| {},
+        );
+        let account_id = params.account_id.clone();
+        push_delta_proposal(&state, params)
+            .await
+            .expect("an allowed creation");
+        assert_eq!(
+            denials_counted(&account_id, &proposer),
+            0,
+            "an allowed creation gives its reservation back"
+        );
+
+        let (state, _, params, proposer) = module_setup(
+            crate::modules::testing::StubModule::denying("recipient_blocked"),
+            HookName::BeforeProposalCreated,
+            |_| {},
+        );
+        let account_id = params.account_id.clone();
+        assert!(check_proposal(&state, params).await.is_err());
+        assert_eq!(
+            denials_counted(&account_id, &proposer),
+            0,
+            "a denied check counts against the check limit, not the denial window"
+        );
+    }
+
+    #[tokio::test]
+    async fn creation_stops_running_modules_once_they_denied_a_window_of_the_signers_proposals() {
+        let module = crate::modules::testing::StubModule::denying("recipient_blocked");
+        let (state, _, params, proposer) =
+            module_setup(module.clone(), HookName::BeforeProposalCreated, |_| {});
+        for _ in 0..crate::modules::check_limit::CHECK_RATE_DEFAULT {
+            crate::modules::check_limit::admit_creation(&params.account_id, &proposer)
+                .expect("the window has room")
+                .denied();
+        }
+        let refused = push_delta_proposal(&state, params).await;
+        assert!(
+            matches!(
+                refused,
+                Err(GuardianError::RateLimitExceeded { ref scope, .. }) if scope == "proposal_denials"
+            ),
+            "denied creations are limited like dry-run checks, so creation is not a free check: {refused:?}"
+        );
+        assert_eq!(module.calls(), 0, "the modules are not asked again");
+    }
+
+    #[tokio::test]
+    async fn a_failure_let_through_at_creation_is_audited_and_a_clean_creation_is_not() {
+        use crate::modules::catalog::OnError;
+        use crate::modules::testing::{Behaviour, StubModule};
+        use crate::testing::helpers::CapturingAuditor;
+
+        let auditor = CapturingAuditor::new();
+        let (mut state, storage, params, proposer) = module_setup(
+            StubModule::new(Behaviour::Fail),
+            HookName::BeforeProposalCreated,
+            |instance| instance.config.on_error = OnError::Allow,
+        );
+        state.auditor = Arc::new(auditor.clone());
+        let created = push_delta_proposal(&state, params)
+            .await
+            .expect("a fail-open module does not stop the proposal");
+        assert_eq!(storage.get_submit_delta_proposal_calls().len(), 1);
+        let events = auditor.snapshot();
+        assert_eq!(events.len(), 1, "{events:?}");
+        let event = &events[0];
+        assert_eq!(event.action_kind, crate::audit::kinds::MODULES_FAILED_OPEN);
+        assert_eq!(event.operator_identity, "system");
+        assert_eq!(event.payload["hook"], "before_proposal_created");
+        assert_eq!(event.payload["submitter"], proposer);
+        assert_eq!(event.payload["proposal_id"], created.commitment);
+        assert_eq!(event.payload["failed_open"][0]["module_id"], "caps");
+        assert_eq!(event.payload["failed_open"][0]["failure"], "error");
+
+        let clean = CapturingAuditor::new();
+        let (mut state, _, params, _) = module_setup(
+            StubModule::allowing(),
+            HookName::BeforeProposalCreated,
+            |_| {},
+        );
+        state.auditor = Arc::new(clean.clone());
+        push_delta_proposal(&state, params).await.unwrap();
+        assert!(clean.snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_check_audits_nothing() {
+        use crate::modules::catalog::OnError;
+        use crate::modules::testing::{Behaviour, StubModule};
+        use crate::testing::helpers::CapturingAuditor;
+
+        let auditor = CapturingAuditor::new();
+        let (mut state, storage, params, _) = module_setup(
+            StubModule::new(Behaviour::Fail),
+            HookName::BeforeProposalCreated,
+            |instance| instance.config.on_error = OnError::Allow,
+        );
+        state.auditor = Arc::new(auditor.clone());
+        check_proposal(&state, params).await.unwrap();
+        assert!(storage.get_submit_delta_proposal_calls().is_empty());
+        assert!(auditor.snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn creation_passes_the_proposer_and_untrusted_metadata() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let (result, storage, proposer) =
+            propose_with_module(module.clone(), HookName::BeforeProposalCreated).await;
+        result.expect("proposal is created");
+        assert_eq!(storage.get_submit_delta_proposal_calls().len(), 1);
+        let request = module.last_request().expect("module was called");
+        assert_eq!(request.submitter, proposer);
+        let Some(guardian_module_sdk::proto::hook_request::Subject::Transaction(tx)) =
+            request.subject
+        else {
+            panic!("transaction subject expected");
+        };
+        assert_eq!(tx.proposer, proposer);
+        let metadata: serde_json::Value = serde_json::from_slice(&tx.unverified_metadata).unwrap();
+        assert_eq!(metadata["description"], "pay rent");
+    }
+
+    #[tokio::test]
+    async fn approval_only_module_is_not_called_at_creation() {
+        let module = crate::modules::testing::StubModule::denying("no");
+        let (result, _, _) =
+            propose_with_module(module.clone(), HookName::BeforeTransactionApproved).await;
+        result.expect("creation is not evaluated by an approval-only module");
+        assert_eq!(module.calls(), 0);
     }
 }

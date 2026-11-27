@@ -21,14 +21,17 @@
 - All other authentication failures (invalid or unauthorized signature, malformed credentials) share the terminal code `authentication_failed` (`meta.retryable: false`). Clients MUST branch on the stable code, never on message text.
 - `last_auth_timestamp` is updated atomically (compare-and-swap) when authentication succeeds; a session read's record is inserted atomically the same way.
 - `POST /configure` enforces the same timestamp skew and replay CAS, and every
-  configuration consumes its timestamp before it writes any state. A first-time
+  configuration consumes its timestamp before it writes any state. A registered
+  account consumes it first, before any chain read or policy module call, so a
+  reconfiguration that a module refuses, or that fails on a chain read, uses its
+  signed request up and is retried with a fresh signature. A first-time
   configuration first claims the account: it creates the metadata row only if
   none exists, atomically, and only the request that created it proceeds as a
   first configuration. Replay state has a foreign key to account metadata, so the
   claim is what lets the timestamp be consumed before the state write. A request
   that loses the claim (a concurrent duplicate or a replay of the signed request)
   re-reads the account and is judged as a reconfiguration, so a replay from the
-  same signer is refused with `authentication_replay` before it writes anything.
+  same signer is refused with `authentication_replay` before it writes any state.
   A configuration from a different signer that loses the claim passes its own
   replay check and reconfigures the account it lost to, under the rule below;
   callers must not use `/configure` as a general concurrent state-update
@@ -84,6 +87,7 @@
 - HTTP request payload digest: RPO256 over canonical JSON bytes of the request payload (`body` for `POST`/`PUT`, query object for `GET`).
 - gRPC request payload digest: RPO256 over protobuf-encoded request bytes.
 - `ExecuteDeltaProposal` is domain-separated, because its body (`account_id`, `proposal_id`) encodes to the same bytes as a `GetDeltaProposalExecution` read on both transports. Its payload digest is RPO256 over the ASCII tag `guardian.ExecuteDeltaProposal` and one zero byte, followed by the request bytes: the protobuf-encoded request over gRPC, the canonical JSON body over HTTP. No protobuf message begins with that tag, and canonical JSON begins with `{`. A signed status read therefore never authenticates an execute.
+- `CheckDeltaProposal` (`POST /delta/proposal/check`) is domain-separated the same way, with the tag `guardian.CheckDeltaProposal`, because it takes proposal creation's body: without the tag a wallet-signed check would also be a valid `POST /delta/proposal`.
 - Signed message format: `RPO256_hash([account_id_prefix, account_id_suffix, timestamp_ms, payload_hash_0, payload_hash_1, payload_hash_2, payload_hash_3])`.
 - ECDSA accounts may send `x-auth-format: eip712` with the same three required headers. The signature is over `GuardianRequest(bytes32 requestHash)` in the `EIP712Domain` `{ name: "Guardian Request", version: "1" }`; `requestHash` is the 32-byte little-endian encoding of the signed message above. An absent format header keeps the raw signature behavior. Falcon does not accept EIP-712 request auth. The existing timestamp skew and replay checks apply to both formats.
 - The typed request message displays a hash, not the decoded HTTP operation or proposal. The client must show the transaction details separately before prompting a hardware wallet.
@@ -187,7 +191,10 @@ approval prompts: the wallet still signs every transaction summary.
   7 `GET /delta/proposal/single`, 8 `POST /delta`, 9 `POST /delta/proposal`,
   10 `PUT /delta/proposal`, 11 `POST /delta/proposal/execution`,
   12 `GET /delta/proposal/execution`, 13 `GET /delta/execution/current`,
-  14 `GET /state/tail` (the gRPC twins share the ids). Guardian derives both from the request it
+  14 `GET /state/tail`, 15 `GET /policies`, 16 `POST /delta/proposal/check`
+  (the gRPC twins share the ids). 15 and 16 are reads: the check takes proposal
+  creation's body but stores nothing, and its own id keeps a creation signature
+  from passing on it or the reverse. Guardian derives both from the request it
   received, never from a header, so a signature made for one route or
   transport never verifies on another, even when the payloads serialize to
   the same bytes. Test vectors:
@@ -255,6 +262,7 @@ approval prompts: the wallet still signs every transaction summary.
   routes: `GET /state`, `GET /state/nonce`, `GET /state/tail`, `GET /delta`, `GET /delta/since`,
   `GET /delta/history`, `GET /delta/proposal`, `GET /delta/proposal/single`,
   `GET /delta/proposal/execution`, `GET /delta/execution/current`,
+  `GET /policies`, `POST /delta/proposal/check`,
   `POST /delta/proposal`, `PUT /delta/proposal`, `POST /delta` and
   `POST /delta/proposal/execution` (and their gRPC twins).
   Every other route is wallet-only by default, including routes added later:
@@ -620,12 +628,14 @@ travels as `meta_json`):
 - `state` is one of exactly five values: `pending`, `proving`, `submitted`, `committed`, `failed`.
   They move forward only. `submitted` means the transaction may have been sent and is never
   retried; it resolves only from what the chain shows.
-- `error` is present exactly when `state` is `failed`. Three codes carry `meta`:
+- `error` is present exactly when `state` is `failed`. These codes carry `meta`:
   `GUARDIAN_EXECUTION_REQUEST_INVALID` (`reason`: `bound_block_not_declared`, `auth_args_missing`,
   `approval_expiration_missing`, `input_notes_not_pinned`, `too_many_declared_blocks`),
   `GUARDIAN_EXECUTION_EXPIRATION_REACHED`
   (`bound`: `approval`, `transaction`) and `GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE`
-  (`reason`: `private`, `unavailable`). The full list is in
+  (`reason`: `private`, `unavailable`); on servers with policy modules,
+  `GUARDIAN_EXECUTION_MODULE_DENIED` (`reason_code`, and `module`, `layer`, `client_message` unless
+  the denial is generic) and `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` (`module`, absent when the instance's denials are generic). The full list is in
   [`docs/TROUBLESHOOTING.md`](../docs/TROUBLESHOOTING.md#guardian-execution).
 - `delta_nonce` is set once the execution committed to its candidate delta.
 - `newly_accepted` separates the request that started the execution from a repeat that found
@@ -706,6 +716,8 @@ component schemas.
 | client | `POST /delta/proposal/execution` | signed headers | Ask Guardian to prove and submit a threshold-met proposal (202 new, 200 already running). Body `{account_id, proposal_id}`, both required and signed as `guardian.ExecuteDeltaProposal` (see [Miden Request Signing](#miden-request-signing)) |
 | client | `GET /delta/proposal/execution` | signed headers | The latest execution of a proposal (404 `GUARDIAN_EXECUTION_NOT_FOUND` when the proposal exists but was never executed; 404 `proposal_not_found` when the proposal is gone and no attempt is left, which is how a proposal whose records retention deleted reads: see `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS`) |
 | client | `GET /delta/execution/current` | signed headers | The account's in-flight execution; `{"execution": null}` when none |
+| client | `GET /policies` | signed headers | The policy modules that apply to `?account_id`, as far as each instance's catalog entry discloses them, in evaluation order; empty without modules |
+| client | `POST /delta/proposal/check` | signed headers | Dry run of `POST /delta/proposal` (same body): its checks, the account's gate modules with `dry_run = true` and the account-wide request byte limit; stores nothing. `200 {allowed: true, complete}`, or the error creation would return. Rate limited per account and signer (`GUARDIAN_MODULE_CHECK_RATE_PER_MIN`) |
 | client | `POST /session` | wallet-signed grant in the body | Register a delegated signer (see [Session Authentication](#session-authentication)) |
 | client | `POST /session/logout` | session-key-signed headers | Revoke this session |
 | client | `POST /session/revoke-all` | wallet-signed headers | Revoke every session of a signer |
@@ -724,6 +736,15 @@ component schemas.
 | dashboard | `GET /dashboard/stats` | session + `dashboard:read` | Account counts, Miden asset totals, and coverage in one request |
 | dashboard | `POST /dashboard/stats/refresh` | session + `stats:refresh` | Request an out-of-cycle refresh of the stats aggregate (202) |
 | dashboard | `GET /dashboard/session` | session | Session introspection |
+| dashboard | `GET /dashboard/modules` | session + `dashboard:read` | Policy module catalog with runtime state (enabled, params, drift, circuit, undeclared stored instances) |
+| dashboard | `GET /dashboard/modules/{module_id}/params/history` | session + `dashboard:read` | Params history of an instance, newest first (`before`, `limit`) |
+| dashboard | `PUT /dashboard/modules/{module_id}/params` | session + `policies:write_global` | Replace an instance's global params (validated by the module; `reason` required) |
+| dashboard | `POST /dashboard/modules/{module_id}/enable` | session + `policies:write_global` | Enable an instance after its startup checks |
+| dashboard | `POST /dashboard/modules/{module_id}/disable` | session + `policies:write_global` or `modules:disable` | Disable an instance the catalog marks `operator_can_disable` |
+| dashboard | `GET /dashboard/accounts/{account_id}/modules` | session + `dashboard:read` | The modules that apply to an account, its layers and assignments |
+| dashboard | `PUT /dashboard/accounts/{account_id}/modules/{module_id}/params` | session + `policies:write` | Set an account's layer on an `all` instance |
+| dashboard | `DELETE /dashboard/accounts/{account_id}/modules/{module_id}/params` | session + `policies:write` | Remove that layer |
+| dashboard | `PUT /dashboard/accounts/{account_id}/modules` | session + `policies:write` | Replace an account's `default` and `assigned` module entries |
 | dashboard | `GET /dashboard/deltas` | session + `dashboard:read` | Cross-account delta feed |
 | dashboard | `GET /dashboard/proposals` | session + `dashboard:read` | Cross-account proposal feed |
 | evm | `GET /evm/auth/challenge` | public | EIP-712 session challenge |
@@ -941,6 +962,24 @@ Stable error codes include:
 - `invalid_timestamp` (`/dashboard/stats?updated_since=` is not RFC3339, issue #371)
 - `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`
 - `GUARDIAN_ACCOUNT_PAUSED`
+- Policy modules (servers started with a module catalog): `GUARDIAN_MODULE_DENIED` (HTTP 403 /
+  gRPC `PermissionDenied`; `meta.module`, `meta.reason_code`, `meta.layer` = `global` or
+  `account`, and `meta.client_message` when the module set one; an instance with
+  `client_reason = "generic"` sends only `meta.reason_code = "policy_denied"`) and
+  `GUARDIAN_MODULE_UNAVAILABLE` (HTTP 503 / gRPC `Unavailable`, `meta.module` unless the
+  instance's denials are generic, retryable: a
+  fail-closed module could not decide). Both are returned by `POST /configure` (hook
+  `before_account_registered`), `POST /delta/proposal` and `POST /delta/proposal/check`
+  (`before_proposal_created`, and in the check also `before_transaction_approved`) and
+  `POST /delta` (`before_transaction_approved`), and by their gRPC methods; a Guardian
+  execution reports them as `GUARDIAN_EXECUTION_MODULE_DENIED` and
+  `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` (see [ProposalExecution](#proposalexecution)). The
+  operator module routes add `GUARDIAN_MODULE_NOT_FOUND` (404, `meta.module`) and
+  `GUARDIAN_MODULE_NOT_DISABLEABLE` (409 / gRPC `FailedPrecondition`, `meta.module`),
+  `GUARDIAN_MODULE_PARAMS_STALE` (409, a params write whose optional `expected_version` no
+  longer matches the params version, or an account write without one that another write to
+  the same account overtook), and
+  return `GUARDIAN_MODULE_UNAVAILABLE` when an instance being enabled fails its startup checks.
 - `data_unavailable`
 
 HTTP endpoints that return structured error envelopes include `code` when available.
@@ -975,6 +1014,8 @@ The gRPC surface mirrors the Miden state/delta methods. EVM account registration
 - `CreateSession(CreateSessionRequest) -> CreateSessionResponse`
 - `RevokeSession(RevokeSessionRequest) -> RevokeSessionResponse`
 - `RevokeAllSessions(RevokeAllSessionsRequest) -> RevokeAllSessionsResponse`
+- `GetPolicies(GetPoliciesRequest) -> GetPoliciesResponse` (mirrors `GET /policies`)
+- `CheckDeltaProposal(CheckDeltaProposalRequest) -> CheckDeltaProposalResponse` (mirrors `POST /delta/proposal/check`)
 
 Every gRPC method is rate limited from the same store as the HTTP surface;
 see [Rate Limiting](#rate-limiting) for the keying rules and the rejection
@@ -1072,6 +1113,16 @@ behavior.
 | `guardian_block_watch_walk_requests_total` | counter | `reason` (`cursor_init`/`cursor_jump`/`genesis_changed`/`genesis_unknown`/`node_behind_too_long`/`cursor_ahead_of_tip`/`observations_lost`/`undecodable_updates`/`skipped_malformed_block`/`skipped_unavailable_block`/`observation_dropped`) |
 | `guardian_block_watch_transport` | gauge | `transport` (`stream`/`poll`; 1 for the active one) |
 | `guardian_block_watch_block_processing_seconds` | histogram | — |
+| `guardian_module_evaluate_duration_seconds` | histogram | `module` (catalog instance id), `outcome` (`allow`/`deny`/`error`/`skipped`) |
+| `guardian_module_fail_open_total` | counter | `module` |
+| `guardian_module_request_refused_total` | counter | `module`, `reason` (`unavailable`: the request could not be built; `too_large`: over `GUARDIAN_MODULE_REQUEST_MAX_BYTES`; `rejected`: the module rejected it as one it cannot judge); refused whatever `on_error` says |
+| `guardian_module_up` | gauge | `module` (1 when the last health probe succeeded) |
+| `guardian_module_circuit_open` | gauge | `module` (1 while the replica's breaker is open) |
+| `guardian_module_enabled` | gauge | `module` |
+| `guardian_module_config_drift` | gauge | `module` (1 when the catalog's `enabled` or params differ from the stored values) |
+| `guardian_module_catalog_info` | gauge | `catalog_hash` (constant 1) |
+| `guardian_module_over_budget_accounts` | gauge | none |
+| `guardian_module_orphaned_assignments` | gauge | none |
 | `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`/`divergence_deferred`/`diverged`/`orphaned`/`abandoned`/`stale_base`/`retained`/`reconciled`/`reconcile_deferred`/`reconcile_expired`) |
 | `guardian_canonicalization_retries_total` | counter | — |
 | `guardian_canonicalization_commitment_mismatches_total` | counter | — |

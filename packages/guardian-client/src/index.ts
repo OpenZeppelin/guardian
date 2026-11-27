@@ -1,5 +1,5 @@
 export { GuardianHttpClient, GuardianHttpError } from './http.js';
-export type { GuardianErrorMeta, LocalExecutionReason } from './http.js';
+export type { GuardianErrorMeta, LocalExecutionReason, ModuleRefusal } from './http.js';
 export {
   GUARDIAN_ERROR_CODES,
   isGuardianErrorCode,
@@ -66,6 +66,8 @@ export type {
   AuthConfig,
   MidenCosignerConfig,
   CanonicalNonce,
+  CheckProposalResult,
+  Policy,
   DeltaStatus,
   DeltaObject,
   ExecutionDelta,

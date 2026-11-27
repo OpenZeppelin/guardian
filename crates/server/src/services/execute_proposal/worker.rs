@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use guardian_shared::SignatureScheme;
+use guardian_shared::execution::ModuleDenial;
 
 use super::executor::{
     ExecutedTransactionInfo, ExecutionAttempt, GuardianAck, ProvenTransactionInfo,
@@ -14,9 +15,10 @@ use super::executor::{
 };
 use crate::coordination::{LeaderElector, Lease, Renewal, release_quietly};
 use crate::delta_object::{DeltaObject, DeltaStatus};
-use crate::error::GuardianError;
+use crate::error::{GENERIC_REASON_CODE, GuardianError};
+use crate::modules::request::StateRef;
 use crate::services::account_status::ensure_account_active_metadata;
-use crate::services::ack_delta_internal::{AcknowledgedDelta, acknowledge_delta};
+use crate::services::ack_delta_internal::{AcknowledgedDelta, Submitter, acknowledge_delta};
 use crate::state::AppState;
 use crate::storage::execution::ExpirationBound;
 use crate::storage::{
@@ -31,6 +33,12 @@ pub(super) struct ExecutionJob {
     pub nonce: u64,
     pub base_commitment: String,
     pub scheme: SignatureScheme,
+    /// The cosigner whose authenticated request started this attempt: the submitter the policy
+    /// modules evaluate the acknowledgement for. A repeated request joins the running attempt,
+    /// which keeps it.
+    pub requester: String,
+    /// Whether that request was signed by a delegated session key.
+    pub requester_session: bool,
     pub fence: LeaseFence,
     pub lease: Lease,
     pub elector: Arc<dyn LeaderElector>,
@@ -440,16 +448,69 @@ async fn acknowledge(
         status: DeltaStatus::candidate(Utc::now().to_rfc3339()),
         metadata: None,
     };
+    let registered = state
+        .metadata
+        .get(&job.account_id)
+        .await
+        .map_err(|e| {
+            ExecutionFailure::with_logged_cause(
+                ExecutionFailureCode::AccountInadmissible,
+                "Guardian could not read the account's registration",
+                &e,
+            )
+        })?
+        .ok_or_else(|| {
+            ExecutionFailure::new(
+                ExecutionFailureCode::AccountInadmissible,
+                "the account is no longer registered with Guardian",
+            )
+        })?;
     acknowledge_delta(
         state,
         &job.scheme,
-        &current_state.commitment,
-        &current_state.state_json,
+        StateRef {
+            commitment: &current_state.commitment,
+            json: &current_state.state_json,
+        },
         &delta,
+        Submitter {
+            commitment: &job.requester,
+            session: job.requester_session,
+            account: &registered,
+        },
     )
     .await
     .map_err(|error| {
         let failure = match error {
+            GuardianError::ModuleDenied {
+                ref module,
+                ref reason_code,
+                ref layer,
+                ref client_message,
+            } => ExecutionFailure::new(
+                ExecutionFailureCode::ModuleDenied(ModuleDenial {
+                    module: Some(module.clone()),
+                    reason_code: reason_code.clone(),
+                    layer: Some(layer.clone()),
+                    client_message: client_message.clone(),
+                }),
+                error.user_message(),
+            ),
+            GuardianError::ModuleDeniedGeneric => ExecutionFailure::new(
+                ExecutionFailureCode::ModuleDenied(ModuleDenial {
+                    module: None,
+                    reason_code: GENERIC_REASON_CODE.to_string(),
+                    layer: None,
+                    client_message: None,
+                }),
+                error.user_message(),
+            ),
+            GuardianError::ModuleUnavailable { ref module } => ExecutionFailure::new(
+                ExecutionFailureCode::ModuleUnavailable {
+                    module: module.clone(),
+                },
+                error.user_message(),
+            ),
             GuardianError::SigningError(_)
             | GuardianError::StorageError(_)
             | GuardianError::ConfigurationError(_) => ExecutionFailure::with_logged_cause(
@@ -769,7 +830,7 @@ async fn submit(
 /// Resolves a send the node refused: its candidate is dropped, and its proposal with it unless
 /// the cause leaves the proposal executable (`ExecutionFailureCode::ends_proposal`).
 async fn resolve_refused_send(state: &AppState, job: &ExecutionJob, failure: ExecutionFailure) {
-    let code = failure.code;
+    let code = failure.code.clone();
     match state
         .storage
         .resolve_execution(state.metadata.as_ref(), resolution(job, failure))
@@ -801,7 +862,7 @@ async fn fail(
         total_ms = timings.total_ms(),
         "Guardian execution failed before submission"
     );
-    let code = failure.code;
+    let code = failure.code.clone();
     match state.storage.fail_execution(resolution(job, failure)).await {
         Ok(ResolveWrite::Resolved) => crate::metrics::execution::record_outcome(Some(&code)),
         Ok(ResolveWrite::AlreadyResolved) => {}

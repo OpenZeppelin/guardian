@@ -339,7 +339,12 @@ CClaim(h) ==
     /\ UNCHANGED <<floors, version, acc, hreq, hstart>>
 
 (* consume_auth_timestamp, before any state write, for every configuration *)
-(* (the claim above guarantees the metadata row its FK needs).             *)
+(* (the claim above guarantees the metadata row its FK needs). An existing *)
+(* account consumes before the vouch, the registration modules and the     *)
+(* default-module copy; a new one runs the vouch and the modules before    *)
+(* its claim and consumes before the copy and the state write. Neither the *)
+(* vouch nor the modules write, and the copy follows this step, so none is *)
+(* modelled.                                                               *)
 CCasFirst(h) ==
     /\ hpc[h] = "c_cas_first"
     /\ CasStep(h, "c_state")

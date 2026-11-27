@@ -25,11 +25,11 @@ use crate::api::grpc::GuardianService;
 use crate::api::grpc::guardian::FILE_DESCRIPTOR_SET;
 use crate::api::grpc::guardian::guardian_server::GuardianServer;
 use crate::api::http::{
-    abandon_candidate, configure, create_session, execute_delta_proposal, get_canonical_nonce,
-    get_current_execution, get_delta, get_delta_history, get_delta_proposal,
-    get_delta_proposal_execution, get_delta_proposals, get_delta_since, get_pubkey, get_state,
-    get_state_tail, lookup, push_delta, push_delta_proposal, revoke_all_sessions, revoke_session,
-    sign_delta_proposal, status, status_root,
+    abandon_candidate, check_delta_proposal, configure, create_session, execute_delta_proposal,
+    get_canonical_nonce, get_current_execution, get_delta, get_delta_history, get_delta_proposal,
+    get_delta_proposal_execution, get_delta_proposals, get_delta_since, get_policies, get_pubkey,
+    get_state, get_state_tail, lookup, push_delta, push_delta_proposal, revoke_all_sessions,
+    revoke_session, sign_delta_proposal, status, status_root,
 };
 use crate::builder::startup::StartupInfo;
 use crate::config::execution::RecordRetention;
@@ -59,6 +59,7 @@ pub struct ServerHandle {
         std::sync::Arc<crate::storage::postgres::recovery::RecoveryStore>,
         crate::metadata::MidenNetworkType,
     )>,
+    pub(crate) startup_recovery: StartupRecoveryMode,
     pub(crate) startup_info: StartupInfo,
     pub(crate) cors_layer: Option<CorsLayer>,
     pub(crate) rate_limit_config: Option<RateLimitConfig>,
@@ -90,6 +91,31 @@ impl std::str::FromStr for StartupRecoveryMode {
         }
     }
 }
+
+/// The environment variable [`ServerBuilder::from_env`](super::ServerBuilder::from_env) reads
+/// the [`StartupRecoveryMode`] from.
+pub const STARTUP_RECOVERY_ENV: &str = "GUARDIAN_STARTUP_ACCOUNT_RECOVERY";
+
+impl StartupRecoveryMode {
+    /// The mode `GUARDIAN_STARTUP_ACCOUNT_RECOVERY` sets; unset is [`StartupRecoveryMode::Off`].
+    pub fn from_env() -> Result<Self, String> {
+        match std::env::var(STARTUP_RECOVERY_ENV) {
+            Ok(value) => value
+                .parse()
+                .map_err(|error| format!("{STARTUP_RECOVERY_ENV} {error}")),
+            Err(std::env::VarError::NotPresent) => Ok(Self::Off),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err(format!("{STARTUP_RECOVERY_ENV} must be valid UTF-8"))
+            }
+        }
+    }
+}
+
+/// Why [`ServerHandle::start`] did not serve: account recovery may be running in another
+/// process, so serving now could race it.
+#[derive(Debug, thiserror::Error)]
+#[error("Cannot serve while account recovery may be active elsewhere: {0}")]
+pub struct RecoveryElsewhere(String);
 
 #[cfg(feature = "postgres")]
 #[derive(Debug, thiserror::Error)]
@@ -153,7 +179,41 @@ impl ServerHandle {
         }
     }
 
-    /// Run the server with the configured settings
+    /// What the stock `server` binary does once built: runs the startup account recovery the
+    /// builder was given ([`ServerBuilder::from_env`](super::ServerBuilder::from_env) reads
+    /// `GUARDIAN_STARTUP_ACCOUNT_RECOVERY`), then serves. Recovery that did not finish is
+    /// logged and the server serves without it; recovery that may be running elsewhere stops
+    /// the start.
+    pub async fn start(self) -> Result<(), RecoveryElsewhere> {
+        #[cfg(not(feature = "postgres"))]
+        if self.startup_recovery != StartupRecoveryMode::Off {
+            tracing::error!(
+                "Startup account recovery requires a Postgres build; serving without it"
+            );
+        }
+        #[cfg(feature = "postgres")]
+        match self
+            .recover_accounts_on_startup(self.startup_recovery)
+            .await
+        {
+            Ok(()) => {}
+            Err(error @ StartupRecoveryError::Incomplete(_)) => {
+                tracing::error!(%error, "Startup account recovery did not finish; serving without it");
+            }
+            Err(
+                error @ (StartupRecoveryError::LeaseBusy
+                | StartupRecoveryError::LeaseUnavailable(_)),
+            ) => {
+                tracing::error!(%error, "Cannot serve while account recovery may be active elsewhere");
+                return Err(RecoveryElsewhere(error.to_string()));
+            }
+        }
+        self.run().await;
+        Ok(())
+    }
+
+    /// Serves with the configured settings until shut down, without the startup account
+    /// recovery the builder was given: use [`Self::start`] to run it first.
     pub async fn run(self) {
         self.startup_info.log();
 
@@ -212,6 +272,12 @@ impl ServerHandle {
                 }
             }
         }
+
+        let _probe = self
+            .app_state
+            .modules
+            .clone()
+            .map(|modules| tokio_util::task::AbortOnDropHandle::new(modules.spawn_probe()));
 
         // Start background jobs based on canonicalization config
         if let Some(config) = &self.app_state.canonicalization {
@@ -549,6 +615,71 @@ pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Ro
         dashboard_routes.merge(pause_router)
     };
 
+    // Policy modules: reads under `dashboard:read`, per-account writes under `policies:write`,
+    // global params and enabling under `policies:write_global`, disabling under that or
+    // `modules:disable`.
+    let dashboard_routes = {
+        use crate::api::dashboard_modules as modules;
+        use axum::routing::{delete, put};
+        let read_authz = AuthzState::new(state.clone(), &[Permission::DashboardRead]);
+        let write_authz = AuthzState::new(state.clone(), &[Permission::PoliciesWrite]);
+        let global_authz = AuthzState::new(state.clone(), &[Permission::PoliciesWriteGlobal]);
+        let read = Router::new()
+            .route("/modules", get(modules::list_modules))
+            .route(
+                "/modules/{module_id}/params/history",
+                get(modules::params_history),
+            )
+            .route(
+                "/accounts/{account_id}/modules",
+                get(modules::account_modules),
+            )
+            .route_layer(from_fn_with_state(read_authz, enforce_authz))
+            .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+        let write = Router::new()
+            .route(
+                "/accounts/{account_id}/modules",
+                put(modules::set_assignment),
+            )
+            .route(
+                "/accounts/{account_id}/modules/{module_id}/params",
+                put(modules::set_account_layer).merge(delete(modules::remove_account_layer)),
+            )
+            .route_layer(from_fn_with_state(write_authz, enforce_authz))
+            .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+        let disable_authz = AuthzState::any_of(
+            state.clone(),
+            &[Permission::PoliciesWriteGlobal, Permission::ModulesDisable],
+        );
+        let enable = Router::new()
+            .route("/modules/{module_id}/enable", post(modules::enable_module))
+            .route_layer(from_fn_with_state(
+                AuthzState::new(state.clone(), &[Permission::PoliciesWriteGlobal]),
+                enforce_authz,
+            ))
+            .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+        let disable = Router::new()
+            .route(
+                "/modules/{module_id}/disable",
+                post(modules::disable_module),
+            )
+            .route_layer(from_fn_with_state(disable_authz, enforce_authz))
+            .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+        let global = Router::new()
+            .route(
+                "/modules/{module_id}/params",
+                put(modules::set_global_params),
+            )
+            .route_layer(from_fn_with_state(global_authz, enforce_authz))
+            .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+        dashboard_routes
+            .merge(read)
+            .merge(write)
+            .merge(global)
+            .merge(enable)
+            .merge(disable)
+    };
+
     // Issue #371: operator-triggered refresh of the /dashboard/stats
     // aggregate, gated by its own `stats:refresh` permission.
     let dashboard_routes = {
@@ -591,6 +722,8 @@ pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Ro
         .route("/delta/proposal", post(push_delta_proposal))
         .route("/delta/proposal", get(get_delta_proposals))
         .route("/delta/proposal/single", get(get_delta_proposal))
+        .route("/delta/proposal/check", post(check_delta_proposal))
+        .route("/policies", get(get_policies))
         .route("/delta/proposal", put(sign_delta_proposal))
         .route("/delta/candidate/abandon", post(abandon_candidate))
         .route("/delta/proposal/execution", post(execute_delta_proposal))

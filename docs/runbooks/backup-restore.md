@@ -36,6 +36,24 @@ What it does **not** back up:
   encryption is enabled, a database backup without the key is ciphertext:
   keep an out-of-band copy of the key secret per
   [`secrets.md`](./secrets.md).
+- **The policy module catalog and module secrets.** The catalog file
+  (`GUARDIAN_MODULES_CONFIG`) is deploy configuration, not database content:
+  keep it in the deploy repository, where the catalog hash recorded with each
+  signed delta finds the exact version. Module tokens and client keys live in
+  Secrets Manager under the names the catalog gives them and are not recreated
+  by Terraform.
+
+Policy module state is in the database, so the backups above cover it: which
+instances are enabled, their global params, each account's layers and
+assignments, and the params history (`module_instances`,
+`module_account_params`, `module_params_history`, `module_state_version`,
+`module_account_version`).
+A filesystem build keeps the same state in `module_state.json` under
+`GUARDIAN_MODULES_STATE`; back that directory up with the metadata directory.
+When `GUARDIAN_MODULES_STATE` is unset, the directory is `modules/` below
+`GUARDIAN_METADATA_PATH` if that is set, and otherwise next to the catalog: a
+catalog at `/etc/guardian/modules.toml` keeps it in
+`/etc/guardian/modules.tables/`.
 
 ## Verify backups (do this now, not during an incident)
 
@@ -308,6 +326,22 @@ failing verification. A device holding the account re-onboards via
 `/configure`, which re-registers it with the state that device currently holds;
 other cosigner devices then sync from the guardian. Accounts with no
 post-restore-point activity are unaffected.
+
+Policy module state rewinds with the rest. Operator writes made after the
+restore point are gone: a disable or enable, a params change, an account's
+layer or assignment. The restored database no longer holds them, and neither
+does its audit table: read the lost window from `<stack>-postgres-old`, which
+step 6 keeps until cleanup (or from its final snapshot), in the
+`module_params_history` and `admin_actions` rows after the restore point.
+Compare them with `GET /dashboard/modules` and the params history of the
+restored stack, and repeat the writes that should stand, with a reason that
+references the restore. Do this before deleting the old instance. Without a
+pre-restore instance (the original was already gone, or the whole stack was
+rebuilt), nothing in the stack records the lost writes: rebuild them from the
+operators' own change records. An account that re-registers after the restore is a
+first registration again, so it receives the current `default` modules, not
+the assignment it had. Start the restored server with the same catalog file
+as before; a different one changes which instances are declared.
 
 ## Logical backups (optional)
 

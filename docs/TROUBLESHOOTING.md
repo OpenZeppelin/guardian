@@ -132,7 +132,7 @@ Most startup failures are environment misconfiguration. Check in order:
 
 1. **`GUARDIAN_NETWORK_TYPE` unset, non-Unicode, or unrecognized.** The server exits
    before binding any port with
-   `Failed to resolve network type: GUARDIAN_NETWORK_TYPE is not set; accepted values: ...`
+   `Failed to configure server: Failed to resolve network type: GUARDIAN_NETWORK_TYPE is not set; accepted values: ...`
    (or `contains non-Unicode data` / `has unrecognized value "..."` for
    malformed values and typos like `tesnet`). There is no fallback network.
    Replace the variable with `MidenLocal`, `MidenDevnet`, `MidenTestnet`,
@@ -317,7 +317,11 @@ The two 401 codes mean different things (issue #367 split them):
   the condition persisted through the retry budget; look for a second
   process (background poller, second tab, another host) signing with
   the same key. Replay state is scoped per `(account, signer)`, so
-  other cosigners of a multisig never cause this for you.
+  other cosigners of a multisig never cause this for you. A
+  `/configure` of a registered account uses its signed request up before
+  the chain check and the policy modules run, so after a module refusal
+  or `rpc_unavailable` resending the same signed request gets
+  `authentication_replay`: sign it again.
   Session reads are not ordered: a session read gets
   `authentication_replay` only when the exact same signed request is sent
   twice, or a copy arrives after the read records covering its timestamp
@@ -882,6 +886,69 @@ once come back synchronously and create nothing.
   on, a lone transaction is sent one `GUARDIAN_EXECUTION_BATCH_WINDOW_MS` later than without it,
   which shows in the `send` phase of `guardian_execution_phase_duration_seconds`.
 
+### A policy module refuses or blocks requests
+
+Only on servers started with a module catalog (`GUARDIAN_MODULES_CONFIG`).
+Clients see `403 GUARDIAN_MODULE_DENIED` (a module decided to refuse) or
+`503 GUARDIAN_MODULE_UNAVAILABLE` (a fail-closed module could not decide) on
+proposal creation, delta push, account registration and the dry-run check; a
+Guardian execution ends `failed` with `GUARDIAN_EXECUTION_MODULE_DENIED` or
+`GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` and keeps its proposal.
+
+1. **Find the decision.** Every denial is logged at `info` as
+   `Policy module denied the request` with `request_id`, `module`,
+   `account_id`, `hook`, `submitter`, `reason_code`, `layer` (`global` or
+   `account`), the module's `message` (never sent to clients),
+   `catalog_hash`, `params_version`, `account_params_version` and
+   `client_reason`. A denial with
+   `meta.reason_code = "policy_denied"` and no `module` comes from an instance
+   with `client_reason = "generic"`; only this log line names it. The
+   `request_id` is also in the module's request, so the module's own logs can
+   be joined on it. A request over `GUARDIAN_MODULE_REQUEST_MAX_BYTES` never
+   reaches the module and has no such line: it is refused as
+   `request_too_large` (or `policy_denied` with no `module` for a generic
+   instance) and logged at `warn` as `Policy module request could not be
+   judged; refusing whatever on_error says`, with `module` and `account_id`.
+2. **A failure, not a decision.** `Policy module failed; refusing` (or
+   `continuing (fail-open)` for `on_error = "allow"`) is logged at `warn` with
+   `module`, `account_id` and the failure: the module's error, `timed out`,
+   an unknown or unset effect, or an open circuit. A deny whose reason code
+   breaks the rule is still a deny: it reaches clients as `policy_denied` and
+   logs `Policy module denied with a reason code that breaks the reason code
+   rule`. A request the
+   Guardian could not build, one over `GUARDIAN_MODULE_REQUEST_MAX_BYTES`, or
+   one the module rejected as one it cannot judge (`INVALID_ARGUMENT`), is
+   logged as `Policy module request could not be judged; refusing whatever
+   on_error says`, counted in `guardian_module_request_refused_total{module,
+   reason}` (`unavailable`, `too_large` or `rejected`), and refused even by a
+   fail-open instance. A fail-open
+   failure is also recorded on the signed delta (`modules.failed_open` on
+   `GET /dashboard/accounts/{account_id}/deltas/{nonce}`)
+   and counted in `guardian_module_fail_open_total`.
+3. **Module health.** `guardian_module_up` is 0 after a failed `Describe`
+   health probe (`Policy module health probe failed` at `warn`), and
+   `guardian_module_circuit_open` is 1 while this replica skips the module
+   after `GUARDIAN_MODULE_BREAKER_FAILURES` consecutive failures (failed
+   calls and unanswered probes both count), once a health probe has failed
+   too: failed calls alone, which can depend on the request, never open it. The
+   next successful probe lets a call through again. `Policy module cannot be used by this Guardian; its
+   circuit is open until a probe passes` at `warn` means the module answered `Describe` with a protocol version,
+   capability or hook set the Guardian cannot use, usually after the module
+   was redeployed: its circuit opens at once and stays open until the module
+   is fixed or the instance is reconfigured. A module that is up but slow
+   shows in `guardian_module_evaluate_duration_seconds` and as `timed out`
+   failures: compare with the instance's `timeout_ms` and
+   `GUARDIAN_MODULE_EVALUATION_BUDGET_MS`.
+4. **Params.** `GET /dashboard/modules` shows each instance's params in force
+   and `params_drift`, and `GET /dashboard/accounts/{account_id}/modules` the
+   account's layer or assignment; the history route shows
+   who changed them and why. A change through the operator API applies on the
+   next request.
+
+To let requests through while a module is broken, disable the instance (if its
+catalog entry has `operator_can_disable = true`) or switch it to fail open;
+see the [policy modules runbook](./runbooks/policy-modules.md).
+
 ### Rate limits triggered
 
 Over HTTP: `429` with `code: rate_limit_exceeded` and a `Retry-After`
@@ -893,8 +960,17 @@ sustained allowance for HTTP calls from the same client, and vice versa.
 The burst limit is keyed per IP and endpoint, and HTTP paths never
 collide with gRPC method names, so burst buckets are not shared.
 The rejection counter `guardian_rate_limit_rejections_total` carries a
-`transport` label to tell the two surfaces apart. Rate-limit rejections
-happen before any handler runs, so retrying after the hint is always safe.
+`transport` label to tell the two surfaces apart. These rejections happen
+before any handler runs, so retrying after the hint is always safe.
+
+Two policy module limits are per account and signer instead, with their own
+`scope` in the envelope: `proposal_check` for dry-run checks, and
+`proposal_denials` once the policy modules have denied
+`GUARDIAN_MODULE_CHECK_RATE_PER_MIN` of that signer's proposals within a
+minute (creations still in flight hold a place too), after which proposal
+creation is refused until the window frees up. Fix the proposal the modules
+refuse before retrying after the hint; resending it unchanged is refused
+again.
 
 ALB gRPC health checks (`/guardian.Guardian/GetPubkey`) are metered like
 any other traffic, keyed per ALB-node address. Their volume is far below
@@ -1034,6 +1110,8 @@ Causes of a `failed` execution, in `error.code`:
 | `GUARDIAN_EXECUTION_BINDING_MISMATCH`, `GUARDIAN_EXECUTION_STATE_MISMATCH`, `GUARDIAN_EXECUTION_REQUEST_CODEC`, `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH`, `GUARDIAN_EXECUTION_INSUFFICIENT_FEE`, `GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON`, `GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE` | none | Not until the cause is fixed. |
 | `GUARDIAN_EXECUTION_INSUFFICIENT_SIGNATURES` | none | Yes, once more cosigners have signed; the proposal is untouched. |
 | `GUARDIAN_EXECUTION_SUBMISSION_NOT_PROCESSED` | none | Yes; the node refused the send before processing it (a rate limit that outlasted the client's retries, an authentication or permission refusal, an unimplemented call, or inputs sealed against an encryption key the validator no longer holds), so the transaction cannot land and the proposal is kept. Check the node endpoint and its limits if it repeats. |
+| `GUARDIAN_EXECUTION_MODULE_DENIED` | `reason_code`, plus `module`, `layer` and `client_message` unless the instance reports generic denials (`reason_code: policy_denied` only) | Not while the policy holds; the proposal is untouched. Only on servers built with policy modules. |
+| `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` | `module`, unless the instance reports generic denials | Yes, once the fail-closed module answers again; the proposal is untouched. |
 | `GUARDIAN_EXECUTION_SUBMISSION_REJECTED`, `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED`, `GUARDIAN_EXECUTION_EXPIRED` | none | No; the transaction was sent, and the proposal is gone (`proposal_exists: false`). |
 
 `error.message` is a fixed, user-safe sentence for its cause, plus chain facts such as block
@@ -1041,6 +1119,20 @@ numbers and transaction ids. The underlying node, prover, storage or decoder err
 stored or served; find it in the server log (`WARN`, same `code`) for the account and proposal.
 A transaction whose execution stopped because the node could not serve a note script it needed
 fails as `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`, not as a binding mismatch.
+
+### Policy modules
+
+Only on servers started with a module catalog. See
+[the symptom section](#a-policy-module-refuses-or-blocks-requests) and the
+[policy modules runbook](./runbooks/policy-modules.md).
+
+| Code | HTTP | `meta` | First check |
+|---|---|---|---|
+| `GUARDIAN_MODULE_DENIED` | 403 (gRPC `PermissionDenied`) | `module`, `reason_code`, `layer` (`global` or `account`), and `client_message` when the module set one; only `reason_code: "policy_denied"` for an instance with `client_reason = "generic"` | A policy refused the request: proposal creation, delta push, account registration or the dry-run check. Not retryable while the policy holds. The server log line `Policy module denied the request` has the module's own `message`. |
+| `GUARDIAN_MODULE_UNAVAILABLE` | 503 (gRPC `Unavailable`) | `module`, unless the instance has `client_reason = "generic"` (then the `Policy module failed; refusing` log line names it) | A fail-closed module timed out, errored, sent an invalid decision or was skipped by an open circuit, or the Guardian could not build the module's request (an account view or the projection could not be extracted, a proposal or state read failed), whatever the instance's `on_error`. Retryable. A request over the size cap is a `GUARDIAN_MODULE_DENIED` with `reason_code = request_too_large` instead. On the operator API, enabling an instance that fails its startup checks returns it too. |
+| `GUARDIAN_MODULE_NOT_FOUND` | 404 | `module` | Operator API: no catalog instance with this id. Instances come only from the catalog file. |
+| `GUARDIAN_MODULE_PARAMS_STALE` | 409 (gRPC `Aborted`) | none | Operator API: a params write sent `expected_version`, and the params changed since that version was read (another operator, or a module migrating its params); or an account layer or assignment write, with or without `expected_version`, raced another write to the same account. Nothing was written. Read the params again and reapply the change. |
+| `GUARDIAN_MODULE_NOT_DISABLEABLE` | 409 (gRPC `FailedPrecondition`) | `module` | Operator API: the instance's catalog entry has `operator_can_disable = false`. Changing that is a deploy (edit the catalog and restart). |
 
 ### Validation
 

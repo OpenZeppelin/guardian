@@ -1,10 +1,13 @@
 crates/server/src/services/release_on_switch.rs release_if_guardian_switched 58154d671cc4879b
 crates/server/src/services/release_on_switch.rs release_switched_account 0a8d56a29871f92b
 crates/server/src/services/account_status.rs ensure_account_active_metadata b7303e5276ca4f67
-crates/server/src/services/push_delta.rs push_delta fa1ae5be30b44406
-crates/server/src/services/push_delta.rs run 17815b0a4b4255f3
-crates/server/src/services/push_delta_proposal.rs push_delta_proposal be040d9f4d82f318
-crates/server/src/services/configure_account.rs configure_account 95868061fe804abb
+crates/server/src/services/push_delta.rs push_delta 2235a925f1f0ec48
+crates/server/src/services/push_delta.rs run 2e2b1383e17e1567
+crates/server/src/services/push_delta_proposal.rs push_delta_proposal f3273779e9d7758f
+crates/server/src/services/push_delta_proposal.rs propose 55c1f31b48fd6bf1
+crates/server/src/services/configure_account.rs configure_account 9828f2faf6446376
+crates/server/src/services/configure_account.rs vouch_for 7cd388a4572131f7
+crates/server/src/services/configure_account.rs recheck_chain_after_modules aec4c792307a8f56
 crates/server/src/services/configure_account.rs stored_state_landed f1082399d583be3f
 crates/server/src/services/configure_account.rs stored_head 641128d1cfa79677
 crates/server/src/services/pause_account.rs pause 7a8b3686c25b35b2

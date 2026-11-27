@@ -169,6 +169,30 @@ A refusal is a `ClientError` whose `guardian_code()` is the wire code (for examp
 `wait_for_guardian_execution` with backoff, retries and a deadline; see
 [`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md#guardian-execution).
 
+### Policy Modules
+
+`get_policies` lists the rules the Guardian discloses for an account, and
+`check_delta_proposal` runs the policy modules on a proposal without storing
+it. A request a module refuses fails with a `ClientError` whose
+`module_refusal()` returns `ModuleRefusal::Denied { module, reason_code, layer,
+client_message }` (final; a generic denial carries only `policy_denied`) or
+`ModuleRefusal::Unavailable { module }` (retryable; `module` is `None` for an
+instance with generic denials). A Guardian execution a
+module refuses ends failed with `ExecutionFailureCode::ModuleDenied(ModuleDenial)`
+or `ExecutionFailureCode::ModuleUnavailable { module }`, and its proposal is
+kept:
+
+```rust
+match client.push_delta_proposal(&account_id, nonce, payload).await {
+    Err(error) => match error.module_refusal() {
+        Some(ModuleRefusal::Denied { reason_code, .. }) => { /* final */ }
+        Some(ModuleRefusal::Unavailable { .. }) => { /* retry later */ }
+        None => { /* any other error */ }
+    },
+    Ok(response) => { /* stored */ }
+}
+```
+
 ### Rate Limits and Retries
 
 The server rate-limits both its gRPC and HTTP surfaces. The sustained

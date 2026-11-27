@@ -66,7 +66,7 @@ pub(crate) type MidenSdkClient = Client<FilesystemKeyStore>;
 
 // Main client
 pub use builder::MultisigClientBuilder;
-pub use client::{AbandonRequest, AbandonRequestState, AbandonStatus};
+pub use client::{AbandonRequest, AbandonRequestState, AbandonStatus, Policy};
 pub use client::{
     BlockRange, ConsumableNote, ExecutionWaitOptions, HistoryAssetKind, HistoryDecodeSection,
     HistoryDecodeWarning, HistoryEntry, HistoryEntryStatus, HistoryNote, HistoryNoteAsset,
@@ -112,11 +112,11 @@ pub use prover::{ProverConfig, ProverRetryPolicy};
 pub use rpc::{RpcConfig, RpcRetryPolicy};
 pub use transaction::{
     GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA, GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA,
-    MAX_APPROVAL_EXPIRATION_DELTA, ProposalBuilder, ProposalExecutionMode, ProposalOptions,
-    TransactionRequestBuilderExt, build_p2id_transaction_request, deserialize_transaction_request,
-    generate_salt, multisig_auth_args, proposal_auth_args, proposer_auth_args,
-    summary_approval_expiration_block_num, summary_expiration_delta, summary_salt,
-    synced_fee_faucet_id,
+    MAX_APPROVAL_EXPIRATION_DELTA, ProposalBuilder, ProposalCheck, ProposalExecutionMode,
+    ProposalOptions, TransactionRequestBuilderExt, build_p2id_transaction_request,
+    deserialize_transaction_request, generate_salt, multisig_auth_args, proposal_auth_args,
+    proposer_auth_args, summary_approval_expiration_block_num, summary_expiration_delta,
+    summary_salt, synced_fee_faucet_id,
 };
 
 // Export/Import
@@ -132,7 +132,7 @@ pub use guardian_client::{MAX_SESSION_TTL, MIN_SESSION_TTL, SessionInfo, StartSe
 // Guardian execution
 pub use guardian_client::execution::{
     ExecutionFailure, ExecutionFailureCode, ExecutionState, ExpirationBound,
-    ForeignAccountUnavailableReason, ProposalExecution, RequestInvalidReason,
+    ForeignAccountUnavailableReason, ModuleDenial, ProposalExecution, RequestInvalidReason,
 };
 
 // Re-exports for convenience

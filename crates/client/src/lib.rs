@@ -56,8 +56,8 @@ pub use client::{
     GuardianClient, MAX_SESSION_TTL, MIN_SESSION_TTL, SessionInfo, SessionSlot, StartSessionOptions,
 };
 pub use error::{
-    ClientError, ClientResult, SESSION_EXPIRED_CODE, SESSION_REVOKED_CODE,
-    WALLET_SIGNATURE_REQUIRED_CODE,
+    ClientError, ClientResult, MODULE_DENIED_CODE, MODULE_UNAVAILABLE_CODE, ModuleRefusal,
+    SESSION_EXPIRED_CODE, SESSION_REVOKED_CODE, WALLET_SIGNATURE_REQUIRED_CODE,
 };
 pub use execution::{ExecutionFailure, ExecutionState, ProposalExecution};
 pub use keystore::{EcdsaKeyStore, FalconKeyStore, Signer, verify_commitment_signature};

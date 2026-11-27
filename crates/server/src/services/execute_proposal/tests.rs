@@ -1269,3 +1269,183 @@ async fn an_unknown_submission_outcome_stays_submitted_and_holds_the_account() {
             .is_some()
     );
 }
+
+/// A fixture whose account is evaluated by one `before_transaction_approved` instance.
+async fn gated(
+    module: Arc<crate::modules::testing::StubModule>,
+    on_error: crate::modules::catalog::OnError,
+    client_reason: crate::modules::catalog::ClientReason,
+) -> Fixture {
+    use crate::modules::catalog::HookName;
+    let mut caps = crate::modules::testing::instance(
+        "caps",
+        &[HookName::BeforeTransactionApproved],
+        on_error,
+        module,
+    );
+    caps.config.client_reason = client_reason;
+    gated_by(caps, guardian_module_sdk::MidenTransaction::default()).await
+}
+
+/// A fixture whose account is evaluated by `module`, the executed transaction's decoded effect
+/// being `projection`.
+async fn gated_by(
+    module: crate::modules::registry::Instance,
+    projection: guardian_module_sdk::MidenTransaction,
+) -> Fixture {
+    let mut f = Fixture::new(Script::default()).await;
+    let _ = f
+        .chain
+        .clone()
+        .with_module_views(guardian_module_sdk::AccountView::default(), projection);
+    f.state.modules = Some(crate::modules::testing::pipeline(vec![module]));
+    f
+}
+
+async fn failed_with(f: &Fixture) -> ExecutionFailureCode {
+    f.request().await.unwrap();
+    let (failed, _) = f.settle(|state| state == ExecutionState::Failed).await;
+    assert!(
+        failed.proposal_exists,
+        "a module refusal keeps the proposal"
+    );
+    assert!(
+        f.state.storage.pull_delta(ACCOUNT, 1).await.is_err(),
+        "nothing is acknowledged or admitted"
+    );
+    assert_eq!(f.calls.lock().unwrap().proved, 0, "nothing is proved");
+    let error = failed.error.expect("a failed execution carries its cause");
+    ExecutionFailureCode::from_parts(&error.code, error.meta.as_ref())
+        .expect("the wire failure decodes to a known code")
+}
+
+#[tokio::test]
+async fn a_module_denial_ends_the_execution_before_the_ack_with_the_denial() {
+    use guardian_shared::execution::ModuleDenial;
+    let module = crate::modules::testing::StubModule::denying("amount_cap_exceeded");
+    let f = gated(
+        module.clone(),
+        crate::modules::catalog::OnError::Deny,
+        crate::modules::catalog::ClientReason::Full,
+    )
+    .await;
+    assert_eq!(
+        failed_with(&f).await,
+        ExecutionFailureCode::ModuleDenied(ModuleDenial {
+            module: Some("caps".into()),
+            reason_code: "amount_cap_exceeded".into(),
+            layer: Some("global".into()),
+            client_message: None,
+        })
+    );
+    assert_eq!(module.calls(), 1);
+    assert_eq!(
+        module.last_request().map(|request| request.submitter),
+        Some(f.signer_commitment.clone()),
+        "the module evaluates the cosigner whose request started the execution"
+    );
+}
+
+#[tokio::test]
+async fn a_generic_denial_on_the_execution_path_names_no_module() {
+    use guardian_shared::execution::ModuleDenial;
+    let f = gated(
+        crate::modules::testing::StubModule::denying("amount_cap_exceeded"),
+        crate::modules::catalog::OnError::Deny,
+        crate::modules::catalog::ClientReason::Generic,
+    )
+    .await;
+    assert_eq!(
+        failed_with(&f).await,
+        ExecutionFailureCode::ModuleDenied(ModuleDenial {
+            module: None,
+            reason_code: "policy_denied".into(),
+            layer: None,
+            client_message: None,
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_failing_fail_closed_module_ends_the_execution_as_unavailable() {
+    let f = gated(
+        crate::modules::testing::StubModule::new(crate::modules::testing::Behaviour::Fail),
+        crate::modules::catalog::OnError::Deny,
+        crate::modules::catalog::ClientReason::Full,
+    )
+    .await;
+    assert_eq!(
+        failed_with(&f).await,
+        ExecutionFailureCode::ModuleUnavailable {
+            module: Some("caps".into())
+        }
+    );
+}
+
+#[tokio::test]
+async fn an_approving_module_lets_the_execution_through_and_is_recorded_on_the_delta() {
+    let module = crate::modules::testing::StubModule::allowing();
+    let f = gated(
+        module.clone(),
+        crate::modules::catalog::OnError::Deny,
+        crate::modules::catalog::ClientReason::Full,
+    )
+    .await;
+    f.request().await.unwrap();
+    f.settle(is_submitted_or_terminal).await;
+    assert_eq!(module.calls(), 1);
+    let candidate = f
+        .state
+        .storage
+        .pull_delta(ACCOUNT, 1)
+        .await
+        .expect("the boundary admitted a candidate");
+    assert!(
+        candidate
+            .metadata
+            .and_then(|metadata| metadata
+                .plain()
+                .and_then(|metadata| metadata.modules.clone()))
+            .is_some(),
+        "the approval is recorded on the acknowledged delta"
+    );
+}
+
+#[tokio::test]
+async fn a_guardian_execution_over_a_mandatory_cap_is_refused_before_anything_is_proved() {
+    use guardian_shared::execution::ModuleDenial;
+    const USDC: &str = "0x00000000000000000000000000aa00";
+    let cap = crate::modules::testing::instance_with_params(
+        "caps",
+        &[crate::modules::catalog::HookName::BeforeTransactionApproved],
+        Arc::new(guardian_module_sdk::policies::SpendingLimit),
+        serde_json::json!({ "max_per_transaction": { USDC: "1000" } }),
+    );
+    let paying_5000 = guardian_module_sdk::MidenTransaction {
+        output_notes: vec![guardian_module_sdk::OutputNote {
+            note_id: "0xnote".into(),
+            assets: vec![guardian_module_sdk::Asset {
+                faucet_id: USDC.into(),
+                value: Some(guardian_module_sdk::proto::asset::Value::FungibleAmount(
+                    "5000".into(),
+                )),
+            }],
+            p2id_target: Some("0xrecipient".into()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let f = gated_by(cap, paying_5000).await;
+    assert_eq!(
+        failed_with(&f).await,
+        ExecutionFailureCode::ModuleDenied(ModuleDenial {
+            module: Some("caps".into()),
+            reason_code: "amount_cap_exceeded".into(),
+            layer: Some("global".into()),
+            client_message: Some(
+                "The transaction sends more than this Guardian allows per transaction.".into()
+            ),
+        })
+    );
+    assert_eq!(f.calls.lock().unwrap().submitted, 0, "nothing is submitted");
+}

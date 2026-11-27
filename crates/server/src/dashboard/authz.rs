@@ -36,6 +36,8 @@ pub type RequiredPermissions = &'static [Permission];
 pub struct AuthzState {
     pub app_state: AppState,
     pub required: RequiredPermissions,
+    /// When true, holding any one of `required` is enough.
+    pub any_of: bool,
 }
 
 impl AuthzState {
@@ -43,6 +45,16 @@ impl AuthzState {
         Self {
             app_state,
             required,
+            any_of: false,
+        }
+    }
+
+    /// The route accepts an operator holding at least one of `required`.
+    pub fn any_of(app_state: AppState, required: RequiredPermissions) -> Self {
+        Self {
+            app_state,
+            required,
+            any_of: true,
         }
     }
 }
@@ -64,6 +76,7 @@ pub async fn enforce(
     let AuthzState {
         app_state: state,
         required,
+        any_of,
     } = state;
     // The session middleware (`require_dashboard_session`) runs first,
     // so `AuthenticatedOperator` MUST be present. If it's missing we
@@ -80,8 +93,7 @@ pub async fn enforce(
             )
         })?;
 
-    let missing = missing_permissions(&operator.effective_permissions, required);
-    if missing.is_empty() {
+    if satisfies(&operator.effective_permissions, required, any_of) {
         return Ok(next.run(request).await);
     }
 
@@ -112,8 +124,17 @@ pub async fn enforce(
     });
 
     Err(GuardianError::InsufficientOperatorPermission {
-        missing_permissions: missing,
+        missing_permissions: missing_permissions(&operator.effective_permissions, required),
     })
+}
+
+/// Whether the held permissions pass a gate: one of `required` when `any_of`, else all of them.
+fn satisfies(held: &BTreeSet<Permission>, required: RequiredPermissions, any_of: bool) -> bool {
+    if any_of {
+        required.iter().any(|permission| held.contains(permission))
+    } else {
+        required.iter().all(|permission| held.contains(permission))
+    }
 }
 
 /// Compute the set difference `required \ held`, returning a sorted
@@ -141,6 +162,22 @@ mod tests {
 
     fn held(perms: &[Permission]) -> Arc<BTreeSet<Permission>> {
         Arc::new(perms.iter().copied().collect())
+    }
+
+    #[test]
+    fn any_of_is_satisfied_by_one_held_permission() {
+        let required: RequiredPermissions =
+            &[Permission::PoliciesWrite, Permission::ModulesDisable];
+        assert!(satisfies(
+            &held(&[Permission::ModulesDisable]),
+            required,
+            true
+        ));
+        assert!(!satisfies(
+            &held(&[Permission::DashboardRead]),
+            required,
+            true
+        ));
     }
 
     #[test]
@@ -172,6 +209,26 @@ mod tests {
             &[Permission::AccountsPause, Permission::AccountsPause],
         );
         assert_eq!(result, vec!["accounts:pause"]);
+    }
+
+    #[test]
+    fn any_of_needs_one_held_permission_even_when_one_is_listed_twice() {
+        let held = held(&[Permission::AccountsPause]);
+        assert!(!satisfies(
+            &held,
+            &[Permission::PoliciesWrite, Permission::PoliciesWrite],
+            true
+        ));
+        assert!(satisfies(
+            &held,
+            &[Permission::PoliciesWrite, Permission::AccountsPause],
+            true
+        ));
+        assert!(!satisfies(
+            &held,
+            &[Permission::PoliciesWrite, Permission::AccountsPause],
+            false
+        ));
     }
 
     #[test]

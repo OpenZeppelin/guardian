@@ -57,6 +57,11 @@ export interface GuardianOperatorHttpErrorData {
    * different guardian and released it.
    */
   releasedAt?: string;
+  /**
+   * Why a policy module write was refused (`invalid_input` from a module route), from
+   * `meta.detail`: the module and the rule it broke. Absent for every other error.
+   */
+  detail?: string;
 }
 
 export interface GuardianOperatorHttpClientOptions {
@@ -446,6 +451,9 @@ export interface DashboardDeltaDetail {
   category?: DashboardDeltaCategory;
   /** Operator-stated proposal intent for multisig commits. */
   proposal?: DashboardDeltaProposalMetadata;
+  /** The policy module configuration that approved this delta. Absent when
+   * no module ran. */
+  modules?: DashboardDeltaModuleApproval;
   inputNotes: DashboardDeltaDecodedNote[];
   outputNotes: DashboardDeltaDecodedNote[];
   vaultChanges: DashboardDeltaVaultChange[];
@@ -455,6 +463,34 @@ export interface DashboardDeltaDetail {
   decodeWarnings?: DashboardDeltaDecodeWarning[];
   /** Present only when the request used `?include=raw`. */
   rawTransactionSummary?: string;
+}
+
+/** A module failure an `on_error = "allow"` instance let through. */
+export interface DashboardDeltaModuleFailedOpen {
+  moduleId: string;
+  /** `global` or `account`. */
+  layer: string;
+  /** `timeout`, `error`, `invalid_decision` or
+   * `circuit_open`. */
+  failure: string;
+}
+
+/** The policy modules' approval of a signed delta: the configuration they
+ * ran with, when and for whom. */
+export interface DashboardDeltaModuleApproval {
+  /** SHA-256 of the catalog file the approving replica loaded. */
+  catalogHash: string;
+  /** The instance params version: every instance's global params and enabled flag. */
+  paramsVersion: number;
+  /** The account's params version: its layers and assignment. */
+  accountParamsVersion: number;
+  failedOpen: DashboardDeltaModuleFailedOpen[];
+  /** RFC 3339 time the Guardian signed. */
+  signedAt: string;
+  /** The cosigner the acknowledgment was evaluated for. */
+  submitter: string;
+  /** The matching proposal's creator; null when no stored proposal matched. */
+  proposer: string | null;
 }
 
 export interface DashboardDeltaEntry {
@@ -806,6 +842,9 @@ export interface DashboardBackendInfo {
   /** Block watch state; `null` when block watch is disabled, absent on
    * servers predating it. */
   blockWatch?: DashboardBlockWatchInfo | null;
+  /** Hash of the policy module catalog the answering replica loaded; `null`
+   * when no catalog is configured, absent on servers predating modules. */
+  moduleCatalogHash?: string | null;
 }
 
 export interface DashboardInfoResponse {
@@ -836,4 +875,112 @@ export interface DashboardInfoResponse {
   };
   inFlightProposalCount: number;
   degradedAggregates: string[];
+}
+
+// --- Policy modules --------------------------------------------------------
+
+export type ModuleScope = 'all' | 'default' | 'assigned';
+export type ModuleDisclosure = 'none' | 'summary' | 'params';
+export type ModuleClientReason = 'full' | 'generic';
+export type ModuleCircuit = 'closed' | 'open' | 'half_open';
+export type ModuleParams = Record<string, unknown>;
+
+/** One declared module instance with its runtime state on the answering replica. */
+export interface ModuleInstance {
+  moduleId: string;
+  kind: string;
+  scope: ModuleScope;
+  hooks: string[];
+  enabled: boolean;
+  catalogEnabled: boolean;
+  enabledDrift: boolean;
+  operatorCanDisable: boolean;
+  /** `false` when the catalog locks the global params (`operator_can_set_params = false`):
+   * `setModuleGlobalParams` is refused for this instance. */
+  operatorCanSetParams: boolean;
+  /** Current global params; secret references are shown unresolved. */
+  params: ModuleParams;
+  paramsDrift: boolean;
+  fileManagedParams: boolean;
+  /** `name version` from `describe` at startup; `null` when the startup checks failed. */
+  build: string | null;
+  disclosure: ModuleDisclosure;
+  description: string | null;
+  clientReason: ModuleClientReason;
+  dryRun: boolean;
+  circuit: ModuleCircuit;
+}
+
+/** A stored instance the catalog no longer declares: kept, never evaluated. */
+export interface UndeclaredModuleInstance {
+  moduleId: string;
+  enabled: boolean;
+  params: ModuleParams;
+}
+
+export interface ModuleCatalog {
+  catalogHash: string;
+  /** The instance params version: moves with every write to an instance's global params or
+   * enabled flag, never with a write to one account. */
+  paramsVersion: number;
+  modules: ModuleInstance[];
+  undeclared: UndeclaredModuleInstance[];
+}
+
+/** One module in an account's effective set, in evaluation order. */
+export interface AccountModuleEntry {
+  moduleId: string;
+  scope: ModuleScope;
+  enabled: boolean;
+  /** The entry names an instance the catalog no longer declares; it is skipped. */
+  orphaned: boolean;
+  /** `scope = all`: the instance's global params. */
+  globalParams: ModuleParams | null;
+  /** `scope = all`: this account's layer, when set. */
+  accountLayer: ModuleParams | null;
+  /** `default` or `assigned`: this account's own params. */
+  params: ModuleParams | null;
+}
+
+export interface AccountModules {
+  accountId: string;
+  /** The account's params version: moves with every write to its layers or assignment. */
+  accountParamsVersion: number;
+  modules: AccountModuleEntry[];
+}
+
+export interface ModuleAssignment {
+  moduleId: string;
+  params: ModuleParams;
+}
+
+export interface ModuleParamsHistoryEntry {
+  /** The entry's place in the history, increasing in write order: pass it as `before` to
+   * read the page after this entry. */
+  id: number;
+  /** The version the change committed as: the instance params version for a global change,
+   * the account's params version for a per-account one. */
+  version: number;
+  /** The account a per-account change applied to; `null` for a global change. */
+  accountId: string | null;
+  /** `null` when the module was not assigned before the change. */
+  previous: ModuleParams | null;
+  /** `null` when the change removed the module or the layer. */
+  new: ModuleParams | null;
+  operator: string;
+  reason: string;
+  at: string;
+}
+
+export interface ModuleParamsHistory {
+  moduleId: string;
+  /** Newest first. */
+  entries: ModuleParamsHistoryEntry[];
+}
+
+export interface ModuleParamsHistoryOptions {
+  /** Only entries whose `id` is below this one, to page backwards. */
+  before?: number;
+  /** At most this many entries (1 to 1,000; the server defaults to 100). */
+  limit?: number;
 }

@@ -2,7 +2,7 @@
 
 ## Services overview
 
-- **configure_account**: creates a Miden account by validating the provided network configuration and auth policy, then storing account metadata and the initial state with its commitment and account nonce. Every entry in `auth.cosigner_commitments` must be a canonical commitment (`0x` plus 64 lowercase hex digits) and the list must be non-empty and duplicate-free. The account must be a guarded multisig: a state without the multisig threshold slot is rejected as `InvalidInput`. The list must exactly match the signer map extracted from `initial_state`, including the map's canonical (index) order, every approver must have a supported scheme in the state's approver scheme map, and each cosigner's declared scheme must match it, since the stored auth is the authorization source of truth for every later request, so any mismatch is rejected as `InvalidInput`. The state's GUARDIAN slot must hold this server's ACK commitment for the auth's GUARDIAN scheme and its GUARDIAN scheme slot must store that scheme (`AuthorizationFailed` otherwise); every scheme the auth uses must be allowed by `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES` for a new account, and every scheme a reconfiguration adds to the stored auth for an existing one. The state is stored only when `initial_state` is the account's current on-chain state (`StateNotOnChain` until the chain holds it, retryable; one head read decides, so a state the chain has moved past is refused the same way; `RpcUnavailable` when the chain cannot be read), with two exceptions that need no chain read: a first configuration at nonce 0, whose seed binds it to the account id and whose vault must be empty (`InvalidInput` otherwise), judged before the signer check so a claim another key left behind cannot block it, and a stored cosigner of an active account re-registering the state already stored. A first configuration past nonce 0, a released account, a key the stored auth does not list, and any state other than the stored one all need the chain. The decision and the write guard use one read of the stored state. A configuration that skipped the chain read clears a release written while it ran only once its state proves to be the chain head; otherwise the release stands and the request fails with `StateNotOnChain`. The check runs after the request's replay timestamp is consumed, so a replay is refused before any chain read. A new account is first claimed by inserting its metadata row only if none exists; the request's replay timestamp is then consumed before any state is written, for new and existing accounts alike. Of two concurrent first configurations exactly one creates the account and the other is judged as a reconfiguration of it, so a retry or replay of the same signed request is refused with `authentication_replay` before it writes; one from a different signer passes its own replay check and reconfigures the account it lost to. A storage failure after the claim leaves metadata without stored state: the account is not listed by lookup and is skipped by the release sweep, and a retry of the same account id finishes it as a first configuration, held to the new-account scheme policy and counted as a creation. EVM accounts are not configured through this service.
+- **configure_account**: creates a Miden account by validating the provided network configuration and auth policy, then storing account metadata and the initial state with its commitment and account nonce. Every entry in `auth.cosigner_commitments` must be a canonical commitment (`0x` plus 64 lowercase hex digits) and the list must be non-empty and duplicate-free. The account must be a guarded multisig: a state without the multisig threshold slot is rejected as `InvalidInput`. The list must exactly match the signer map extracted from `initial_state`, including the map's canonical (index) order, every approver must have a supported scheme in the state's approver scheme map, and each cosigner's declared scheme must match it, since the stored auth is the authorization source of truth for every later request, so any mismatch is rejected as `InvalidInput`. The state's GUARDIAN slot must hold this server's ACK commitment for the auth's GUARDIAN scheme and its GUARDIAN scheme slot must store that scheme (`AuthorizationFailed` otherwise); every scheme the auth uses must be allowed by `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES` for a new account, and every scheme a reconfiguration adds to the stored auth for an existing one. The state is stored only when `initial_state` is the account's current on-chain state (`StateNotOnChain` until the chain holds it, retryable; one head read decides, so a state the chain has moved past is refused the same way; `RpcUnavailable` when the chain cannot be read), with two exceptions that need no chain read: a first configuration at nonce 0, whose seed binds it to the account id and whose vault must be empty (`InvalidInput` otherwise), judged before the signer check so a claim another key left behind cannot block it, and a stored cosigner of an active account re-registering the state already stored. A first configuration past nonce 0, a released account, a key the stored auth does not list, and any state other than the stored one all need the chain. The decision and the write guard use one read of the stored state. A configuration that skipped the chain read clears a release written while it ran only once its state proves to be the chain head; otherwise the release stands and the request fails with `StateNotOnChain`. The check runs before the policy modules judge the request, so they only ever see a vouched state, and, for a registered account, after the request's replay timestamp is consumed, so a replay is refused before any chain read or module call. A state the chain vouched for is read again after the modules ran, since the chain can move meanwhile. A new account is first claimed, once the modules allowed it, by inserting its metadata row only if none exists; the request's replay timestamp is then consumed before any state or default-module copy is written, for new and existing accounts alike. Of two concurrent first configurations exactly one creates the account and the other is judged as a reconfiguration of it, so a retry or replay of the same signed request is refused with `authentication_replay` before it writes any state; one from a different signer passes its own replay check and reconfigures the account it lost to. A storage failure after the claim leaves metadata without stored state: the account is not listed by lookup and is skipped by the release sweep, and a retry of the same account id finishes it as a first configuration, held to the new-account scheme policy and counted as a creation. EVM accounts are not configured through this service.
 - **push_delta**: verifies a Miden delta against the tail of the account's candidate queue (the canonical state when nothing is queued, always so at the default depth of one), computes the new state's commitment and account nonce, refuses the delta with `400 invalid_delta` unless its `nonce` is that account nonce (at every queue depth, issue #518), attaches an acknowledgement, and either enqueues it as a candidate (canonicalization enabled) or immediately applies it and marks it canonical (optimistic mode). When the tail account is a multisig, the acknowledgement is refused with `insufficient_signatures` unless a matching pending proposal (the same transaction summary commitment) carries verified cosigner signatures from the account's approvers, each under the scheme the tail state stores for its approver (an approver it stores no supported scheme for is not counted; a state without the approver scheme map at all leaves the scheme unchecked), counted once per key, at least as many as the lowest threshold the account permits for any transaction: the default threshold, or a lower override on one of the account's non-auth procedures. The chain skips the auth procedure and never calls a root the account does not export, so overrides on either are ignored. This floor is a denial-of-service guard, not the authorization rule. The chain requires the threshold of the procedures the transaction calls, which the summary does not show, so the gate never asks for more than the chain will and never refuses a transaction the chain would accept. A push that meets the floor but not the chain's requirement is acknowledged, refused on chain, and holds a candidate slot until canonicalization drops it; on an account with no per-procedure override below the default, that takes the default threshold of cosigners. The `proposal_type` label plays no part. A storage fault while loading that proposal refuses the push. The gate runs before the delta is verified or applied. `/configure` registers only guarded multisig accounts. A session-signed push meets the same gate; on a tail without the multisig auth (an account registered before `/configure` required it) it is refused with `wallet_signature_required`, while a wallet-signed push there is acknowledged without the gate as before. EVM accounts do not support `push_delta` in v1.
 - **get_state**: authenticates and returns the latest persisted account state.
 - **get_state_tail**: authenticates like `get_state` and returns the tail of the account's candidate queue (issue #517): the canonical state with every queued candidate replayed onto it, one delta application per candidate on the reconstruction pool, and the queued candidates (nonce, base, post-state, oldest first). With nothing queued it is the canonical state and an empty queue. A queue that does not chain from the canonical state, re-read once in case a promotion raced the two reads, or whose replay does not reproduce the stored tail is refused with `409 conflict_pending_delta`.
@@ -34,18 +34,37 @@ sequenceDiagram
   S->>S: reject unless auth cosigners == extracted signer map\n(exact set, order and schemes)
   S->>S: auth.verify(account_id, timestamp, request_payload_digest, credential)
   S->>N: get_state_head(account_id, initial_state)\n(commitment, nonce)
+  alt account already registered (metadata exists)
+    S->>M: update last_auth_timestamp (verified signer, CAS)\n(refused: authentication_replay, nothing written)
+    Note over S,M: before any stored-state or chain read and any module call, so a replayed request drives none of them
+  end
+  S->>S: vouch for the submitted state\n(a first state at nonce 0 with nothing stored, the stored state for a listed key of an active account,\nelse verify_commitment: it must be the chain head)
+  Note over S,N: not vouched: StateNotOnChain or InvalidInput, no state written and no module called
+  opt policy modules configured
+    S->>S: before_account_registered gate\n(a new account also runs its default-scope modules)
+    Note over S: a refusal: 403 GUARDIAN_MODULE_DENIED or 503 GUARDIAN_MODULE_UNAVAILABLE, no state written (a registered account's timestamp is consumed)
+    S->>N: verify_commitment again when the chain vouched\n(the chain may have moved while the modules ran)
+  end
   alt no metadata for account_id
     S->>M: create(account_id, auth, network_config, timestamps)\n(insert only if absent)
-    alt claim lost to a concurrent first configuration
-      S->>M: get(account_id)\n(judged as a reconfiguration from here)
+    Note over S,M: the claim guarantees the metadata row that replay state references by FK
+    alt claim won
+      S->>M: update last_auth_timestamp (verified signer, CAS)
+    else claim lost to a concurrent first configuration
+      S->>M: get(account_id)\n(a reconfiguration of that account from here)
+      S->>M: update last_auth_timestamp (verified signer, CAS)\n(a replay of the winning request: authentication_replay)
+      S->>S: vouch and before_account_registered gate again, against that account
     end
   end
-  Note over S,M: the claim guarantees the metadata row that replay state references by FK
-  S->>M: update last_auth_timestamp (verified signer, CAS)\n(refused: authentication_replay, nothing written)
-  Note over S,M: before any stored-state or chain read below, so a replayed request never drives the history search
+  opt metadata exists but no state was stored when it was read (an unfinished or lost claim)
+    S->>ST: pull_state_head(account_id)\n(a state stored meanwhile: 400 commitment_mismatch, no state written)
+  end
   alt existing account, submitted nonce below the stored one (decoded from the stored state when its row has none)
     S->>N: verify_commitment / find_transaction_ending_at(stored commitment)
     Note over S,N: the chain reached the stored state: 400 commitment_mismatch (a stale state); the chain cannot be read: rpc_unavailable (fail closed)
+  end
+  opt the request claimed the account (or finishes an unfinished claim, or lost the claim to one that copied nothing) and default-scope modules apply
+    S->>S: copy them into the account's assignment\n(only with no assignment and no assignment history)
   end
   alt existing account
     S->>ST: replace_state(state_json, commitment, nonce)\nonly while the stored commitment is the one read after the replay floor
@@ -97,7 +116,10 @@ sequenceDiagram
       alt new_nonce is not the delta's nonce (at every queue depth)
         S-->>C: 400 InvalidDelta
       end
-      S->>S: ack_delta(delta.new_commitment) -> ack_sig
+      opt policy modules configured
+        S->>S: before_transaction_approved gate\n(a refusal: 403 GUARDIAN_MODULE_DENIED or 503 GUARDIAN_MODULE_UNAVAILABLE, nothing signed)
+      end
+      S->>S: ack_delta(delta.new_commitment) -> ack_sig\n(records the approving catalog and params version in metadata.modules)
       alt canonicalization enabled
         S->>ST: submit_candidate(candidate)\n(the same gate again, under the account lock)
       else optimistic mode
@@ -223,12 +245,26 @@ sequenceDiagram
         S-->>C: 409 ConflictPendingDelta
       end
       S->>N: verify_delta(tail_commitment, tail_state, tx_summary)
+      opt policy modules configured
+        S->>S: before_proposal_created gate\n(global params, then each account layer)
+        Note over S: a refusal: 403 GUARDIAN_MODULE_DENIED or 503 GUARDIAN_MODULE_UNAVAILABLE, no proposal stored
+      end
       S->>N: delta_proposal_id(account_id, nonce, tx_summary)
       S->>ST: submit_delta_proposal(id, pending_delta)\n(prev_commitment = tail commitment)
       S-->>C: 200 {delta, commitment:id}
     end
   end
 ```
+
+The dry-run check (`POST /delta/proposal/check`, gRPC `CheckDeltaProposal`) takes the same
+body and runs the same steps through `verify_delta`, then the account's gate modules with
+`dry_run = true`: those subscribed to `before_proposal_created`, then those subscribed to
+`before_transaction_approved` (an instance on both is asked once per hook), then the
+account-wide proposal request byte limit (`GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED`). It
+stores nothing, takes no proposal slot, and answers `200 {allowed: true, complete}`
+(`complete` is false when the catalog has an enabled gate instance with `dry_run = false`) or
+the error creation would return. It is rate limited per
+account and signer before the account state is rebuilt.
 
 #### sign_delta_proposal
 ```mermaid
@@ -710,7 +746,11 @@ The execute payload is domain-separated from a signed status read of the same pr
    Take the chain tip as the reference block `R` and build the chain view at `R`, tracking the
    bound block and every authenticated note's creation block.
 4. Reproduce the transaction unsigned at `R` and confirm it yields the signed summary.
-5. Issue Guardian's acknowledgment through the internal path, which stores no candidate.
+5. Issue Guardian's acknowledgment through the internal path, which stores no candidate. On a
+   server with policy modules the `before_transaction_approved` gate runs first, with the
+   requester as submitter and the proposal's creator as proposer; a refusal fails the execution
+   with `GUARDIAN_EXECUTION_MODULE_DENIED` or `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` and keeps
+   the proposal.
 6. Attach the cosigner signatures and the acknowledgment.
 7. Execute the authorized transaction at `R`, loading public foreign accounts at `R`.
 8. Re-check the executed notes against the summary and that the transaction has not expired.

@@ -127,6 +127,80 @@ step_budget = "60s"
 required = true
 core = false
 
+# Policy modules (RFC 0002). The stack's catalog (qualification/stack/lib/modules.sh) scopes
+# every instance `assigned`, so a module applies only to an account a scenario assigns it to.
+# The scenarios propose a fixture threshold change and assign a signer allowlist that names
+# none of the account's signers.
+#
+# Both SDKs: the Rust leg meets the refusal over gRPC and the TypeScript leg over HTTP, at the
+# dry-run check and at creation, and each clears its assignment on every path because the
+# fixture account is shared.
+[[scenario]]
+id = "det-module-refusal"
+title = "An assigned policy module refuses a proposal with its id and reason, and stops once unassigned"
+profile = "deterministic"
+sdk = "both"
+runtime = "server-side"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["account-register", "module-refusal"]
+step_budget = "90s"
+required = true
+core = false
+
+# Rust only: the driver serves the remote module (signer-policy over TLS, its token read from the
+# Guardian's file secrets backend), so the scenario can take it down. Fail-closed while down,
+# naming the instance, and disabling it lets the account through.
+[[scenario]]
+id = "det-module-unavailable"
+title = "A remote policy module decides over TLS, refuses as unavailable while down, and disabling it is the way out"
+profile = "deterministic"
+sdk = "rust"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["account-register", "module-unavailable"]
+step_budget = "90s"
+required = true
+core = false
+
+# Rust only, like det-restart-durability: the operator's disable has to outlive the process,
+# so the first pass disables and the pass after the restart finds it disabled against a catalog
+# that still says enabled, with the disable in the params history, and enables it again.
+[[scenario]]
+id = "det-module-break-glass"
+title = "Disabling a refusing module lets the account through, and the switch survives a restart"
+profile = "deterministic"
+sdk = "rust"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["account-register", "module-break-glass"]
+step_budget = "90s"
+required = true
+core = false
+
+# Both SDKs: the registration hook. `qual-register` is a signer policy on
+# before_account_registered only. Checking every signer against an allowlist naming none of
+# them, it refuses a re-registration of the fixture account with its own signers, over gRPC and
+# over HTTP. Checking only added signers, it allows the same re-registration, since every signer
+# is already in the stored state the hook receives as `before`. Each leg clears its assignment on
+# every path because the fixture account is shared.
+[[scenario]]
+id = "det-module-registration"
+title = "An assigned policy module judges a re-registration against the stored state, refusing it or letting it through"
+profile = "deterministic"
+sdk = "both"
+runtime = "server-side"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["account-register", "module-registration-refusal"]
+step_budget = "90s"
+required = true
+core = false
+
 # Both SDKs: the Rust leg reaches the refusal over gRPC and the TypeScript leg over HTTP, and
 # this is the only deterministic coverage of the HTTP execution routes.
 [[scenario]]
@@ -706,6 +780,64 @@ scheme = "ecdsa"
 shape = "1-of-1"
 mode = "online"
 actions = ["account-create", "account-register", "asset-transfer", "note-consume", "asset-send", "proposal-sign", "proposal-execute", "asset-send-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+# A policy module on a real transaction. The deterministic module scenarios use a fixture
+# summary; this one caps a payment the account actually sends, so the module sees what the
+# network builds, fee note included. The cap is exactly what `asset-send` sends: one unit more
+# is refused at the check and at creation, the capped amount passes, and the approval hook runs
+# again when GUARDIAN signs at execution. The transaction pays its fee in the same asset, so a
+# fee note counted as a payment would push the capped send over and fail it.
+[[scenario]]
+id = "live-module-cap-1of1-ecdsa"
+title = "A per-account amount cap refuses a payment over it, and a payment at the cap lands with its fee"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "module-cap-assign", "module-cap-refuses", "asset-send", "proposal-sign", "proposal-execute", "asset-send-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+# A recipient denylist on a real transaction. The denylist names the funding faucet, which the
+# scenario never pays: a payment to it is refused at the check and at creation, and a payment
+# to the treasury passes, is signed by GUARDIAN after the approval hook runs again, and lands.
+# `deny_unknown` is on by default once the denylist names anyone, and the fee note has no
+# recipient a denylist can check, so a fee note read as a payment would refuse the send.
+[[scenario]]
+id = "live-module-recipient-1of1-ecdsa"
+title = "A recipient denylist refuses a payment to a blocked account, and a payment elsewhere lands with its fee"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "module-recipient-assign", "module-recipient-refuses", "asset-send", "proposal-sign", "proposal-execute", "asset-send-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+# The enforcement point on a real transaction. A payment at the cap passes the check and is
+# created; the operator then lowers the cap below it, and executing the proposal is refused when
+# GUARDIAN is asked to sign: before_transaction_approved decides whatever creation allowed. The
+# refusal names the module and amount_cap_exceeded, and the account's nonce and balance on chain
+# do not move, so nothing was submitted.
+[[scenario]]
+id = "live-module-ack-refusal-1of1-ecdsa"
+title = "A proposal created under a cap is refused at signing once the cap is lowered, and nothing lands"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "module-cap-assign", "asset-send", "proposal-sign", "module-cap-lower", "module-ack-refused"]
 step_budget = "480s"
 required = true
 core = false

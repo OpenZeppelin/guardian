@@ -206,6 +206,16 @@ pub enum Action {
     MixedSchemeGate,
     SessionStart,
     SessionAssert,
+    ModuleRefusal,
+    ModuleRegistrationRefusal,
+    ModuleUnavailable,
+    ModuleBreakGlass,
+    ModuleCapAssign,
+    ModuleCapRefuses,
+    ModuleCapLower,
+    ModuleAckRefused,
+    ModuleRecipientAssign,
+    ModuleRecipientRefuses,
     Unknown(String),
 }
 
@@ -285,6 +295,16 @@ impl From<String> for Action {
             "mixed-scheme-gate" => Self::MixedSchemeGate,
             "session-start" => Self::SessionStart,
             "session-assert" => Self::SessionAssert,
+            "module-refusal" => Self::ModuleRefusal,
+            "module-registration-refusal" => Self::ModuleRegistrationRefusal,
+            "module-unavailable" => Self::ModuleUnavailable,
+            "module-break-glass" => Self::ModuleBreakGlass,
+            "module-cap-assign" => Self::ModuleCapAssign,
+            "module-cap-refuses" => Self::ModuleCapRefuses,
+            "module-cap-lower" => Self::ModuleCapLower,
+            "module-ack-refused" => Self::ModuleAckRefused,
+            "module-recipient-assign" => Self::ModuleRecipientAssign,
+            "module-recipient-refuses" => Self::ModuleRecipientRefuses,
             other => Self::Unknown(other.to_string()),
         }
     }

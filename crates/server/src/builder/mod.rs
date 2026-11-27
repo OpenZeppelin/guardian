@@ -9,6 +9,7 @@
 pub mod block_watch;
 pub mod canonicalization;
 pub mod clock;
+pub mod env;
 pub mod handle;
 pub mod logging;
 pub mod release_sweep;
@@ -35,6 +36,18 @@ use crate::storage::StorageBackend;
 use guardian_shared::SignatureScheme;
 use std::sync::Arc;
 
+/// Why a server could not be configured from the environment or built: a missing component,
+/// an invalid setting, or a backend that could not be opened. The message names which.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct BuildError(String);
+
+impl From<String> for BuildError {
+    fn from(message: String) -> Self {
+        Self(message)
+    }
+}
+
 /// Builder for configuring and creating a server instance
 pub struct ServerBuilder {
     network_type: Option<NetworkType>,
@@ -54,6 +67,8 @@ pub struct ServerBuilder {
     rate_limit_config: Option<RateLimitConfig>,
     body_limit_config: Option<BodyLimitConfig>,
     metrics_config: Option<MetricsConfig>,
+    module_kinds: Vec<(String, Arc<dyn guardian_module_sdk::ModuleFactory>)>,
+    startup_recovery: handle::StartupRecoveryMode,
     http_enabled: bool,
     http_port: u16,
     grpc_enabled: bool,
@@ -81,6 +96,8 @@ impl ServerBuilder {
             rate_limit_config: None,
             body_limit_config: None,
             metrics_config: None,
+            module_kinds: Vec::new(),
+            startup_recovery: handle::StartupRecoveryMode::Off,
             http_enabled: true,
             http_port: 3000,
             grpc_enabled: true,
@@ -218,6 +235,13 @@ impl ServerBuilder {
     /// stored as `None`.
     pub fn with_block_watch(mut self, config: Option<BlockWatchConfig>) -> Self {
         self.block_watch = config.filter(|config| config.enabled);
+        self
+    }
+
+    /// The startup account recovery [`ServerHandle::start`](handle::ServerHandle::start) runs
+    /// before serving. Off by default.
+    pub fn with_startup_recovery(mut self, mode: handle::StartupRecoveryMode) -> Self {
+        self.startup_recovery = mode;
         self
     }
 
@@ -440,6 +464,26 @@ impl ServerBuilder {
         self
     }
 
+    /// Registers a policy module kind that runs in this process, so catalog entries
+    /// (`GUARDIAN_MODULES_CONFIG`) can name it in `kind`. The module shares the process that
+    /// holds the acknowledgement keys, so register only code you have reviewed. `build` fails
+    /// if the name is already taken, including by the first-party policies (`spending-limit`,
+    /// `recipient-policy`, `signer-policy`, `code-policy`) and `grpc`.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let builder = ServerBuilder::new()
+    ///     .with_module_kind("note-policy", Arc::new(NotePolicyFactory));
+    /// ```
+    pub fn with_module_kind(
+        mut self,
+        kind: impl Into<String>,
+        factory: Arc<dyn guardian_module_sdk::ModuleFactory>,
+    ) -> Self {
+        self.module_kinds.push((kind.into(), factory));
+        self
+    }
+
     /// Build the server handle
     ///
     /// Validates that all required components are configured and returns
@@ -458,7 +502,7 @@ impl ServerBuilder {
     /// use std::sync::Arc;
     /// use std::path::PathBuf;
     ///
-    /// # async fn example() -> Result<(), String> {
+    /// # async fn example() -> Result<(), server::builder::BuildError> {
     /// let storage = FilesystemService::new(PathBuf::from("/var/guardian/storage")).await?;
     /// let metadata = FilesystemMetadataStore::new(PathBuf::from("/var/guardian/metadata")).await?;
     ///
@@ -473,7 +517,11 @@ impl ServerBuilder {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn build(self) -> Result<ServerHandle, String> {
+    pub async fn build(self) -> Result<ServerHandle, BuildError> {
+        self.assemble().await.map_err(BuildError)
+    }
+
+    async fn assemble(self) -> Result<ServerHandle, String> {
         if let Some(ref config) = self.logging_config {
             config.init();
         }
@@ -506,6 +554,9 @@ impl ServerBuilder {
 
         let ack = self.ack.ok_or("AckRegistry not set. Use .ack(...)")?;
         let coordination = self.coordination;
+        let module_store = coordination
+            .as_ref()
+            .and_then(|handles| handles.module_store.clone());
         #[cfg(feature = "postgres")]
         let account_recovery = coordination
             .as_ref()
@@ -785,6 +836,20 @@ impl ServerBuilder {
             );
         }
 
+        crate::modules::check_limit::init_from_env()?;
+        let mut module_registry = crate::modules::Registry::first_party();
+        for (kind, factory) in self.module_kinds {
+            module_registry.register(kind, factory)?;
+        }
+        let modules = crate::modules::from_env(
+            chrono::Utc::now().to_rfc3339(),
+            module_store,
+            &module_registry,
+            self.execution.lease,
+            network_type,
+        )
+        .await?;
+
         let app_state = AppState {
             storage,
             metadata,
@@ -798,6 +863,7 @@ impl ServerBuilder {
             auditor,
             execution,
             miden_sessions,
+            modules,
             #[cfg(feature = "evm")]
             evm,
         };
@@ -809,6 +875,7 @@ impl ServerBuilder {
             release_sweep_leader,
             #[cfg(feature = "postgres")]
             account_recovery,
+            startup_recovery: self.startup_recovery,
             startup_info,
             cors_layer: self.cors_layer,
             rate_limit_config: Some(rate_limit_config),

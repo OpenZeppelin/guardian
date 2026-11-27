@@ -1,0 +1,1 @@
+DROP FUNCTION IF EXISTS guardian_module_seed_assignment(TEXT, JSONB, TEXT, TEXT, TIMESTAMPTZ);

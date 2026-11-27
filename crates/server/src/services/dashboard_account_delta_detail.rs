@@ -10,8 +10,8 @@ use serde::Serialize;
 
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::delta_summary::{
-    DashboardDeltaCategory, DecodeWarning, DecodedNote, ProposalMetadata, StorageChange,
-    VaultChange, decode_full as project_detail_sections, decode_transaction_summary,
+    DashboardDeltaCategory, DecodeWarning, DecodedNote, ModuleApproval, ProposalMetadata,
+    StorageChange, VaultChange, decode_full as project_detail_sections, decode_transaction_summary,
 };
 use crate::error::{GuardianError, Result};
 use crate::services::dashboard_account_deltas::{DashboardDeltaStatus, decode_delta_status};
@@ -58,6 +58,11 @@ pub struct DashboardDeltaDetail {
     pub category: Option<DashboardDeltaCategory>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proposal: Option<ProposalMetadata>,
+    /// The policy module configuration that approved this delta: the catalog and params version
+    /// it was judged under and the module failures an `on_error = allow` instance let through.
+    /// Absent when no module ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modules: Option<ModuleApproval>,
 
     pub input_notes: Vec<DecodedNote>,
     pub output_notes: Vec<DecodedNote>,
@@ -188,10 +193,10 @@ fn project_delta_to_detail(
             ),
         };
 
-    let (category, proposal) = delta
+    let (category, proposal, modules) = delta
         .plain_metadata()
-        .map(|m| (Some(m.category), m.proposal.clone()))
-        .unwrap_or((None, None));
+        .map(|m| (Some(m.category), m.proposal.clone(), m.modules.clone()))
+        .unwrap_or((None, None, None));
 
     let raw_transaction_summary = if include.raw {
         let extracted = extract_raw_tx_summary_base64(&delta.delta_payload);
@@ -221,6 +226,7 @@ fn project_delta_to_detail(
         base_matches_stored_state: None,
         category,
         proposal,
+        modules,
         input_notes,
         output_notes,
         vault_changes,
@@ -235,8 +241,7 @@ fn project_delta_to_detail(
 /// location holds a string. Callers must not assume the bytes decode
 /// to a Miden `TransactionSummary`.
 fn extract_raw_tx_summary_base64(payload: &serde_json::Value) -> Option<String> {
-    let candidate = payload.get("tx_summary").unwrap_or(payload);
-    candidate
+    crate::delta_summary::decode::summary_object(payload)
         .get("data")
         .and_then(|v| v.as_str())
         .map(str::to_string)
@@ -258,6 +263,17 @@ mod tests {
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use axum::http::StatusCode;
     use std::sync::Arc;
+
+    #[test]
+    fn the_raw_summary_is_the_one_the_decoder_reads() {
+        let both = serde_json::json!({ "data": "top", "tx_summary": { "data": "wrapped" } });
+        assert_eq!(extract_raw_tx_summary_base64(&both).as_deref(), Some("top"));
+        let wrapped = serde_json::json!({ "tx_summary": { "data": "wrapped" } });
+        assert_eq!(
+            extract_raw_tx_summary_base64(&wrapped).as_deref(),
+            Some("wrapped")
+        );
+    }
 
     const TEST_ACCOUNT_ID: &str = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
 
@@ -307,6 +323,7 @@ mod tests {
         AppState {
             execution: Default::default(),
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(MockNetworkClient::new()),
@@ -493,6 +510,19 @@ mod tests {
     async fn canonical_delta_projects_with_metadata_header_and_decoded_sections() {
         let payload = create_test_delta_payload(TEST_ACCOUNT_ID);
         let mut delta = canonical_delta_with_payload(7, payload);
+        let approval = ModuleApproval {
+            catalog_hash: "0xcatalog".into(),
+            params_version: 4,
+            account_params_version: 2,
+            failed_open: vec![crate::delta_summary::FailedOpen {
+                module_id: "screening".into(),
+                layer: "global".into(),
+                failure: "timeout".into(),
+            }],
+            signed_at: "2026-11-09T10:00:00+00:00".into(),
+            submitter: "0xsigner".into(),
+            proposer: String::new(),
+        };
         delta.metadata = Some(
             crate::delta_summary::DeltaMetadata {
                 category: crate::delta_summary::DashboardDeltaCategory::AccountStorageChange,
@@ -500,6 +530,7 @@ mod tests {
                 counterparty: None,
                 note_counts: crate::delta_summary::NoteCounts::default(),
                 proposal: None,
+                modules: Some(approval.clone()),
             }
             .into(),
         );
@@ -508,6 +539,11 @@ mod tests {
             get_account_delta_detail(&state, TEST_ACCOUNT_ID, 7, DetailIncludeFlags::default())
                 .await
                 .expect("happy path");
+        assert_eq!(
+            detail.modules,
+            Some(approval),
+            "operators read which module configuration approved the delta"
+        );
         assert_eq!(detail.account_id, TEST_ACCOUNT_ID);
         assert_eq!(detail.nonce, 7);
         assert_eq!(detail.status, DashboardDeltaStatus::Canonical);
@@ -621,6 +657,7 @@ mod tests {
         let state = AppState {
             execution: Default::default(),
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(MockNetworkClient::new()),

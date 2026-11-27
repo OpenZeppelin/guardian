@@ -272,6 +272,35 @@ pub struct TransactionSearch {
     pub resume_from_block: u32,
 }
 
+/// An account as policy modules see it, with its nonce: the fee note a transaction creates
+/// derives its serial number from the nonce of the state it starts from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModuleAccount {
+    pub view: guardian_module_sdk::AccountView,
+    pub nonce: u64,
+}
+
+/// What policy modules receive about a delta, built from the decode that verifies and applies
+/// it: the account views of its base state and of the state it produces, and the transaction.
+/// Each part that cannot be extracted is kept as its error, so the decode itself still
+/// succeeds; a request that needs a missing part cannot be built, and the pipeline then refuses
+/// as unavailable whatever the modules' `on_error` says (RFC 0002 section 4.2), since a
+/// requester could otherwise switch fail-open modules off with a delta they cannot read.
+#[derive(Debug, Clone)]
+pub struct ModuleInputs {
+    pub before: Result<ModuleAccount, String>,
+    pub after: Result<ModuleAccount, String>,
+    pub transaction: Result<ModuleTransaction, String>,
+}
+
+/// What policy modules receive about an account state at registration, from one decode: the
+/// account view and the whole vault and storage.
+#[derive(Debug, Clone)]
+pub struct ModuleAccountInputs {
+    pub view: Result<ModuleAccount, String>,
+    pub state: Result<guardian_module_sdk::MidenAccountState, String>,
+}
+
 /// The state [`NetworkClient::apply_delta`] produced: the new state blob,
 /// plus the commitment, nonce, and auth bindings of the account it encodes,
 /// read off the account the method already holds so a caller persisting or
@@ -318,6 +347,14 @@ pub struct AuthBinding {
     pub signers: Vec<ChainCosigner>,
     pub guardian: Option<String>,
     pub guardian_scheme: Option<SignatureScheme>,
+}
+
+/// What a policy module receives about one transaction: the projection and the summary's
+/// binary encoding, both decoded from the same bytes the Guardian signs.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ModuleTransaction {
+    pub projection: guardian_module_sdk::MidenTransaction,
+    pub raw_tx_summary: Vec<u8>,
 }
 
 #[async_trait]
@@ -388,6 +425,52 @@ pub trait NetworkClient: Send + Sync {
         prev_account: miden_protocol::account::Account,
         delta_payload: &serde_json::Value,
     ) -> Result<AppliedState, String>;
+
+    /// Verifies (when `prev_commitment` is given) and applies `delta_payload`, and builds what
+    /// policy modules receive about it from the same decode. Called inside the reconstruction
+    /// task, so request assembly decodes nothing. The transaction's fee note is told apart with
+    /// the chain fee [`Self::load_fee_faucet`] loaded before.
+    fn apply_delta_with_module_inputs(
+        &self,
+        prev_commitment: Option<&str>,
+        prev_state_json: &serde_json::Value,
+        delta_payload: &serde_json::Value,
+    ) -> Result<(AppliedState, ModuleInputs), String> {
+        let applied = match prev_commitment {
+            Some(prev_commitment) => {
+                self.verify_and_apply_delta(prev_commitment, prev_state_json, delta_payload)?
+            }
+            None => self.apply_delta(prev_state_json, delta_payload)?,
+        };
+        let before = self.module_account_view(prev_state_json);
+        let transaction = before
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|before| self.module_transaction(delta_payload, before.nonce));
+        let inputs = ModuleInputs {
+            before,
+            after: self.module_account_view(&applied.state_json),
+            transaction,
+        };
+        Ok((applied, inputs))
+    }
+
+    /// [`Self::apply_delta_with_module_inputs`] on a previous state the caller has already
+    /// decoded, as [`Self::verify_and_apply_delta_to_account`] is to
+    /// [`Self::verify_and_apply_delta`].
+    fn verify_and_apply_delta_to_account_with_module_inputs(
+        &self,
+        prev_proof: &str,
+        prev_account: miden_protocol::account::Account,
+        delta_payload: &serde_json::Value,
+    ) -> Result<(AppliedState, ModuleInputs), String> {
+        use guardian_shared::ToJson;
+        self.apply_delta_with_module_inputs(
+            Some(prev_proof),
+            &prev_account.to_json(),
+            delta_payload,
+        )
+    }
 
     /// Merge multiple deltas
     fn merge_deltas(
@@ -524,6 +607,50 @@ pub trait NetworkClient: Send + Sync {
     ) -> Result<Option<AuthBinding>, String> {
         let _ = state_json;
         Ok(None)
+    }
+
+    /// The account's signers and thresholds as policy modules see them. Errors on auth state
+    /// this network cannot interpret; an empty view is never returned.
+    fn module_account_view(&self, state_json: &serde_json::Value) -> Result<ModuleAccount, String> {
+        let _ = state_json;
+        Err("policy modules are not supported on this network".into())
+    }
+
+    /// The account view and the whole vault and storage of one state, from one decode, as a
+    /// registration's request carries them. Called inside the reconstruction task.
+    fn module_account_inputs(&self, state_json: &serde_json::Value) -> ModuleAccountInputs {
+        ModuleAccountInputs {
+            view: self.module_account_view(state_json),
+            state: self.module_account_state(state_json),
+        }
+    }
+
+    /// The account's whole vault and storage, as a registration's subject carries them.
+    fn module_account_state(
+        &self,
+        state_json: &serde_json::Value,
+    ) -> Result<guardian_module_sdk::MidenAccountState, String> {
+        let _ = state_json;
+        Err("policy modules are not supported on this network".into())
+    }
+
+    /// The decoded effects of a transaction as policy modules see them. `tx_summary` is the
+    /// bare summary the Guardian verifies and signs, never a proposal wrapper; `initial_nonce`
+    /// is the nonce of the state it starts from, which identifies its fee note.
+    fn module_transaction(
+        &self,
+        tx_summary: &serde_json::Value,
+        initial_nonce: u64,
+    ) -> Result<ModuleTransaction, String> {
+        let _ = (tx_summary, initial_nonce);
+        Err("policy modules are not supported on this network".into())
+    }
+
+    /// Reads the chain's fee faucet and base fee, again once the last read is stale, so module
+    /// projections can tell the transaction's fee note from a payment. Until a first read
+    /// succeeds a transaction carrying a fee-script note cannot be projected.
+    async fn load_fee_faucet(&self) -> Result<(), String> {
+        Ok(())
     }
 
     /// Determine if account auth should be updated given the state

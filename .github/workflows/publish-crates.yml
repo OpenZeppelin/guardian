@@ -30,6 +30,11 @@ on:
         type: boolean
         required: false
         default: false
+      guardian-module-sdk:
+        description: "Select guardian-module-sdk"
+        type: boolean
+        required: false
+        default: false
   pull_request:
     paths:
       - ".github/workflows/publish-crates.yml"
@@ -61,6 +66,7 @@ jobs:
           INPUT_GUARDIAN_SHARED: ${{ inputs['guardian-shared'] }}
           INPUT_CONTRACTS: ${{ inputs['miden-confidential-contracts'] }}
           INPUT_MULTISIG: ${{ inputs['miden-multisig-client'] }}
+          INPUT_MODULE_SDK: ${{ inputs['guardian-module-sdk'] }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           SOURCE_REF: ${{ github.ref }}
           SOURCE_SHA: ${{ github.sha }}
@@ -71,6 +77,7 @@ jobs:
             guardian-client
             miden-confidential-contracts
             miden-multisig-client
+            guardian-module-sdk
           )
           selected=()
 
@@ -94,6 +101,7 @@ jobs:
               [[ "${INPUT_GUARDIAN_CLIENT}" == "true" ]] && selected+=(guardian-client)
               [[ "${INPUT_CONTRACTS}" == "true" ]] && selected+=(miden-confidential-contracts)
               [[ "${INPUT_MULTISIG}" == "true" ]] && selected+=(miden-multisig-client)
+              [[ "${INPUT_MODULE_SDK}" == "true" ]] && selected+=(guardian-module-sdk)
               if [[ "${INPUT_DRY_RUN}" == "true" ]]; then
                 mode=dry_run
               else
@@ -176,6 +184,7 @@ jobs:
             guardian-client
             miden-confidential-contracts
             miden-multisig-client
+            guardian-module-sdk
           )
           version=
           for crate in "${crates[@]}"; do

@@ -47,23 +47,12 @@ pub async fn register(runner: &Runner) -> ActionOutcome {
     let Some(fixtures) = runner.fixtures.as_ref() else {
         return ActionOutcome::failed_setup("the server fixtures were not loaded");
     };
-    let id = match account_id(fixtures) {
-        Ok(id) => id,
+    let configured = match configure_fixture(runner, fixtures).await {
+        Ok(configured) => configured,
         Err(outcome) => return outcome,
     };
-    let mut client = match connect(runner, fixtures).await {
-        Ok(client) => client,
-        Err(outcome) => return outcome,
-    };
-
-    let auth = AuthConfig {
-        auth_type: Some(AuthType::MidenFalconRpo(MidenFalconRpoAuth {
-            cosigner_commitments: fixtures.cosigner_commitments.clone(),
-        })),
-    };
-
-    match client.configure(&id, auth, &fixtures.account).await {
-        Ok(_) => ActionOutcome::Passed,
+    match configured {
+        Ok(()) => ActionOutcome::Passed,
         Err(error) => match error.guardian_code() {
             Some(code) if code == "account_already_configured" => ActionOutcome::Passed,
             // The fixture account binds one specific guardian commitment, so a
@@ -84,6 +73,26 @@ pub async fn register(runner: &Runner) -> ActionOutcome {
             )),
         },
     }
+}
+
+/// Configures the fixture account with its own signers and state, as its first registration
+/// did: a re-registration once it is registered. The outer error is a setup failure, the inner
+/// one GUARDIAN's answer.
+pub(super) async fn configure_fixture(
+    runner: &Runner,
+    fixtures: &Fixtures,
+) -> Result<Result<(), guardian_client::ClientError>, ActionOutcome> {
+    let id = account_id(fixtures)?;
+    let mut client = connect(runner, fixtures).await?;
+    let auth = AuthConfig {
+        auth_type: Some(AuthType::MidenFalconRpo(MidenFalconRpoAuth {
+            cosigner_commitments: fixtures.cosigner_commitments.clone(),
+        })),
+    };
+    Ok(client
+        .configure(&id, auth, &fixtures.account)
+        .await
+        .map(drop))
 }
 
 /// Whether two commitments name the same state, whatever their spelling.
@@ -914,7 +923,8 @@ async fn execute_until_pre_boundary_failure(
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     };
-    if settled.error.as_ref().map(|error| error.code) != Some(ExecutionFailureCode::NodeUnavailable)
+    if settled.error.as_ref().map(|error| &error.code)
+        != Some(&ExecutionFailureCode::NodeUnavailable)
     {
         return Err(ActionOutcome::failed_product(format!(
             "{label}: expected `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`: {settled:?}"

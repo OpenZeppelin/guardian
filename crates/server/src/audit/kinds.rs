@@ -52,6 +52,30 @@ pub const ACCOUNTS_RELEASE: &str = "accounts.release";
 /// request outcome (`queued` / `in_progress` / `cooldown`).
 pub const STATS_REFRESH: &str = "stats.refresh";
 
+/// An operator changed a policy module's global params.
+pub const MODULES_PARAMS_GLOBAL: &str = "modules.params.global";
+
+/// An operator set or removed an account's layer on a mandatory policy module.
+pub const MODULES_PARAMS_ACCOUNT: &str = "modules.params.account";
+
+/// An operator replaced an account's assigned policy modules.
+pub const MODULES_ASSIGNMENT: &str = "modules.assignment";
+
+/// An operator enabled a policy module instance.
+pub const MODULES_ENABLE: &str = "modules.enable";
+
+/// An operator disabled a policy module instance.
+pub const MODULES_DISABLE: &str = "modules.disable";
+
+/// A policy module evaluation let through a module failure because the instance is
+/// `on_error = "allow"`: at proposal creation, at account registration, or at approval once the
+/// Guardian signed. System-initiated (`operator_identity` is `system`). `payload` carries
+/// `hook`, `submitter`, `catalog_hash`, `params_version`, `account_params_version` and
+/// `failed_open` (`module_id`, `layer`, `failure`), plus the `proposal_id` at proposal creation
+/// or the delta's `nonce` and `prev_commitment` at approval, where the skips are also stored
+/// with the signed delta (`modules.failed_open` on the dashboard delta detail).
+pub const MODULES_FAILED_OPEN: &str = "modules.failed_open";
+
 /// All registered kinds in v1, for tests and introspection. Append
 /// new consts above and add them to this slice in the same commit.
 pub const ALL_KINDS: &[&str] = &[
@@ -61,6 +85,12 @@ pub const ALL_KINDS: &[&str] = &[
     ACCOUNTS_UNPAUSE,
     ACCOUNTS_RELEASE,
     STATS_REFRESH,
+    MODULES_PARAMS_GLOBAL,
+    MODULES_PARAMS_ACCOUNT,
+    MODULES_ASSIGNMENT,
+    MODULES_ENABLE,
+    MODULES_DISABLE,
+    MODULES_FAILED_OPEN,
 ];
 
 #[cfg(test)]
@@ -78,6 +108,12 @@ mod tests {
                 ACCOUNTS_UNPAUSE,
                 ACCOUNTS_RELEASE,
                 STATS_REFRESH,
+                MODULES_PARAMS_GLOBAL,
+                MODULES_PARAMS_ACCOUNT,
+                MODULES_ASSIGNMENT,
+                MODULES_ENABLE,
+                MODULES_DISABLE,
+                MODULES_FAILED_OPEN,
             ]
         );
     }

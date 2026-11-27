@@ -39,6 +39,8 @@ pub struct AppState {
     pub execution: crate::services::execute_proposal::ExecutionState,
     /// Miden account sessions.
     pub miden_sessions: Arc<MidenSessions>,
+    /// Policy modules consulted before approval; `None` when no catalog is configured.
+    pub modules: Option<Arc<crate::modules::ModulePipeline>>,
     #[cfg(feature = "evm")]
     pub evm: Arc<EvmAppState>,
 }

@@ -1,6 +1,6 @@
 ---
 name: smoke-test-operator-dashboard
-description: Run or guide manual smoke testing of Guardian operator dashboard auth and account APIs through `examples/operator-smoke-web` and `@openzeppelin/guardian-operator-client`. Use when Codex needs to verify operator challenge signing, session login, logout, account listing, account detail, local signer behavior, local or remote Guardian targets, or workspace versus published operator client package behavior.
+description: Run or guide manual smoke testing of Guardian operator dashboard auth and account APIs through `examples/operator-smoke-web` and `@openzeppelin/guardian-operator-client`. Use when Codex needs to verify operator challenge signing, session login, logout, account listing, account detail, local signer behavior, policy module catalog, params history and writes, local or remote Guardian targets, or workspace versus published operator client package behavior.
 ---
 
 # Smoke Test Operator Dashboard
@@ -117,6 +117,10 @@ Set `HEADLESS=false` to watch the browser. Set `CHROME_EXECUTABLE` if Chrome is 
 9. Click `Logout`, then verify a protected action such as `List accounts` is rejected until logging in again.
 
 Use `GUARDIAN_URL=http://127.0.0.1:3000` for local runs. For deployed runs, use the deployed Guardian URL.
+
+## Policy Modules Panel
+
+The `Policy modules` panel covers the module operator endpoints: the catalog (instances, `catalogHash`, `paramsVersion`, enable and disable), the params history paged with `before`, an account's modules with `accountParamsVersion`, and the writes (global params, account layer set or clear, assignment replace). Start Guardian with a catalog and the allowlist permissions as described in `examples/operator-smoke-web/README.md` ("Policy modules panel"). Check that each write shows up in the params history and that a write without its permission surfaces `HTTP 403 [insufficient_operator_permission]`. The automated script does not drive this panel.
 
 ## Assertions
 

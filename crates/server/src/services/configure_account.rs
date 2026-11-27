@@ -2,6 +2,8 @@ use crate::error::{GuardianError, Result};
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials};
 use crate::metadata::{AccountMetadata, ClearTransition};
+use crate::modules::HookName;
+use crate::modules::request::{self, RegistrationInput, StoredRegistration};
 use crate::network::{RpcReadMode, StateVerification};
 use crate::services::{consume_auth_timestamp, validate_request_timestamp};
 use crate::state::AppState;
@@ -96,25 +98,11 @@ pub async fn configure_account(
     // the account below and then failed before writing its state (a storage
     // error after the claim). Its retry finishes that first configuration:
     // it is held to the scheme policy for new accounts and counted as a
-    // creation. A failed state read keeps the reconfiguration treatment, so
-    // it can never block an account that does have state.
+    // creation. A failed state read refuses the request as retryable rather
+    // than guessing: guessing "stored" would skip the default copy for good,
+    // guessing "absent" would apply the new-account rules to a configured one.
     let unfinished_claim = match &existing {
-        Some(_) => match state
-            .storage
-            .pull_state_commitment(&params.account_id)
-            .await
-        {
-            Ok(_) => false,
-            Err(e) if crate::storage::is_storage_not_found(&e) => true,
-            Err(e) => {
-                tracing::warn!(
-                    account_id = %params.account_id,
-                    error = %e,
-                    "Could not check for a stored state; treating the account as configured"
-                );
-                false
-            }
-        },
+        Some(_) => !has_stored_state(state, &params.account_id).await?,
         None => false,
     };
     // The GUARDIAN's scheme selects this server's ACK identity for the
@@ -255,15 +243,70 @@ pub async fn configure_account(
         (head, signer_commitment)
     };
 
+    // The replay check and the vouch run before the registration modules, so they judge only a
+    // fresh request and a state something vouches for, and no state is written until they allow
+    // it; what a concurrent write can change meanwhile (the chain head, the stored state) is
+    // checked again after them. A registered account consumes the replay timestamp first: a replay is
+    // refused before any chain read or module call. A first configuration has no metadata row
+    // for the replay row to reference yet; it consumes right after its claim below, and a
+    // replay of it finds the row and takes this path.
+    if existing.is_some() {
+        consume_auth_timestamp(
+            state,
+            &params.account_id,
+            &signer_commitment,
+            request_timestamp,
+            crate::metadata::auth::MAX_TIMESTAMP_SKEW_MS,
+        )
+        .await?;
+    }
+
+    // The stored state this re-onboarding replaces, read only once the request is
+    // authenticated and fresh. The write below refuses to overwrite a state promoted after this
+    // read.
+    let mut stored_base = match &existing {
+        Some(_) => stored_head(state, &params.account_id).await?,
+        None => None,
+    };
+    let mut vouch = vouch_for(
+        state,
+        &params,
+        &head,
+        existing.as_ref(),
+        stored_base.as_ref(),
+        &signer_commitment,
+    )
+    .await?;
+
+    // A new account, or a claim whose account has no module history yet, is evaluated with the
+    // default modules and receives copies of them below. One an operator already configured
+    // (a layer, an assignment, even an emptied one) is evaluated as it is configured, since the
+    // copy below never overrides that.
+    let first_registration = match &existing {
+        None => true,
+        Some(_) => unfinished_claim && !has_module_history(state, &params.account_id).await?,
+    };
+    let (default_copies, mut judged_base) = approve_registration(
+        state,
+        &params,
+        &signer_commitment,
+        stored_base
+            .as_ref()
+            .and(existing.as_ref())
+            .map(|existing| &existing.auth),
+        first_registration,
+    )
+    .await?;
+    recheck_chain_after_modules(state, &params.account_id, &head, vouch, &judged_base).await?;
+
     let now = state.clock.now_rfc3339();
 
-    // A first configuration claims the account before anything else: of two
-    // concurrent first configurations (a client retry, or a replay of the
-    // signed request) exactly one creates the metadata row, and the other
-    // is judged below as a reconfiguration of the account it lost to. Its
-    // replay timestamp is then consumed before it writes anything, so a
-    // duplicate is refused instead of storing the initial state over
-    // whatever the account has moved to since.
+    // A first configuration claims the account only once the modules allowed it, so a refused
+    // one writes nothing: of two concurrent first configurations (a client retry, or a replay of
+    // the signed request) exactly one creates the metadata row. The winner consumes its replay
+    // timestamp before it writes anything else; the other is a reconfiguration of the account it
+    // lost to, so it consumes against that account first, then is vouched for and judged again
+    // as one.
     let created = existing.is_none()
         && state
             .metadata
@@ -287,81 +330,92 @@ pub async fn configure_account(
                 );
                 GuardianError::StorageError(format!("Failed to create account metadata: {e}"))
             })?;
+    if created {
+        consume_auth_timestamp(
+            state,
+            &params.account_id,
+            &signer_commitment,
+            request_timestamp,
+            crate::metadata::auth::MAX_TIMESTAMP_SKEW_MS,
+        )
+        .await?;
+    }
     let existing = if existing.is_none() && !created {
         let claimed = state.metadata.get(&params.account_id).await.map_err(|e| {
             GuardianError::StorageError(format!("Failed to re-read account metadata: {e}"))
         })?;
-        Some(claimed.ok_or_else(|| {
+        let claimed = claimed.ok_or_else(|| {
             GuardianError::StorageError(
                 "Account metadata vanished after a concurrent first configuration".to_string(),
             )
-        })?)
+        })?;
+        consume_auth_timestamp(
+            state,
+            &params.account_id,
+            &signer_commitment,
+            request_timestamp,
+            crate::metadata::auth::MAX_TIMESTAMP_SKEW_MS,
+        )
+        .await?;
+        stored_base = stored_head(state, &params.account_id).await?;
+        vouch = vouch_for(
+            state,
+            &params,
+            &head,
+            Some(&claimed),
+            stored_base.as_ref(),
+            &signer_commitment,
+        )
+        .await?;
+        judged_base = approve_registration(
+            state,
+            &params,
+            &signer_commitment,
+            stored_base.as_ref().map(|_| &claimed.auth),
+            false,
+        )
+        .await?
+        .1;
+        recheck_chain_after_modules(state, &params.account_id, &head, vouch, &judged_base).await?;
+        Some(claimed)
     } else {
         existing
     };
 
-    // The replay-state row has an FK to account metadata, which the claim
-    // above guarantees, so every configuration consumes its timestamp
-    // before it writes any state.
-    consume_auth_timestamp(
-        state,
-        &params.account_id,
-        &signer_commitment,
-        request_timestamp,
-        crate::metadata::auth::MAX_TIMESTAMP_SKEW_MS,
-    )
-    .await?;
-
-    // The stored state this re-onboarding replaces, read only once the
-    // request is authenticated and fresh. The write below refuses to
-    // overwrite a state promoted after this read.
-    let stored_base = match &existing {
-        Some(_) => stored_head(state, &params.account_id).await?,
-        None => None,
-    };
-
-    // Guardian stores a state only once something vouches for it. A first
-    // state at nonce 0 vouches for itself: its seed binds its code and
-    // storage, signers and thresholds included, to its account id, and its
-    // vault is empty. Its own signers register it whoever claimed the
-    // account id first. Any other state needs the chain whenever the stored
-    // account cannot vouch for it: it was released, and its stored signers
-    // may have changed since; the requesting key is not one of its stored
-    // signers; or the submitted state is not the stored one.
-    let vouch = match (&existing, &stored_base) {
-        (_, None) if head.nonce == Some(0) => Vouch::FirstState,
-        (Some(existing), _)
-            if existing.released_at.is_some()
-                || existing.auth.signer_scheme(&signer_commitment).is_none() =>
-        {
-            Vouch::Chain
-        }
-        (Some(_), Some(stored)) if stored.commitment == head.commitment => Vouch::StoredState,
-        _ => Vouch::Chain,
-    };
-    match vouch {
-        Vouch::Chain => {
-            let stored_cosigner = existing
-                .as_ref()
-                .is_some_and(|existing| existing.auth.signer_scheme(&signer_commitment).is_some());
-            let newer_stored = stored_base.as_ref().filter(|stored| {
-                stored_cosigner
-                    && matches!((stored.nonce, head.nonce), (Some(stored_nonce), Some(submitted_nonce)) if submitted_nonce < stored_nonce)
-            });
-            ensure_on_chain_state(state, &params.account_id, &head.commitment, newer_stored).await?
-        }
-        Vouch::FirstState => state
-            .network_client
-            .validate_first_state(&params.initial_state)
-            .map_err(|e| {
-                tracing::warn!(
-                    account_id = %params.account_id,
-                    error = %e,
-                    "initial_state is not a valid first account state in configure_account"
-                );
-                GuardianError::InvalidInput(format!("Invalid first state in initial_state: {e}"))
-            })?,
-        Vouch::StoredState => {}
+    // An account that had no stored state when it was read is read again now that the modules
+    // ran: the write for such an account replaces whatever is there, so a state another request
+    // stored meanwhile (one that finished a claim, or won the one this request lost), which was
+    // neither vouched against nor judged, refuses the request instead. A stored state that moved
+    // is refused by the write itself, which replaces only the state it read.
+    if existing.is_some()
+        && stored_base.is_none()
+        && let Some(current) = stored_commitment(state, &params.account_id).await?
+    {
+        tracing::warn!(
+            account_id = %params.account_id,
+            current = %current,
+            "A state was stored while the request was checked and judged; refusing to replace a state it did not see"
+        );
+        return Err(GuardianError::CommitmentMismatch {
+            expected: current,
+            actual: head.commitment.clone(),
+        });
+    }
+    if !judged_base.is(stored_base.as_ref()) {
+        let current = stored_base
+            .as_ref()
+            .map(|stored| stored.commitment.clone())
+            .unwrap_or_default();
+        tracing::warn!(
+            account_id = %params.account_id,
+            current = %current,
+            judged = ?judged_base,
+            "The stored state moved while the registration modules judged the request; refusing to replace a state they did not see"
+        );
+        return Err(GuardianError::CommitmentMismatch {
+            expected: current,
+            actual: head.commitment.clone(),
+        });
     }
 
     // A state older than the stored one may replace it only while the stored
@@ -387,6 +441,39 @@ pub async fn configure_account(
             expected: stored.commitment.clone(),
             actual: head.commitment.clone(),
         });
+    }
+
+    // Every check has passed and the timestamp is consumed: copy the default modules the request
+    // was evaluated with, into the account it claimed, the claim it finishes or the claim it lost.
+    // The loser copies too, since the winner may stop between its claim and its copy while the
+    // loser stores the state, and nothing would then repair the account. Only an account without
+    // any assignment history receives them, so the first copy wins and an operator's earlier
+    // write is never overridden; a crash before this point is repaired by the retry, which finds
+    // an unfinished claim with no history and copies again.
+    if (created || first_registration && existing.is_some())
+        && !default_copies.is_empty()
+        && let Some(modules) = state.modules.as_deref()
+    {
+        let copied = modules
+            .store()
+            .seed_assignment(
+                &params.account_id.to_ascii_lowercase(),
+                default_copies,
+                &crate::modules::store::Change {
+                    operator: "catalog",
+                    reason: "default modules copied at registration",
+                    at: now.clone(),
+                    expected_version: None,
+                },
+            )
+            .await
+            .map_err(GuardianError::StorageError)?;
+        if !copied {
+            tracing::warn!(
+                account_id = %params.account_id,
+                "Default modules not copied: an operator configured the account's modules while it registered; the account keeps that configuration"
+            );
+        }
     }
 
     let created_at = existing
@@ -584,6 +671,156 @@ fn reject_disallowed_scheme(state: &AppState, scheme: SignatureScheme) -> Result
     })
 }
 
+/// The stored state the registration modules judged a request against, so the write replaces
+/// that state and no other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum JudgedBase {
+    /// No module judged the request.
+    Unjudged,
+    /// The modules judged it with this stored commitment as `before`, or with none.
+    Stored(Option<String>),
+}
+
+impl JudgedBase {
+    /// Whether `stored` is the state the modules judged against.
+    fn is(&self, stored: Option<&StateHead>) -> bool {
+        match self {
+            JudgedBase::Unjudged => true,
+            JudgedBase::Stored(judged) => {
+                judged.as_deref() == stored.map(|stored| stored.commitment.as_str())
+            }
+        }
+    }
+}
+
+/// Runs `before_account_registered` for this request: with the stored state as `before` when
+/// there is one, `stored_auth` being the auth configuration stored with it, and without one for
+/// a first configuration or a claim whose state was never stored.
+/// Returns the default copies to write and the stored state the modules judged against.
+async fn approve_registration(
+    state: &AppState,
+    params: &ConfigureAccountParams,
+    signer_commitment: &str,
+    stored_auth: Option<&Auth>,
+    first_registration: bool,
+) -> Result<(Vec<crate::modules::store::Assigned>, JudgedBase)> {
+    let (plan, default_copies) = match state.modules.as_deref() {
+        Some(modules) if first_registration => {
+            modules.plan_first_registration(&params.account_id).await?
+        }
+        Some(modules) => (
+            modules
+                .plan(HookName::BeforeAccountRegistered, &params.account_id)
+                .await?,
+            Vec::new(),
+        ),
+        None => (None, Vec::new()),
+    };
+    if let Some(plan) = plan {
+        let stored_state = if stored_auth.is_some() {
+            Some(
+                state
+                    .storage
+                    .pull_state(&params.account_id)
+                    .await
+                    .map_err(|e| format!("stored state unavailable: {e}")),
+            )
+        } else {
+            None
+        };
+        let judged = JudgedBase::Stored(match &stored_state {
+            Some(Ok(stored)) => Some(stored.commitment.clone()),
+            _ => None,
+        });
+        // Both states are decoded once, inside the reconstruction task, so request assembly
+        // decodes nothing on the async path.
+        let client = state.network_client.clone();
+        let initial_json = params.initial_state.clone();
+        let stored_json = stored_state.map(|stored| stored.map(|stored| stored.state_json));
+        let (initial, stored) = crate::network::reconstructor()
+            .run(move || {
+                Ok((
+                    client.module_account_inputs(&initial_json),
+                    stored_json
+                        .map(|stored| stored.and_then(|json| client.module_account_view(&json))),
+                ))
+            })
+            .await?;
+        let network_id = plan.network_id();
+        let evaluation = plan
+            .run(|| {
+                request::registration_request(RegistrationInput {
+                    network_id,
+                    account_id: &params.account_id,
+                    submitter: signer_commitment,
+                    submitter_session: false,
+                    auth: &params.auth,
+                    network_config: &params.network_config,
+                    stored: stored
+                        .zip(stored_auth)
+                        .map(|(view, auth)| StoredRegistration { view, auth }),
+                    initial,
+                    accounting_time: state.clock.now(),
+                })
+            })
+            .await?;
+        evaluation.audit_failed_open(
+            state.auditor.as_ref(),
+            HookName::BeforeAccountRegistered,
+            &params.account_id,
+            signer_commitment,
+            serde_json::Map::new(),
+        );
+        return Ok((default_copies, judged));
+    }
+    Ok((default_copies, JudgedBase::Unjudged))
+}
+
+/// Whether the account already holds module assignments.
+async fn has_module_history(state: &AppState, account_id: &str) -> Result<bool> {
+    match state.modules.as_deref() {
+        Some(modules) => modules.has_account_history(account_id).await,
+        None => Ok(false),
+    }
+}
+
+/// Whether the account has a stored state. A failed read is a storage error, which the client
+/// retries, never a guess either way.
+async fn has_stored_state(state: &AppState, account_id: &str) -> Result<bool> {
+    match state.storage.pull_state_commitment(account_id).await {
+        Ok(_) => Ok(true),
+        Err(e) if crate::storage::is_storage_not_found(&e) => Ok(false),
+        Err(e) => {
+            tracing::error!(
+                account_id = %account_id,
+                error = %e,
+                "Could not check for a stored state in configure_account"
+            );
+            Err(GuardianError::StorageError(format!(
+                "Failed to check for a stored state: {e}"
+            )))
+        }
+    }
+}
+
+/// The stored state's commitment, or `None` when the account has no stored state.
+async fn stored_commitment(state: &AppState, account_id: &str) -> Result<Option<String>> {
+    match state.storage.pull_state_head(account_id).await {
+        Ok(stored) => Ok(Some(stored.commitment)),
+        Err(e) if crate::storage::is_storage_not_found(&e) => Ok(None),
+        Err(e) => {
+            tracing::error!(
+                account_id = %account_id,
+                error = %e,
+                "Failed to read the stored state in configure_account"
+            );
+            Err(GuardianError::StorageError(format!(
+                "Failed to read the stored state: {e}"
+            )))
+        }
+    }
+}
+
 /// The stored state's commitment and nonce, or `None` when the account has
 /// no stored state. A row written before the server stored nonces carries
 /// none: it is decoded from the stored state, and the commitment is taken
@@ -633,6 +870,7 @@ async fn stored_head(state: &AppState, account_id: &str) -> Result<Option<StateH
 }
 
 /// What vouches for the state a configuration stores.
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Vouch {
     /// The chain: the submitted state must be the account's on-chain state.
     Chain,
@@ -641,6 +879,73 @@ enum Vouch {
     /// Itself: a first state at nonce 0, whose seed binds its code and
     /// storage to its account id and whose vault is empty.
     FirstState,
+}
+
+/// Vouches for the submitted state before any module judges it, and returns what vouched.
+/// Guardian stores a state only once something vouches for it. A first state at nonce 0 vouches
+/// for itself while nothing is stored: its seed binds its code and storage, signers and
+/// thresholds included, to its account id, and its vault is empty, so its own signers register
+/// it whoever claimed the account id first. Any other state needs the chain whenever the stored
+/// account cannot vouch for it: it was released, and its stored signers may have changed since;
+/// the requesting key is not one of its stored signers; or the submitted state is not the stored
+/// one. Without this before the modules, anyone could submit a made-up state for someone else's
+/// account and read that account's module verdicts, or hand remote modules forged states under
+/// its id.
+async fn vouch_for(
+    state: &AppState,
+    params: &ConfigureAccountParams,
+    head: &StateHead,
+    existing: Option<&AccountMetadata>,
+    stored_base: Option<&StateHead>,
+    signer_commitment: &str,
+) -> Result<Vouch> {
+    let stored_cosigner =
+        existing.is_some_and(|existing| existing.auth.signer_scheme(signer_commitment).is_some());
+    let vouch = match (existing, stored_base) {
+        (_, None) if head.nonce == Some(0) => Vouch::FirstState,
+        (Some(existing), _) if existing.released_at.is_some() || !stored_cosigner => Vouch::Chain,
+        (Some(_), Some(stored)) if stored.commitment == head.commitment => Vouch::StoredState,
+        _ => Vouch::Chain,
+    };
+    match vouch {
+        Vouch::Chain => {
+            let newer_stored = stored_base.filter(|stored| {
+                stored_cosigner
+                    && matches!((stored.nonce, head.nonce), (Some(stored_nonce), Some(submitted_nonce)) if submitted_nonce < stored_nonce)
+            });
+            ensure_on_chain_state(state, &params.account_id, &head.commitment, newer_stored)
+                .await?;
+        }
+        Vouch::FirstState => state
+            .network_client
+            .validate_first_state(&params.initial_state)
+            .map_err(|e| {
+                tracing::warn!(
+                    account_id = %params.account_id,
+                    error = %e,
+                    "initial_state is not a valid first account state in configure_account"
+                );
+                GuardianError::InvalidInput(format!("Invalid first state in initial_state: {e}"))
+            })?,
+        Vouch::StoredState => {}
+    }
+    Ok(vouch)
+}
+
+/// The chain can move while a module judges the request (a Guardian switch, for one), so a state
+/// the chain vouched for before the modules ran is read again once they did. Without modules the
+/// first read is already next to the write.
+async fn recheck_chain_after_modules(
+    state: &AppState,
+    account_id: &str,
+    head: &StateHead,
+    vouch: Vouch,
+    judged_base: &JudgedBase,
+) -> Result<()> {
+    if vouch == Vouch::Chain && *judged_base != JudgedBase::Unjudged {
+        ensure_on_chain_state(state, account_id, &head.commitment, None).await?;
+    }
+    Ok(())
 }
 
 /// Requires `commitment` to be the account's current on-chain state. An
@@ -739,6 +1044,7 @@ async fn stored_state_landed(state: &AppState, account_id: &str, commitment: &st
 mod tests {
     use super::*;
     use crate::ack::AckRegistry;
+    use crate::modules::testing::StubModule;
     use crate::state_object::StateHead;
     use crate::storage::StorageBackend;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
@@ -770,6 +1076,7 @@ mod tests {
         AppState {
             execution: Default::default(),
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage,
             metadata: Arc::new(metadata_store),
             network_client: Arc::new(network_client),
@@ -3407,5 +3714,1165 @@ mod tests {
         let result = configure_account(&state, params).await;
 
         assert!(result.is_ok(), "got: {result:?}");
+    }
+
+    struct ModuleRun {
+        result: Result<ConfigureAccountResult>,
+        storage: MockStorageBackend,
+        metadata: MockMetadataStore,
+        network: MockNetworkClient,
+        module: Arc<crate::modules::testing::StubModule>,
+        modules: Arc<crate::modules::ModulePipeline>,
+        audited: Vec<crate::audit::AuditEvent>,
+    }
+
+    async fn configure_with_module(
+        existing: impl FnOnce(String) -> Option<AccountMetadata>,
+        module: Arc<crate::modules::testing::StubModule>,
+    ) -> ModuleRun {
+        let signers = crate::modules::testing::instance(
+            "signers",
+            &[HookName::BeforeAccountRegistered],
+            crate::modules::catalog::OnError::Deny,
+            module.clone(),
+        );
+        configure_with_modules(existing, vec![signers], module).await
+    }
+
+    /// `module` is the stub the caller inspects; `instances` is the whole catalog.
+    async fn configure_with_modules(
+        existing: impl FnOnce(String) -> Option<AccountMetadata>,
+        instances: Vec<crate::modules::registry::Instance>,
+        module: Arc<crate::modules::testing::StubModule>,
+    ) -> ModuleRun {
+        configure_on_chain(existing, instances, module, StateVerification::Match).await
+    }
+
+    /// As [`configure_with_modules`], with the chain answering every state check with `chain`.
+    async fn configure_on_chain(
+        existing: impl FnOnce(String) -> Option<AccountMetadata>,
+        instances: Vec<crate::modules::registry::Instance>,
+        module: Arc<crate::modules::testing::StubModule>,
+        chain: StateVerification,
+    ) -> ModuleRun {
+        configure_on_storage(existing, instances, module, chain, |storage| storage).await
+    }
+
+    /// As [`configure_on_chain`], with `adjust` changing the stored state the request meets.
+    async fn configure_on_storage(
+        existing: impl FnOnce(String) -> Option<AccountMetadata>,
+        instances: Vec<crate::modules::registry::Instance>,
+        module: Arc<crate::modules::testing::StubModule>,
+        chain: StateVerification,
+        adjust: impl FnOnce(MockStorageBackend) -> MockStorageBackend,
+    ) -> ModuleRun {
+        configure_run(
+            existing,
+            instances,
+            module,
+            vec![chain.clone(), chain],
+            adjust,
+            |metadata| metadata,
+        )
+        .await
+    }
+
+    /// The general form: the chain answers the state checks with `chain`, in order, and `Match`
+    /// once they run out; `adjust_storage` and `adjust_metadata` change what the request meets.
+    async fn configure_run(
+        existing: impl FnOnce(String) -> Option<AccountMetadata>,
+        instances: Vec<crate::modules::registry::Instance>,
+        module: Arc<crate::modules::testing::StubModule>,
+        chain: Vec<StateVerification>,
+        adjust_storage: impl FnOnce(MockStorageBackend) -> MockStorageBackend,
+        adjust_metadata: impl FnOnce(MockMetadataStore) -> MockMetadataStore,
+    ) -> ModuleRun {
+        use crate::modules::testing::pipeline;
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+        let existing = existing(commitment_hex.clone());
+        let account_json = include_str!("../testing/fixtures/account.json");
+        let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
+
+        let network_client = chain.into_iter().rev().fold(
+            MockNetworkClient::new()
+                .with_validate_credential(Ok(()))
+                .with_get_state_head(Ok(head("0x5678", 3))),
+            |client, answer| client.with_verify_commitment(Ok(answer)),
+        );
+        let network_client = network_client.with_module_views(
+            guardian_module_sdk::AccountView {
+                signer_commitments: vec![commitment_hex.clone()],
+                ..Default::default()
+            },
+            guardian_module_sdk::MidenTransaction::default(),
+        );
+        let storage = MockStorageBackend::new()
+            .with_submit_state(Ok(()))
+            .with_pull_state(Ok(crate::state_object::StateObject {
+                account_id: account_id_hex.into(),
+                state_json: initial_state.clone(),
+                commitment: "0x5678".into(),
+                nonce: Some(3),
+                created_at: "2024-01-01T00:00:00Z".into(),
+                updated_at: "2024-01-01T00:00:00Z".into(),
+                auth_scheme: "falcon".into(),
+            }));
+        let storage = adjust_storage(storage);
+        let metadata = adjust_metadata(
+            MockMetadataStore::new()
+                .with_get(Ok(existing))
+                .with_set(Ok(())),
+        );
+        let network = network_client.clone();
+        let mut state =
+            create_test_app_state(network_client, storage.clone(), metadata.clone()).await;
+        let modules = pipeline(instances);
+        state.modules = Some(modules.clone());
+        let auditor = crate::testing::helpers::CapturingAuditor::new();
+        state.auditor = Arc::new(auditor.clone());
+
+        let result = configure_account(
+            &state,
+            ConfigureAccountParams {
+                account_id: account_id_hex.to_string(),
+                auth: Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![commitment_hex],
+                },
+                network_config: crate::metadata::NetworkConfig::miden_default(),
+                initial_state,
+                credential: Credentials::signature(pubkey_hex, signature_hex, timestamp),
+            },
+        )
+        .await;
+        ModuleRun {
+            result,
+            storage,
+            metadata,
+            network,
+            module,
+            modules,
+            audited: auditor.snapshot(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failure_let_through_at_registration_is_audited() {
+        use crate::modules::catalog::OnError;
+        use crate::modules::testing::{Behaviour, StubModule, instance};
+
+        let module = StubModule::new(Behaviour::Fail);
+        let failing = instance(
+            "signers",
+            &[HookName::BeforeAccountRegistered],
+            OnError::Allow,
+            module.clone(),
+        );
+        let run = configure_with_modules(|_| None, vec![failing], module).await;
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        let skipped: Vec<_> = run
+            .audited
+            .iter()
+            .filter(|event| event.action_kind == crate::audit::kinds::MODULES_FAILED_OPEN)
+            .collect();
+        assert_eq!(skipped.len(), 1, "{:?}", run.audited);
+        assert_eq!(skipped[0].payload["hook"], "before_account_registered");
+        assert_eq!(skipped[0].payload["failed_open"][0]["module_id"], "signers");
+
+        let clean = configure_with_module(|_| None, StubModule::allowing()).await;
+        assert!(clean.result.is_ok());
+        assert!(
+            clean
+                .audited
+                .iter()
+                .all(|event| event.action_kind != crate::audit::kinds::MODULES_FAILED_OPEN)
+        );
+    }
+
+    fn existing_account(
+        paused: bool,
+        released: bool,
+    ) -> impl FnOnce(String) -> Option<AccountMetadata> {
+        use chrono::TimeZone;
+        move |commitment| {
+            let at = chrono::Utc
+                .with_ymd_and_hms(2026, 5, 19, 14, 30, 0)
+                .unwrap();
+            Some(AccountMetadata {
+                account_id: "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d".into(),
+                auth: Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![commitment],
+                },
+                network_config: crate::metadata::NetworkConfig::miden_default(),
+                created_at: "2024-01-01T00:00:00Z".into(),
+                updated_at: "2024-01-01T00:00:00Z".into(),
+                has_pending_candidate: false,
+                paused_at: paused.then_some(at),
+                paused_reason: paused.then(|| "compliance".to_string()),
+                released_at: released.then_some(at),
+            })
+        }
+    }
+
+    fn assert_nothing_written(run: &ModuleRun) {
+        assert!(matches!(
+            run.result,
+            Err(GuardianError::ModuleDenied { .. })
+        ));
+        assert_no_writes(run);
+    }
+
+    /// No state, metadata or release write: the stored signers and state are as they were.
+    fn assert_no_writes(run: &ModuleRun) {
+        assert!(run.storage.get_submit_state_calls().is_empty());
+        assert!(run.storage.get_replace_state_calls().is_empty());
+        assert!(run.metadata.get_create_calls().is_empty());
+        assert!(run.metadata.get_set_calls().is_empty());
+        assert!(run.metadata.clear_released_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn denied_new_registration_writes_nothing_and_has_no_before_view() {
+        let run = configure_with_module(|_| None, StubModule::denying("signer_not_allowed")).await;
+        assert_nothing_written(&run);
+        let request = run.module.last_request().expect("module was called");
+        assert!(request.before.is_none());
+        assert!(request.after.is_some());
+    }
+
+    /// A single-key account's view takes its signer from the auth configuration: `before` from
+    /// the one stored with the account, `after` from the one the request registers.
+    #[tokio::test]
+    async fn a_single_key_reconfiguration_shows_the_stored_signer_before_and_the_new_one_after() {
+        let run = configure_with_module(
+            |commitment| {
+                existing_account(false, false)(commitment).map(|stored| AccountMetadata {
+                    auth: Auth::MidenFalconRpo {
+                        cosigner_commitments: vec!["0xold".into()],
+                    },
+                    ..stored
+                })
+            },
+            StubModule::allowing(),
+        )
+        .await;
+        run.result.expect("reconfiguration succeeds");
+        let request = run.module.last_request().expect("module was called");
+        assert_eq!(
+            request.before.expect("stored state").signer_commitments,
+            vec!["0xold".to_string()]
+        );
+        let after = request.after.expect("new state").signer_commitments;
+        assert_eq!(after.len(), 1);
+        assert_ne!(after, vec!["0xold".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn allowed_reconfiguration_keeps_the_pause_and_sees_the_stored_state() {
+        let run =
+            configure_with_module(existing_account(true, false), StubModule::allowing()).await;
+        run.result.expect("reconfiguration succeeds");
+        let set_calls = run.metadata.get_set_calls();
+        assert_eq!(set_calls.len(), 1);
+        assert!(set_calls[0].paused_at.is_some());
+        assert!(run.module.last_request().unwrap().before.is_some());
+    }
+
+    /// The modules judged the stored state they read as `before`; when another write replaced
+    /// it while they ran, the request is refused instead of replacing a state no module saw.
+    #[tokio::test]
+    async fn a_state_stored_while_the_modules_judged_is_not_replaced() {
+        let module = StubModule::allowing();
+        let run = configure_on_storage(
+            existing_account(false, false),
+            vec![crate::modules::testing::instance(
+                "signers",
+                &[HookName::BeforeAccountRegistered],
+                crate::modules::catalog::OnError::Deny,
+                module.clone(),
+            )],
+            module,
+            StateVerification::Match,
+            |storage| {
+                storage.with_pull_state_head(crate::state_object::StateHead {
+                    commitment: "0x9999".into(),
+                    nonce: Some(4),
+                })
+            },
+        )
+        .await;
+        assert!(
+            matches!(
+                &run.result,
+                Err(GuardianError::CommitmentMismatch { expected, .. }) if expected == "0x9999"
+            ),
+            "{:?}",
+            run.result
+        );
+        assert!(run.module.last_request().unwrap().before.is_some());
+        assert!(run.storage.get_replace_state_calls().is_empty());
+        assert!(run.storage.get_submit_state_calls().is_empty());
+        assert!(run.metadata.get_set_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn denied_reconfiguration_of_a_paused_account_changes_nothing() {
+        let run =
+            configure_with_module(existing_account(true, false), StubModule::denying("no")).await;
+        assert_nothing_written(&run);
+    }
+
+    /// A key the stored account does not list could otherwise submit a made-up state and read
+    /// the account's module verdicts: its state is checked against the chain before any module
+    /// runs, and a stored cosigner's request takes no extra chain read.
+    #[tokio::test]
+    async fn an_outsiders_state_is_vouched_for_before_any_module_judges_it() {
+        let module = StubModule::denying("signer_not_allowed");
+        let outsider = configure_on_chain(
+            |_| existing_account(false, false)("0xother".to_string()),
+            vec![crate::modules::testing::instance(
+                "signers",
+                &[HookName::BeforeAccountRegistered],
+                crate::modules::catalog::OnError::Deny,
+                module.clone(),
+            )],
+            module.clone(),
+            StateVerification::Absent,
+        )
+        .await;
+        assert!(
+            matches!(outsider.result, Err(GuardianError::StateNotOnChain { .. })),
+            "{:?}",
+            outsider.result
+        );
+        assert_eq!(module.calls(), 0, "no module saw the outsider's state");
+
+        let cosigner =
+            configure_with_module(existing_account(false, false), StubModule::allowing()).await;
+        assert!(cosigner.result.is_ok(), "{:?}", cosigner.result);
+    }
+
+    #[tokio::test]
+    async fn released_account_is_reactivated_only_when_modules_allow() {
+        let run =
+            configure_with_module(existing_account(false, true), StubModule::allowing()).await;
+        run.result.expect("re-onboarding succeeds");
+        assert_eq!(run.metadata.clear_released_calls.lock().unwrap().len(), 1);
+
+        let run =
+            configure_with_module(existing_account(false, true), StubModule::denying("no")).await;
+        assert_nothing_written(&run);
+    }
+
+    /// Allows the first evaluation and denies every later one.
+    #[derive(Default)]
+    struct AllowsOnce {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl guardian_module_sdk::Module for AllowsOnce {
+        async fn describe(
+            &self,
+            _guardian: &guardian_module_sdk::DescribeRequest,
+        ) -> std::result::Result<guardian_module_sdk::ModuleInfo, guardian_module_sdk::ModuleError>
+        {
+            Ok(Default::default())
+        }
+
+        async fn validate_params(
+            &self,
+            _params: &[u8],
+        ) -> std::result::Result<guardian_module_sdk::ParamsVerdict, guardian_module_sdk::ModuleError>
+        {
+            Ok(guardian_module_sdk::ParamsVerdict::ok())
+        }
+
+        async fn evaluate(
+            &self,
+            _request: &guardian_module_sdk::HookRequest,
+        ) -> std::result::Result<guardian_module_sdk::Decision, guardian_module_sdk::ModuleError>
+        {
+            Ok(
+                match self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                    0 => guardian_module_sdk::Decision::allow(),
+                    _ => guardian_module_sdk::Decision::deny("signer_not_allowed", "re-run"),
+                },
+            )
+        }
+    }
+
+    /// A first configuration that loses its claim to an account another request created
+    /// meanwhile, judged by `module` at `before_account_registered`.
+    async fn lose_the_claim_under(
+        module: Arc<dyn guardian_module_sdk::Module>,
+    ) -> (
+        Result<ConfigureAccountResult>,
+        MockMetadataStore,
+        MockStorageBackend,
+    ) {
+        lose_the_claim_to(module, None).await
+    }
+
+    /// As [`lose_the_claim_under`]; with `winner_signer`, the account it loses to lists that
+    /// signer instead of the requester's key, and the chain holds the submitted state for the
+    /// vouch and the check after the modules, then no longer when the claim is lost.
+    async fn lose_the_claim_to(
+        module: Arc<dyn guardian_module_sdk::Module>,
+        winner_signer: Option<&str>,
+    ) -> (
+        Result<ConfigureAccountResult>,
+        MockMetadataStore,
+        MockStorageBackend,
+    ) {
+        let (result, metadata, storage, _) = lose_the_claim_with(
+            module,
+            winner_signer,
+            crate::modules::catalog::Scope::All,
+            |_| {},
+        )
+        .await;
+        (result, metadata, storage)
+    }
+
+    /// As [`lose_the_claim_to`], with the instance in `scope` and `share` handed the storage
+    /// mock before the request runs; also returns the pipeline.
+    async fn lose_the_claim_with(
+        module: Arc<dyn guardian_module_sdk::Module>,
+        winner_signer: Option<&str>,
+        scope: crate::modules::catalog::Scope,
+        share: impl FnOnce(&MockStorageBackend),
+    ) -> (
+        Result<ConfigureAccountResult>,
+        MockMetadataStore,
+        MockStorageBackend,
+        Arc<crate::modules::ModulePipeline>,
+    ) {
+        use crate::modules::catalog::OnError;
+        use crate::modules::testing::{instance, pipeline};
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(account_id);
+        let winner = AccountMetadata {
+            created_at: "2023-06-01T00:00:00Z".into(),
+            ..claimed_metadata(account_id, winner_signer.unwrap_or(&commitment))
+        };
+        let metadata = MockMetadataStore::new()
+            .with_get(Ok(Some(winner)))
+            .with_get(Ok(None))
+            .with_create(Ok(false))
+            .with_update_timestamp_cas(Ok(true));
+        let storage = MockStorageBackend::new();
+        share(&storage);
+        let mut state = create_test_app_state(
+            MockNetworkClient::new()
+                .with_validate_credential(Ok(()))
+                .with_get_state_head(Ok(head("0x1234", 3)))
+                .with_verify_commitment(Ok(match winner_signer {
+                    Some(_) => StateVerification::Absent,
+                    None => StateVerification::Match,
+                }))
+                .with_verify_commitment(Ok(StateVerification::Match))
+                .with_verify_commitment(Ok(StateVerification::Match))
+                .with_module_views(
+                    guardian_module_sdk::AccountView {
+                        signer_commitments: vec![commitment.clone()],
+                        ..Default::default()
+                    },
+                    guardian_module_sdk::MidenTransaction::default(),
+                ),
+            storage.clone(),
+            metadata.clone(),
+        )
+        .await;
+        let mut judging = instance(
+            "signers",
+            &[HookName::BeforeAccountRegistered],
+            OnError::Deny,
+            module,
+        );
+        judging.config.scope = scope;
+        let modules = pipeline(vec![judging]);
+        state.modules = Some(modules.clone());
+        let initial_state =
+            serde_json::from_str(include_str!("../testing/fixtures/account.json")).unwrap();
+        let result = configure_account(
+            &state,
+            ConfigureAccountParams {
+                account_id: account_id.to_string(),
+                auth: Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![commitment],
+                },
+                network_config: crate::metadata::NetworkConfig::miden_default(),
+                initial_state,
+                credential: Credentials::signature(pubkey, signature, timestamp),
+            },
+        )
+        .await;
+        (result, metadata, storage, modules)
+    }
+
+    /// The winner of a claim may stop between its claim and its copy (a replay ordering, a
+    /// dropped connection, a storage error) while the loser stores the state, so the loser copies
+    /// the defaults too; the copy happens once, since it needs an account with no history.
+    #[tokio::test]
+    async fn a_lost_claim_copies_the_default_modules_when_the_account_has_none() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let (result, _, _, modules) = lose_the_claim_with(
+            module,
+            None,
+            crate::modules::catalog::Scope::Default,
+            |_| {},
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(assignment_of(&modules).await.len(), 1);
+    }
+
+    /// A lost claim is read again after its second judgement too: a state the winner stored
+    /// meanwhile is never replaced.
+    #[tokio::test]
+    async fn a_state_stored_on_a_lost_claim_while_it_is_judged_again_is_not_replaced() {
+        let storing = StoresStateWhileJudging::on_call(1);
+        let (result, metadata, storage, _) = lose_the_claim_with(
+            storing.clone(),
+            None,
+            crate::modules::catalog::Scope::All,
+            |storage| *storing.storage.lock().unwrap() = Some(storage.clone()),
+        )
+        .await;
+        assert!(
+            matches!(
+                &result,
+                Err(GuardianError::CommitmentMismatch { expected, .. }) if expected == "0xfinished"
+            ),
+            "{result:?}"
+        );
+        assert!(storage.get_submit_state_calls().is_empty());
+        assert!(metadata.get_set_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_lost_claim_is_judged_again_against_the_winners_account() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let (result, _, storage) = lose_the_claim_under(module.clone()).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(
+            module.calls(),
+            2,
+            "once as a new account, once as a reconfiguration of the winner's"
+        );
+        assert_eq!(storage.get_submit_state_calls().len(), 1);
+    }
+
+    /// A lost claim is a reconfiguration of the account it lost to, so it consumes its replay
+    /// timestamp against that account before it is judged again, and a refusal there stores
+    /// nothing.
+    #[tokio::test]
+    async fn a_lost_claim_consumes_before_its_second_judgement_and_a_refusal_stores_nothing() {
+        let (result, metadata, storage) =
+            lose_the_claim_under(Arc::new(AllowsOnce::default())).await;
+        assert!(
+            matches!(&result, Err(GuardianError::ModuleDenied { reason_code, .. }) if reason_code == "signer_not_allowed"),
+            "{result:?}"
+        );
+        assert_eq!(
+            metadata.get_update_timestamp_cas_calls().len(),
+            1,
+            "consumed against the winner's account before the second judgement"
+        );
+        assert!(storage.get_submit_state_calls().is_empty());
+        assert!(metadata.get_set_calls().is_empty());
+    }
+
+    fn default_instance(
+        id: &str,
+        hooks: &[HookName],
+        module: Arc<crate::modules::testing::StubModule>,
+    ) -> crate::modules::registry::Instance {
+        let mut instance = crate::modules::testing::instance_with_params(
+            id,
+            hooks,
+            module,
+            serde_json::json!({ "limit": 5 }),
+        );
+        instance.config.scope = crate::modules::catalog::Scope::Default;
+        instance
+    }
+
+    async fn assignment_of(
+        modules: &crate::modules::ModulePipeline,
+    ) -> Vec<(String, serde_json::Value)> {
+        modules
+            .store()
+            .account_params("0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d")
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|row| row.kind == crate::modules::store::ParamsKind::Assignment)
+            .map(|row| (row.module_id, row.params))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_new_account_is_judged_by_default_modules_and_receives_copies_of_them() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let elsewhere = crate::modules::testing::StubModule::allowing();
+        let run = configure_with_modules(
+            |_| None,
+            vec![
+                default_instance(
+                    "screening",
+                    &[HookName::BeforeAccountRegistered],
+                    module.clone(),
+                ),
+                default_instance(
+                    "caps",
+                    &[HookName::BeforeTransactionApproved],
+                    elsewhere.clone(),
+                ),
+            ],
+            module.clone(),
+        )
+        .await;
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        assert_eq!(
+            module.calls(),
+            1,
+            "a default instance judges the registration"
+        );
+        assert_eq!(elsewhere.calls(), 0, "one on other hooks is not called");
+        assert_eq!(
+            assignment_of(&run.modules).await,
+            vec![
+                ("screening".to_string(), serde_json::json!({ "limit": 5 })),
+                ("caps".to_string(), serde_json::json!({ "limit": 5 })),
+            ],
+            "every default is copied with the params evaluated"
+        );
+    }
+
+    /// Disabling a `default` instance during an incident must not leave every account that
+    /// registers meanwhile without it for good: it is copied, and runs once re-enabled.
+    #[tokio::test]
+    async fn a_default_instance_disabled_at_registration_is_still_copied() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let mut disabled = default_instance(
+            "screening",
+            &[HookName::BeforeAccountRegistered],
+            module.clone(),
+        );
+        disabled.config.enabled = false;
+        let run = configure_with_modules(|_| None, vec![disabled], module.clone()).await;
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        assert_eq!(module.calls(), 0, "a disabled instance judges nothing");
+        assert_eq!(
+            assignment_of(&run.modules).await,
+            vec![("screening".to_string(), serde_json::json!({ "limit": 5 }))],
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_registration_receives_no_default_copies() {
+        let module = crate::modules::testing::StubModule::denying("signer_not_allowed");
+        let run = configure_with_modules(
+            |_| None,
+            vec![default_instance(
+                "screening",
+                &[HookName::BeforeAccountRegistered],
+                module.clone(),
+            )],
+            module,
+        )
+        .await;
+        assert!(matches!(
+            run.result,
+            Err(GuardianError::ModuleDenied { .. })
+        ));
+        assert!(assignment_of(&run.modules).await.is_empty());
+    }
+
+    /// A first registration that loses the claim to an account listing other signers is an
+    /// outsider to that account: its state is vouched for before the modules judge it again.
+    #[tokio::test]
+    async fn losing_the_claim_to_another_signer_set_vouches_before_judging_again() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let (result, _, _) = lose_the_claim_to(module.clone(), Some("0xother")).await;
+        assert!(
+            matches!(result, Err(GuardianError::StateNotOnChain { .. })),
+            "{result:?}"
+        );
+        assert_eq!(
+            module.calls(),
+            1,
+            "judged once as a new account, not again on the unvouched state"
+        );
+    }
+
+    /// A replay of a registered account's configuration is refused before any chain read or
+    /// module call, whoever signed it.
+    #[tokio::test]
+    async fn a_replay_from_a_stored_signer_is_refused_before_any_chain_read_or_module() {
+        let module = StubModule::allowing();
+        let run = configure_run(
+            existing_account(false, true),
+            vec![crate::modules::testing::instance(
+                "signers",
+                &[HookName::BeforeAccountRegistered],
+                crate::modules::catalog::OnError::Deny,
+                module.clone(),
+            )],
+            module.clone(),
+            Vec::new(),
+            |storage| storage,
+            |metadata| metadata.with_update_timestamp_cas(Ok(false)),
+        )
+        .await;
+        assert!(
+            matches!(run.result, Err(GuardianError::AuthenticationReplay)),
+            "{:?}",
+            run.result
+        );
+        assert_eq!(module.calls(), 0);
+        assert!(run.network.get_verify_commitment_calls().is_empty());
+        assert_no_writes(&run);
+    }
+
+    /// A new account's state is vouched for before any module judges it, so a state the chain
+    /// does not hold is refused without a module call, a claim or a default copy.
+    #[tokio::test]
+    async fn a_new_accounts_unvouched_state_is_refused_before_any_module_judges_it() {
+        let module = StubModule::allowing();
+        let run = configure_on_chain(
+            |_| None,
+            vec![default_instance(
+                "screening",
+                &[HookName::BeforeAccountRegistered],
+                module.clone(),
+            )],
+            module.clone(),
+            StateVerification::Absent,
+        )
+        .await;
+        assert!(
+            matches!(run.result, Err(GuardianError::StateNotOnChain { .. })),
+            "{:?}",
+            run.result
+        );
+        assert_eq!(module.calls(), 0);
+        assert_no_writes(&run);
+        assert!(assignment_of(&run.modules).await.is_empty());
+    }
+
+    /// Finishing a claim is held to the same rule: its state is vouched for before the default
+    /// modules judge it, and a refusal copies no defaults.
+    #[tokio::test]
+    async fn an_unfinished_claims_unvouched_state_is_refused_before_any_module_judges_it() {
+        let (result, modules, module) =
+            finish_claim_on(Prior::Nothing, StateVerification::Absent, true).await;
+        assert!(
+            matches!(result, Err(GuardianError::StateNotOnChain { .. })),
+            "{result:?}"
+        );
+        assert_eq!(module.calls(), 0);
+        assert!(assignment_of(&modules).await.is_empty());
+    }
+
+    /// A failed read of whether a claim stored its state refuses the retry as a storage error:
+    /// treating it as stored would run it as a reconfiguration and store the state without the
+    /// default modules for good.
+    #[tokio::test]
+    async fn a_failed_state_check_on_an_unfinished_claim_refuses_instead_of_skipping_the_defaults()
+    {
+        let (result, modules, module) =
+            finish_claim_with(Prior::Nothing, StateVerification::Match, true, |storage| {
+                storage.with_pull_state_commitment_error("connection reset")
+            })
+            .await;
+        assert!(
+            matches!(result, Err(GuardianError::StorageError(_))),
+            "{result:?}"
+        );
+        assert_eq!(module.calls(), 0);
+        assert!(assignment_of(&modules).await.is_empty());
+    }
+
+    /// A replay of the request that claimed an account is refused before the defaults are
+    /// copied, so a refused request leaves no assignment behind.
+    #[tokio::test]
+    async fn a_replay_finishing_a_claim_copies_no_defaults() {
+        let (result, modules, module) =
+            finish_claim_on(Prior::Nothing, StateVerification::Match, false).await;
+        assert!(
+            matches!(result, Err(GuardianError::AuthenticationReplay)),
+            "{result:?}"
+        );
+        assert_eq!(module.calls(), 0);
+        assert!(assignment_of(&modules).await.is_empty());
+    }
+
+    /// A state the chain vouched for before the modules ran is read again after them: if the
+    /// chain moved meanwhile (a Guardian switch), nothing is written and the release stands.
+    #[tokio::test]
+    async fn a_chain_that_moves_while_the_modules_judge_refuses_the_write() {
+        let module = StubModule::allowing();
+        let run = configure_run(
+            existing_account(false, true),
+            vec![crate::modules::testing::instance(
+                "signers",
+                &[HookName::BeforeAccountRegistered],
+                crate::modules::catalog::OnError::Deny,
+                module.clone(),
+            )],
+            module.clone(),
+            vec![
+                StateVerification::Match,
+                StateVerification::Mismatch {
+                    on_chain: "0xswitched".into(),
+                },
+            ],
+            |storage| storage,
+            |metadata| metadata,
+        )
+        .await;
+        assert!(
+            matches!(run.result, Err(GuardianError::StateNotOnChain { .. })),
+            "{:?}",
+            run.result
+        );
+        assert_eq!(module.calls(), 1);
+        assert_eq!(run.network.get_verify_commitment_calls().len(), 2);
+        assert_no_writes(&run);
+    }
+
+    /// The rule that keeps an account's signers safe holds with modules in the path, even when
+    /// every module allows: a key the account does not list, or a listed key submitting a state
+    /// that is neither the stored one nor on chain, replaces nothing.
+    #[tokio::test]
+    async fn a_forged_state_never_replaces_the_stored_signers_even_when_modules_allow() {
+        for (label, existing) in [
+            ("outsider", existing_account_listing("0xother")),
+            ("stored signer", existing_account_listing_requester()),
+        ] {
+            let module = StubModule::allowing();
+            let run = configure_run(
+                existing,
+                vec![crate::modules::testing::instance(
+                    "signers",
+                    &[HookName::BeforeAccountRegistered],
+                    crate::modules::catalog::OnError::Deny,
+                    module.clone(),
+                )],
+                module.clone(),
+                vec![StateVerification::Absent],
+                |storage| {
+                    storage.with_pull_state_head(crate::state_object::StateHead {
+                        commitment: "0xstored".into(),
+                        nonce: Some(2),
+                    })
+                },
+                |metadata| metadata,
+            )
+            .await;
+            assert!(
+                matches!(run.result, Err(GuardianError::StateNotOnChain { .. })),
+                "{label}: {:?}",
+                run.result
+            );
+            assert_eq!(module.calls(), 0, "{label}: no module saw the forged state");
+            assert_no_writes(&run);
+        }
+    }
+
+    /// Allows, and on its `on_call`-th evaluation (from 0) stores a state on the account through
+    /// the shared mock, as a concurrent request that finishes the claim would.
+    struct StoresStateWhileJudging {
+        storage: std::sync::Mutex<Option<MockStorageBackend>>,
+        on_call: usize,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl StoresStateWhileJudging {
+        fn on_call(on_call: usize) -> Arc<Self> {
+            Arc::new(Self {
+                storage: std::sync::Mutex::new(None),
+                on_call,
+                calls: Default::default(),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl guardian_module_sdk::Module for StoresStateWhileJudging {
+        async fn describe(
+            &self,
+            _guardian: &guardian_module_sdk::DescribeRequest,
+        ) -> std::result::Result<guardian_module_sdk::ModuleInfo, guardian_module_sdk::ModuleError>
+        {
+            Ok(Default::default())
+        }
+
+        async fn validate_params(
+            &self,
+            _params: &[u8],
+        ) -> std::result::Result<guardian_module_sdk::ParamsVerdict, guardian_module_sdk::ModuleError>
+        {
+            Ok(guardian_module_sdk::ParamsVerdict::ok())
+        }
+
+        async fn evaluate(
+            &self,
+            _request: &guardian_module_sdk::HookRequest,
+        ) -> std::result::Result<guardian_module_sdk::Decision, guardian_module_sdk::ModuleError>
+        {
+            let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if call == self.on_call
+                && let Some(storage) = self.storage.lock().unwrap().clone()
+            {
+                let _ = storage.with_pull_state_head(crate::state_object::StateHead {
+                    commitment: "0xfinished".into(),
+                    nonce: Some(5),
+                });
+            }
+            Ok(guardian_module_sdk::Decision::allow())
+        }
+    }
+
+    /// An account with no stored state is read again after the modules: a state another
+    /// request stored while they judged is never replaced by this one's write.
+    #[tokio::test]
+    async fn a_state_stored_on_an_unfinished_claim_while_the_modules_judge_is_not_replaced() {
+        let storing = StoresStateWhileJudging::on_call(0);
+        let run = configure_run(
+            existing_account(false, false),
+            vec![crate::modules::testing::instance(
+                "signers",
+                &[HookName::BeforeAccountRegistered],
+                crate::modules::catalog::OnError::Deny,
+                storing.clone(),
+            )],
+            StubModule::allowing(),
+            Vec::new(),
+            |storage| {
+                let storage = storage
+                    .with_pull_state(Err("Failed to pull state: Record not found".to_string()));
+                *storing.storage.lock().unwrap() = Some(storage.clone());
+                storage
+            },
+            |metadata| metadata,
+        )
+        .await;
+        assert!(
+            matches!(
+                &run.result,
+                Err(GuardianError::CommitmentMismatch { expected, .. }) if expected == "0xfinished"
+            ),
+            "{:?}",
+            run.result
+        );
+        assert!(run.storage.get_submit_state_calls().is_empty());
+        assert!(run.storage.get_replace_state_calls().is_empty());
+        assert!(run.metadata.get_set_calls().is_empty());
+    }
+
+    fn existing_account_listing(
+        signer: &'static str,
+    ) -> Box<dyn FnOnce(String) -> Option<AccountMetadata>> {
+        Box::new(move |_| existing_account(false, false)(signer.to_string()))
+    }
+
+    fn existing_account_listing_requester() -> Box<dyn FnOnce(String) -> Option<AccountMetadata>> {
+        Box::new(existing_account(false, false))
+    }
+
+    /// What an operator wrote to an account's modules between its claim and the retry that
+    /// finishes its registration.
+    enum Prior {
+        Nothing,
+        Layer,
+        EmptyAssignment,
+    }
+
+    /// The retry of a first configuration that claimed the account but stored no state, after
+    /// `prior`. The catalog holds a `default` instance judging registrations (`module`) and an
+    /// `all` instance an operator can layer.
+    async fn finish_claim_after(
+        prior: Prior,
+    ) -> (
+        Result<ConfigureAccountResult>,
+        Arc<crate::modules::ModulePipeline>,
+        Arc<crate::modules::testing::StubModule>,
+    ) {
+        finish_claim_on(prior, StateVerification::Match, true).await
+    }
+
+    /// As [`finish_claim_after`], with the chain answering `chain` and, unless `fresh`, the
+    /// request's timestamp already used (a replay).
+    async fn finish_claim_on(
+        prior: Prior,
+        chain: StateVerification,
+        fresh: bool,
+    ) -> (
+        Result<ConfigureAccountResult>,
+        Arc<crate::modules::ModulePipeline>,
+        Arc<crate::modules::testing::StubModule>,
+    ) {
+        finish_claim_with(prior, chain, fresh, |storage| storage).await
+    }
+
+    /// As [`finish_claim_on`], with `adjust` changing the storage the request meets.
+    async fn finish_claim_with(
+        prior: Prior,
+        chain: StateVerification,
+        fresh: bool,
+        adjust: impl FnOnce(MockStorageBackend) -> MockStorageBackend,
+    ) -> (
+        Result<ConfigureAccountResult>,
+        Arc<crate::modules::ModulePipeline>,
+        Arc<crate::modules::testing::StubModule>,
+    ) {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(account_id);
+        let module = crate::modules::testing::StubModule::allowing();
+        let mut caps = crate::modules::testing::instance(
+            "caps",
+            &[HookName::BeforeTransactionApproved],
+            crate::modules::catalog::OnError::Deny,
+            crate::modules::testing::StubModule::allowing(),
+        );
+        caps.config.scope = crate::modules::catalog::Scope::All;
+        let modules = crate::modules::testing::pipeline(vec![
+            default_instance(
+                "screening",
+                &[HookName::BeforeAccountRegistered],
+                module.clone(),
+            ),
+            caps,
+        ]);
+        let change = crate::modules::store::Change {
+            operator: "0xoperator",
+            reason: "OPS-1",
+            at: "2026-11-12T00:00:00Z".to_string(),
+            expected_version: None,
+        };
+        match prior {
+            Prior::Nothing => {}
+            Prior::Layer => {
+                modules
+                    .store()
+                    .set_layer(
+                        account_id,
+                        "caps",
+                        Some(serde_json::json!({ "limit": 1 })),
+                        &change,
+                    )
+                    .await
+                    .unwrap();
+            }
+            Prior::EmptyAssignment => {
+                modules
+                    .store()
+                    .set_assignment(account_id, Vec::new(), &change)
+                    .await
+                    .unwrap();
+            }
+        }
+        let mut state = create_test_app_state(
+            MockNetworkClient::new()
+                .with_validate_credential(Ok(()))
+                .with_get_state_head(Ok(head("0x1234", 3)))
+                .with_verify_commitment(Ok(chain))
+                .with_module_views(
+                    guardian_module_sdk::AccountView {
+                        signer_commitments: vec![commitment.clone()],
+                        ..Default::default()
+                    },
+                    guardian_module_sdk::MidenTransaction::default(),
+                ),
+            adjust(
+                MockStorageBackend::new()
+                    .with_pull_state(Err("Failed to pull state: Record not found".to_string()))
+                    .with_submit_state(Ok(())),
+            ),
+            MockMetadataStore::new()
+                .with_get(Ok(Some(claimed_metadata(account_id, &commitment))))
+                .with_set(Ok(()))
+                .with_update_timestamp_cas(Ok(fresh)),
+        )
+        .await;
+        state.modules = Some(modules.clone());
+        let result = configure_account(
+            &state,
+            ConfigureAccountParams {
+                account_id: account_id.to_string(),
+                auth: Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![commitment],
+                },
+                network_config: crate::metadata::NetworkConfig::miden_default(),
+                initial_state: serde_json::from_str(include_str!(
+                    "../testing/fixtures/account.json"
+                ))
+                .unwrap(),
+                credential: Credentials::signature(pubkey, signature, timestamp),
+            },
+        )
+        .await;
+        (result, modules, module)
+    }
+
+    #[tokio::test]
+    async fn finishing_a_claim_without_module_history_copies_the_defaults_it_was_judged_by() {
+        let (result, modules, module) = finish_claim_after(Prior::Nothing).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(module.calls(), 1);
+        assert_eq!(
+            assignment_of(&modules).await,
+            vec![("screening".to_string(), serde_json::json!({ "limit": 5 }))]
+        );
+    }
+
+    #[tokio::test]
+    async fn finishing_a_claim_an_operator_configured_meanwhile_judges_it_as_configured() {
+        for prior in [Prior::Layer, Prior::EmptyAssignment] {
+            let (result, modules, module) = finish_claim_after(prior).await;
+            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(
+                module.calls(),
+                0,
+                "the defaults are not judged, since they would never be copied"
+            );
+            assert!(
+                assignment_of(&modules).await.is_empty(),
+                "the operator's configuration stays as it was"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reregistering_account_keeps_its_assignment_and_gets_no_defaults() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let run = configure_with_modules(
+            existing_account(false, false),
+            vec![default_instance(
+                "screening",
+                &[HookName::BeforeAccountRegistered],
+                module.clone(),
+            )],
+            module.clone(),
+        )
+        .await;
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        assert_eq!(
+            module.calls(),
+            0,
+            "defaults apply only to accounts that never had them"
+        );
+        assert!(assignment_of(&run.modules).await.is_empty());
     }
 }

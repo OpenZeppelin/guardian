@@ -117,15 +117,11 @@ pub fn print_vault(account: &MultisigAccount) {
                     "  [{}] {} tokens (faucet: {})",
                     i + 1,
                     fungible.amount(),
-                    shorten_hex(&fungible.faucet_id().to_hex())
+                    fungible.faucet_id().to_hex()
                 );
             }
             None => {
-                println!(
-                    "  [{}] NFT (faucet: {})",
-                    i + 1,
-                    shorten_hex(&asset.faucet_id().to_hex())
-                );
+                println!("  [{}] NFT (faucet: {})", i + 1, asset.faucet_id().to_hex());
             }
         }
     }

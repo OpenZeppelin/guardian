@@ -5,7 +5,10 @@ crates/server/src/services/account_status.rs ensure_account_active_metadata
 crates/server/src/services/push_delta.rs push_delta
 crates/server/src/services/push_delta.rs run
 crates/server/src/services/push_delta_proposal.rs push_delta_proposal
+crates/server/src/services/push_delta_proposal.rs propose
 crates/server/src/services/configure_account.rs configure_account
+crates/server/src/services/configure_account.rs vouch_for
+crates/server/src/services/configure_account.rs recheck_chain_after_modules
 crates/server/src/services/configure_account.rs stored_state_landed
 crates/server/src/services/configure_account.rs stored_head
 crates/server/src/services/pause_account.rs pause

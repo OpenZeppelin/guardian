@@ -515,6 +515,7 @@ mod tests {
                     counterparty: None,
                     note_counts: NoteCounts::default(),
                     proposal: None,
+                    modules: None,
                 }
                 .into(),
             ),

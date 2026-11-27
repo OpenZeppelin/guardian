@@ -1,0 +1,15 @@
+[package]
+name = "guardian-policy-module"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The Guardian's built-in policies served as a standalone policy module over gRPC"
+
+[[bin]]
+name = "policy-module"
+path = "src/main.rs"
+
+[dependencies]
+guardian-module-sdk = { path = "../../crates/guardian-module-sdk" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+tonic = { workspace = true, features = ["tls-ring"] }
