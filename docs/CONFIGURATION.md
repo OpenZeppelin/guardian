@@ -25,6 +25,8 @@ the runtime env vars in this document.
 | Variable | Default | Build mode | Notes |
 |---|---|---|---|
 | `DATABASE_URL` | _required_ | `postgres` | Postgres connection string. Server panics at startup if unset under `--features postgres`. TLS verification is controlled by the standard `sslmode`/`sslrootcert` parameters — see [Database TLS](#database-tls). |
+| `GUARDIAN_HTTP_PORT` | `3000` | any | Port of the HTTP listener (REST API, dashboard). A value outside 1 to 65535 or malformed fails startup. |
+| `GUARDIAN_GRPC_PORT` | `50051` | any | Port of the gRPC listener. A value outside 1 to 65535 or malformed fails startup. Set it when another local service already uses `50051`, such as the Miden test node's remote prover. |
 | `GUARDIAN_STORAGE_PATH` | `/var/guardian/storage` | filesystem | Path for state + delta blobs. |
 | `GUARDIAN_METADATA_PATH` | `/var/guardian/metadata` | filesystem | Path for accounts, auth credentials, network config. Holds `.metadata/accounts.json` (account records) and `.metadata/auth_state.json` (replay-protection timestamps). Back up and restore the two files together: the server refuses to start if `auth_state.json` is missing while migrated accounts exist, because empty replay state would re-accept previously seen requests (see [Troubleshooting](./TROUBLESHOOTING.md#server-fails-to-start)). |
 | `GUARDIAN_KEYSTORE_PATH` | `/var/guardian/keystore` | any | Local Falcon/ECDSA key files (ACK signers and per-account creds). |

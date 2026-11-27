@@ -101,8 +101,16 @@ async fn main() {
         .auditor(auditor)
         .coordination(coordination)
         .ack(ack)
-        .http(true, 3000)
-        .grpc(true, 50051)
+        .http(
+            true,
+            server::config::port_from_env("GUARDIAN_HTTP_PORT", 3000)
+                .expect("Invalid HTTP port configuration"),
+        )
+        .grpc(
+            true,
+            server::config::port_from_env("GUARDIAN_GRPC_PORT", 50051)
+                .expect("Invalid gRPC port configuration"),
+        )
         .cors(cors_layer)
         .build()
         .await
