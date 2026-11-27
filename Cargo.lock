@@ -3487,7 +3487,7 @@ dependencies = [
 
 [[package]]
 name = "guardian-client"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "chrono",
  "guardian-shared",
@@ -3536,7 +3536,7 @@ dependencies = [
 
 [[package]]
 name = "guardian-module-sdk"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "async-trait",
  "bech32",
@@ -3638,7 +3638,7 @@ dependencies = [
 
 [[package]]
 name = "guardian-server"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "aes-gcm",
  "alloy",
@@ -3736,7 +3736,7 @@ dependencies = [
 
 [[package]]
 name = "guardian-shared"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -5054,7 +5054,7 @@ dependencies = [
 
 [[package]]
 name = "miden-confidential-contracts"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "assert_matches",
@@ -5342,7 +5342,7 @@ dependencies = [
 
 [[package]]
 name = "miden-multisig-client"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5623,7 +5623,7 @@ dependencies = [
 
 [[package]]
 name = "miden-rpc-client"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "async-trait",
  "guardian-shared",
