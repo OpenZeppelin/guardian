@@ -76,7 +76,7 @@ jobs:
       digest: ${{ steps.source.outputs.digest }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: audit
 
@@ -134,7 +134,7 @@ jobs:
       STACK_NAME: ${{ vars.STACK_NAME }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: audit
 
@@ -155,7 +155,7 @@ jobs:
           fi
 
       - name: Authenticate to AWS via OIDC
-        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           aws-region: ${{ vars.AWS_REGION }}
           role-to-assume: ${{ vars.ROLE_FOR_OIDC }}
@@ -165,7 +165,7 @@ jobs:
       # Role chaining caps the session at 1 hour and it cannot be refreshed, so
       # the mirror, deploy, and stability wait below must all finish within it.
       - name: Assume deploy role
-        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           aws-region: ${{ vars.AWS_REGION }}
           role-chaining: true
@@ -218,14 +218,14 @@ jobs:
 
       - name: Render task definition with new image
         id: task-def
-        uses: aws-actions/amazon-ecs-render-task-definition@138c24f321fdbdf7edee4a685519d253cae2cdea # v1.9.0
+        uses: aws-actions/amazon-ecs-render-task-definition@8d79160660ad39c402a16e5fc7cd2a32e8f7d6b7 # v1.9.1
         with:
           task-definition-arn: ${{ steps.service.outputs.previous_task_definition }}
           container-name: ${{ vars.STACK_NAME }}-server
           image: ${{ steps.image.outputs.image_uri }}
 
       - name: Deploy to ECS and wait for stability
-        uses: aws-actions/amazon-ecs-deploy-task-definition@c465972ecbd160473f22e683363b422a5412a3de # v2.6.3
+        uses: aws-actions/amazon-ecs-deploy-task-definition@a00d4d57ac0de1a99b39fe469f3d898d38717c2b # v2.6.4
         with:
           cluster: ${{ vars.STACK_NAME }}-cluster
           service: ${{ vars.STACK_NAME }}-server
