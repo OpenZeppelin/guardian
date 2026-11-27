@@ -20,6 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
+| 0.20.0 | 0.18 (Rust), 0.17 (TypeScript) | `=0.18.0` | `=0.18.0` | `0.17.8` (exact) |
 | 0.19.1 | 0.18 (Rust), 0.17 (TypeScript) | `=0.18.0` | `=0.18.0` | `0.17.8` (exact) |
 | 0.19.0 | 0.18 (Rust), 0.17 (TypeScript) | `=0.18.0` | `=0.18.0` | `0.17.8` (exact) |
 | 0.18.3 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
@@ -33,7 +34,7 @@ elsewhere and link here:
 | 0.13.x | 0.13 | n/a | `0.13.0` | `^0.13.0` |
 | 0.12.x | 0.12 | n/a | `0.12.5` | `^0.12.5` |
 
-0.19.1 keeps the 0.19.0 pins.
+0.19.1 and 0.20.0 keep the 0.19.0 pins.
 
 0.18.2 and 0.18.3 keep the 0.18.1 pins.
 
@@ -139,6 +140,46 @@ be reproduced: `TransactionRequest` serialization changed and the auth arg commi
 Execute or cancel every pending proposal on the rc version, have GUARDIAN drop any that
 cannot be executed, then recreate the account on 0.17.0. Recreating the account does not
 clear proposals served for the old one.
+
+**Upgrading from 0.19.1 to 0.20.0: policy modules, batched Guardian execution and
+delta metadata encryption.** The Miden pins, the `auth_tx` procedure root and stored
+account data are unchanged, so accounts and stores carry over, and 0.19.1 SDKs keep
+working against a 0.20.0 server for every call they already make. Each new feature is
+off until it is configured:
+
+- **Policy modules (#602).** Off unless the operator sets a module catalog
+  (`GUARDIAN_MODULES_CONFIG`); without one no module runs. New client calls, error
+  codes, operator routes and the first `guardian-module-sdk` release, see
+  [Policy modules](#policy-modules-0200). **Rust callers:** `ExecutionFailureCode`
+  and `MultisigError` gain variants and neither is `#[non_exhaustive]`, so an
+  exhaustive `match` over either needs new arms, and `ServerBuilder::build` returns
+  `BuildError` for crates embedding `guardian-server`. These changes are why the
+  release is 0.20.0 rather than a patch: update those matches with the upgrade.
+- **Production startup with module state.** In the prod stage a server whose
+  database holds policy module state refuses to start without
+  `GUARDIAN_MODULES_CONFIG`, unless `GUARDIAN_MODULES_DISABLED=true`. A deployment
+  that never configured a catalog holds no module state and is not affected.
+- **Registration.** `/configure` accepts a Miden account ID only in its canonical
+  form (#605), and orders its checks so every check that can refuse a registration
+  runs before anything is stored. A failed read of an account's stored state is now
+  refused as a retryable storage error. The SDKs already send the canonical form
+  and retry with a fresh signature.
+- **Delta metadata encryption (#610).** With a storage encryption key source set,
+  each delta's `metadata` is sealed like its payload. Nothing changes without a key
+  source. See [Storage encryption covers delta
+  metadata](#storage-encryption-covers-delta-metadata-0200) for mixed versions and
+  rollback.
+- **Batched Guardian execution (#601).** Experimental and off by default
+  (`GUARDIAN_EXECUTION_MAX_TXS_PER_BATCH` = `1`). Above `1`, Guardian-proved
+  transactions of different accounts are proved and sent together as one batch;
+  see [CONFIGURATION](./CONFIGURATION.md).
+- **Postgres migrations.** Four additive migrations create the policy module tables
+  and their snapshot and assignment functions. They run at startup whether or not a
+  catalog is set, and no data reset runs.
+- **Terraform.** The AWS stack gains `guardian_modules_config`,
+  `guardian_modules_disabled`, `guardian_module_secret_names`,
+  `alarm_module_fail_open_threshold`, `guardian_execution_max_txs_per_batch` and
+  `guardian_execution_batch_window_ms`. Their defaults keep the previous behaviour.
 
 **Upgrading from 0.19.0 to 0.19.1: startup account recovery.** The Miden pins, the
 `auth_tx` procedure root, stored account data, existing contracts and the wire contract
@@ -748,12 +789,12 @@ only; wallet-signed requests, session grants and logout are unchanged.
 - **Stored single-key accounts can no longer re-register.** An account stored
   before `/configure` required a multisig keeps being served, but any
   `/configure` for it is refused with `invalid_input`.
-- **Canonical Miden account IDs (after 0.19.1).** `/configure` accepts a
+- **Canonical Miden account IDs (0.20.0).** `/configure` accepts a
   Miden account ID only in its canonical form, the lowercase hex of
   `AccountId::to_hex`, and refuses any other form, a malformed ID included,
   with `invalid_account_id`. The SDKs always send the canonical form.
 
-### Storage encryption covers delta metadata (after 0.19.1)
+### Storage encryption covers delta metadata (0.20.0)
 
 With a storage encryption key source set, each delta's `metadata` column holds
 an encryption envelope, like its payload. Nothing changes without a key source,
